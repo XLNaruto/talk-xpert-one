@@ -1,0 +1,11 @@
+node_modules
+dist
+dist-ssr
+*.local
+.DS_Store
+
+# Env files (keep the checked-in sample)
+.env
+.env.*
+!.env.sample
+*.tsbuildinfo

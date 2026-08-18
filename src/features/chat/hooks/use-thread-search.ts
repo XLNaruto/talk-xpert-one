@@ -1,0 +1,214 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { toastApiError, toastProblem } from '@/lib/api-toast'
+import { useDebouncedValue } from '@/hooks/use-debounced-value'
+import { cachedMessages } from '@/stores/message-cache-store'
+import type { Id } from '@/types/api'
+import * as chatApi from '../api/chat-api'
+import {
+  THREAD_SEARCH_HIT_CAP,
+  THREAD_SEARCH_MAX_HISTORY_PAGES,
+  THREAD_SEARCH_PAGE_SIZE,
+} from '../constants'
+import type { MessageSearchHit } from '../types'
+
+interface UseThreadSearchOptions {
+  chatId: Id | null
+  /** Pull one more page of older history. Resolves once the page has landed. */
+  loadEarlier: () => Promise<void> | void
+  /** False once the thread has reached its beginning — the walk must stop there. */
+  hasEarlier: boolean
+}
+
+/**
+ * Find-in-conversation: the browser's Ctrl+F, over one thread.
+ *
+ * Two halves that have to agree. The SERVER knows every match, because full-text
+ * search runs over the whole thread; the CLIENT only holds the pages it has
+ * scrolled through. So a hit is found remotely and then walked to locally —
+ * `loadEarlier` is pumped until the target id is in the cache, and only then does
+ * the list scroll to it.
+ *
+ * Hits are ordered oldest → newest so "12 / 44" counts the way the thread reads,
+ * and navigation starts at the newest match, which is the one nearest what is
+ * already on screen.
+ */
+export function useThreadSearch({ chatId, loadEarlier, hasEarlier }: UseThreadSearchOptions) {
+  const [isOpen, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [hits, setHits] = useState<MessageSearchHit[]>([])
+  const [activeIndex, setActiveIndex] = useState(-1)
+  const [isSearching, setSearching] = useState(false)
+  /** True while history is being walked back to reach an off-screen hit. */
+  const [isSeeking, setSeeking] = useState(false)
+
+  const debounced = useDebouncedValue(query.trim(), 350)
+
+  // The walk reads the cache and `hasEarlier` as they change mid-loop, so both
+  // are mirrored into refs — the loop cannot close over a stale render's value.
+  const hasEarlierRef = useRef(hasEarlier)
+  hasEarlierRef.current = hasEarlier
+  const loadEarlierRef = useRef(loadEarlier)
+  loadEarlierRef.current = loadEarlier
+  /** Guards against a second walk starting while one is in flight. */
+  const seeking = useRef(false)
+
+  const reset = useCallback(() => {
+    setQuery('')
+    setHits([])
+    setActiveIndex(-1)
+  }, [])
+
+  const close = useCallback(() => {
+    setOpen(false)
+    reset()
+  }, [reset])
+
+  const open = useCallback(() => setOpen(true), [])
+
+  // A find bar belongs to the thread it was opened over.
+  useEffect(() => {
+    setOpen(false)
+    reset()
+  }, [chatId, reset])
+
+  /**
+   * Every match, not just the first page.
+   *
+   * The bar offers prev/next over a numbered set, so a set that stops at 50 while
+   * claiming 200 matches would strand the rest. Paging is bounded by
+   * `THREAD_SEARCH_HIT_CAP` and the shortfall is said out loud rather than hidden.
+   */
+  useEffect(() => {
+    if (!isOpen || chatId == null) return
+    if (debounced.length < 2) {
+      setHits([])
+      setActiveIndex(-1)
+      return
+    }
+
+    let cancelled = false
+    const collect = async () => {
+      setSearching(true)
+      try {
+        const collected: MessageSearchHit[] = []
+        let total = 0
+        for (let offset = 0; offset < THREAD_SEARCH_HIT_CAP; offset += THREAD_SEARCH_PAGE_SIZE) {
+          const page = await chatApi.searchMessages({
+            q: debounced,
+            chatId,
+            limit: THREAD_SEARCH_PAGE_SIZE,
+            offset,
+          })
+          if (cancelled) return
+          total = page.total
+          collected.push(...page.items)
+          if (page.items.length < THREAD_SEARCH_PAGE_SIZE || collected.length >= total) break
+        }
+
+        // Ascending by id IS ascending by time — ids are issued in send order —
+        // and it is the order the thread is drawn in.
+        const ordered = collected
+          .filter((hit, index, all) => all.findIndex((other) => other.id === hit.id) === index)
+          .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+
+        setHits(ordered)
+        // Start at the newest match: it is the one closest to what is on screen,
+        // so it usually needs no history walk at all.
+        setActiveIndex(ordered.length > 0 ? ordered.length - 1 : -1)
+        if (total > ordered.length) {
+          toastProblem(
+            `Showing the newest ${ordered.length} of ${total} matches. Try a longer word.`,
+          )
+        }
+      } catch (error) {
+        if (!cancelled) toastApiError(error, 'Could not search this conversation')
+      } finally {
+        if (!cancelled) setSearching(false)
+      }
+    }
+
+    void collect()
+    return () => {
+      cancelled = true
+    }
+  }, [isOpen, chatId, debounced])
+
+  /**
+   * Walk history back until `messageId` is loaded, so the list has a row to
+   * scroll to. Returns false when the thread runs out or the bound is reached.
+   */
+  const ensureLoaded = useCallback(
+    async (messageId: Id): Promise<boolean> => {
+      if (chatId == null) return false
+      const isLoaded = () => cachedMessages(chatId).some((message) => message.id === messageId)
+      if (isLoaded()) return true
+      if (seeking.current) return false
+
+      seeking.current = true
+      setSeeking(true)
+      try {
+        for (let page = 0; page < THREAD_SEARCH_MAX_HISTORY_PAGES; page += 1) {
+          if (!hasEarlierRef.current) break
+          await loadEarlierRef.current()
+          if (isLoaded()) return true
+        }
+        return isLoaded()
+      } finally {
+        seeking.current = false
+        setSeeking(false)
+      }
+    },
+    [chatId],
+  )
+
+  const goTo = useCallback(
+    async (index: number) => {
+      if (index < 0 || index >= hits.length) return
+      setActiveIndex(index)
+      const found = await ensureLoaded(hits[index].id)
+      if (!found) {
+        toastProblem('That message is too far back to open from here.')
+      }
+    },
+    [hits, ensureLoaded],
+  )
+
+  /** Up: one match older. Down: one match newer. Both wrap, as a find bar does. */
+  const goPrevious = useCallback(() => {
+    if (hits.length === 0) return
+    void goTo(activeIndex <= 0 ? hits.length - 1 : activeIndex - 1)
+  }, [hits.length, activeIndex, goTo])
+
+  const goNext = useCallback(() => {
+    if (hits.length === 0) return
+    void goTo(activeIndex >= hits.length - 1 ? 0 : activeIndex + 1)
+  }, [hits.length, activeIndex, goTo])
+
+  // Opening on the newest hit still has to load it, exactly like stepping does.
+  const activeHit = activeIndex >= 0 ? hits[activeIndex] : undefined
+  const activeHitId = activeHit?.id
+  useEffect(() => {
+    if (activeHitId === undefined) return
+    void ensureLoaded(activeHitId)
+  }, [activeHitId, ensureLoaded])
+
+  return {
+    isOpen,
+    open,
+    close,
+    query,
+    setQuery,
+    hits,
+    /** 1-based for display; 0 when there is nothing to point at. */
+    position: activeIndex >= 0 ? activeIndex + 1 : 0,
+    total: hits.length,
+    /** The message the list should scroll to and band. */
+    activeMessageId: activeHitId ?? null,
+    /** Every match in the loaded thread, for the softer background tint. */
+    hitMessageIds: hits.map((hit) => hit.id),
+    isSearching,
+    isSeeking,
+    goPrevious,
+    goNext,
+  }
+}

@@ -1,0 +1,998 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ------------------------------------------------------------------ */
+/* Design tokens — the XpertOne Talk design system                    */
+/* ------------------------------------------------------------------ */
+/* Palette: sky accent (#0ea5e9) on a blue-tinted base.
+   #0ea5e9 itself only carries white text at ~2.7:1, so filled surfaces in the
+   light theme use its darker sibling (#0284c7) and the pure brand hex stays on
+   the focus ring, where it sits against the page rather than under text.
+   Token NAMES match XpertOne exactly (--background, not --color-background)
+   so a shadcn component can be copied between the two repos unedited. */
+:root {
+  --radius: 0.75rem;
+
+  --background: #e3edf4;
+  --foreground: #10202b;
+  --card: #eef5fa;
+  --card-foreground: #10202b;
+  --popover: #eef5fa;
+  --popover-foreground: #10202b;
+
+  --primary: #0284c7;
+  --primary-foreground: #ffffff;
+  --primary-hover: #0369a1;
+
+  --secondary: #d5e6f0;
+  --secondary-foreground: #16303f;
+  --muted: #d5e6f0;
+  --muted-foreground: #5b7386;
+  --accent: #c7dded;
+  --accent-foreground: #16303f;
+
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --success: #15803d;
+  --warning: #b45309;
+  --info: #0284c7;
+
+  --border: #c6dae7;
+  --input: #c6dae7;
+  --ring: #0ea5e9;
+
+  --sidebar: #dbe9f3;
+  --sidebar-foreground: #10202b;
+  --sidebar-primary: #0284c7;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #c7dded;
+  --sidebar-accent-foreground: #10202b;
+  --sidebar-border: #c0d6e4;
+  --sidebar-ring: #0ea5e9;
+
+  /* emoji-mart paints from `rgb(var(--rgb-*))`, so its surfaces need the same
+     colours as comma-separated channels. Keep these in step with `--card`,
+     `--card-foreground`, `--primary` and the field background above. */
+  --emoji-rgb-background: 238, 245, 250;
+  --emoji-rgb-color: 16, 32, 43;
+  --emoji-rgb-accent: 2, 132, 199;
+  --emoji-rgb-input: 238, 245, 250;
+
+  /* Chat-specific surfaces — the one place Talk needs tokens admin doesn't. */
+  --bubble-out: #0284c7;
+  --bubble-out-foreground: #ffffff;
+  --bubble-in: #eef5fa;
+  --bubble-in-foreground: #10202b;
+
+  /* Sign-in canvas — the only full-bleed backdrop in the app, so its layers get
+     their own tokens rather than arbitrary values at the call site. Light is a
+     daytime sky, dark is a night sky; the web mechanics are identical and only
+     these colours change. */
+  --auth-space-near: #f4fafe;
+  --auth-space-far: #c8dded;
+  --auth-nebula-a: rgba(14, 165, 233, 0.26);
+  --auth-nebula-b: rgba(56, 189, 248, 0.16);
+  --auth-orb-a: rgba(56, 189, 248, 0.3);
+  --auth-orb-b: rgba(2, 132, 199, 0.24);
+  --auth-orb-c: rgba(125, 211, 252, 0.26);
+
+  /* The web colour as a bare RGB triple — `web-canvas` parses it and applies
+     its own per-thread alpha, so it cannot be an rgba() string. The alpha
+     scale pulls the whole web back on the light sky, where a dark thread
+     carries much further than a pale one does on black. */
+  --auth-web-rgb: 9 52 82;
+  --auth-web-alpha: 0.75;
+  /* The shooting star that crosses the web — brighter than the threads. */
+  --auth-streak-rgb: 3 105 161;
+
+  /* Chrome that floats on the sky rather than on a card — the theme toggle. */
+  --auth-chrome-fg: rgba(16, 32, 43, 0.65);
+  --auth-chrome-bg: rgba(255, 255, 255, 0.55);
+  --auth-chrome-border: rgba(16, 32, 43, 0.1);
+
+  /* The card is glass: translucent fill + blur, so the moving backdrop reads
+     through it. Alpha values, not solid tokens — that is the whole effect. */
+  --auth-glass: rgba(255, 255, 255, 0.58);
+  --auth-glass-border: rgba(255, 255, 255, 0.7);
+  --auth-glass-highlight: rgba(255, 255, 255, 0.75);
+  --auth-glass-shadow: rgba(16, 32, 43, 0.2);
+  --auth-field: rgba(255, 255, 255, 0.6);
+
+  --auth-mark-from: #0ea5e9;
+  --auth-mark-to: #075985;
+  --auth-mark-foreground: #f0f9ff;
+
+  /* The submit button is solid brand paint, not glass — it is the one element on
+     the card that must not read as translucent. Top-to-bottom only, so the fill
+     stays even across the full width. */
+  --auth-submit-from: #0ea5e9;
+  --auth-submit-to: #0369a1;
+  --auth-submit-sheen: rgba(255, 255, 255, 0.24);
+  --auth-submit-shadow: rgba(3, 105, 161, 0.35);
+}
+
+.dark {
+  --background: #0f1a23;
+  --foreground: #e8f1f7;
+  --card: #172630;
+  --card-foreground: #e8f1f7;
+  --popover: #1d303c;
+  --popover-foreground: #e8f1f7;
+
+  --primary: #38bdf8;
+  --primary-foreground: #0f1a23;
+  --primary-hover: #7dd3fc;
+
+  --secondary: #172630;
+  --secondary-foreground: #d8e8f2;
+  --muted: #172630;
+  --muted-foreground: #93a8b8;
+  --accent: #1d303c;
+  --accent-foreground: #d8e8f2;
+
+  --destructive: #f87171;
+  --destructive-foreground: #0f1a23;
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --info: #38bdf8;
+
+  --border: #24394a;
+  --input: #24394a;
+  --ring: #38bdf8;
+
+  --sidebar: #0c151d;
+  --sidebar-foreground: #bacbd7;
+  --sidebar-primary: #38bdf8;
+  --sidebar-primary-foreground: #0c151d;
+  --sidebar-accent: #1d303c;
+  --sidebar-accent-foreground: #d2e6f2;
+  --sidebar-border: #24394a;
+  --sidebar-ring: #38bdf8;
+
+  --emoji-rgb-background: 23, 38, 48;
+  --emoji-rgb-color: 232, 241, 247;
+  --emoji-rgb-accent: 56, 189, 248;
+  --emoji-rgb-input: 29, 48, 60;
+
+  --bubble-out: #0369a1;
+  --bubble-out-foreground: #f0f9ff;
+  --bubble-in: #172630;
+  --bubble-in-foreground: #e8f1f7;
+
+  /* Night side — the same sky at midnight. */
+  --auth-space-near: #0d2135;
+  --auth-space-far: #03080f;
+  --auth-nebula-a: rgba(14, 165, 233, 0.2);
+  --auth-nebula-b: rgba(56, 189, 248, 0.1);
+  --auth-orb-a: rgba(56, 189, 248, 0.16);
+  --auth-orb-b: rgba(3, 105, 161, 0.24);
+  --auth-orb-c: rgba(125, 211, 252, 0.1);
+
+  --auth-web-rgb: 147 216 255;
+  --auth-web-alpha: 0.95;
+  --auth-streak-rgb: 236 246 255;
+
+  --auth-chrome-fg: rgba(236, 246, 255, 0.75);
+  --auth-chrome-bg: rgba(236, 246, 255, 0.08);
+  --auth-chrome-border: rgba(236, 246, 255, 0.16);
+
+  --auth-glass: rgba(23, 38, 48, 0.62);
+  --auth-glass-border: rgba(234, 246, 254, 0.14);
+  --auth-glass-highlight: rgba(234, 246, 254, 0.22);
+  --auth-glass-shadow: rgba(0, 0, 0, 0.6);
+  --auth-field: rgba(12, 21, 29, 0.5);
+
+  --auth-mark-from: #38bdf8;
+  --auth-mark-to: #075985;
+  --auth-mark-foreground: #ffffff;
+
+  --auth-submit-from: #0ea5e9;
+  --auth-submit-to: #075985;
+  --auth-submit-sheen: rgba(255, 255, 255, 0.18);
+  --auth-submit-shadow: rgba(2, 8, 15, 0.55);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Accent themes                                                      */
+/* ------------------------------------------------------------------ */
+/* The accent is a second axis on top of light/dark: it repaints only the
+   brand-coloured tokens and leaves every surface alone, so contrast stays
+   exactly as it was tuned above whichever colour is picked.
+
+   Written as an ATTRIBUTE selector rather than a class so it can be scoped to
+   any element, not just <html>: the theme picker paints each swatch by wrapping
+   it in `data-accent`, which is why no component ever holds a hex.
+   `theme-provider` sets the same attribute on <html> for the whole app. */
+
+[data-accent="default"] {
+  --primary: #0284c7;
+  --primary-hover: #0369a1;
+  --primary-foreground: #ffffff;
+  --ring: #0284c7;
+  --info: #0284c7;
+  --sidebar-primary: #0284c7;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-ring: #0284c7;
+  --bubble-out: #0284c7;
+  --bubble-out-foreground: #ffffff;
+  --emoji-rgb-accent: 2, 132, 199;
+}
+
+.dark[data-accent="default"],
+.dark [data-accent="default"] {
+  --primary: #38bdf8;
+  --primary-hover: #7dd3fc;
+  --primary-foreground: #0f1a23;
+  --ring: #38bdf8;
+  --info: #38bdf8;
+  --sidebar-primary: #38bdf8;
+  --sidebar-primary-foreground: #0f1a23;
+  --sidebar-ring: #38bdf8;
+  --bubble-out: #0369a1;
+  --bubble-out-foreground: #f0f9ff;
+  --emoji-rgb-accent: 56, 189, 248;
+}
+
+[data-accent="midnight"] {
+  --primary: #4f46e5;
+  --primary-hover: #4338ca;
+  --primary-foreground: #ffffff;
+  --ring: #4f46e5;
+  --info: #4f46e5;
+  --sidebar-primary: #4f46e5;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-ring: #4f46e5;
+  --bubble-out: #4f46e5;
+  --bubble-out-foreground: #ffffff;
+  --emoji-rgb-accent: 79, 70, 229;
+}
+
+.dark[data-accent="midnight"],
+.dark [data-accent="midnight"] {
+  --primary: #818cf8;
+  --primary-hover: #a5b4fc;
+  --primary-foreground: #0f1a23;
+  --ring: #818cf8;
+  --info: #818cf8;
+  --sidebar-primary: #818cf8;
+  --sidebar-primary-foreground: #0f1a23;
+  --sidebar-ring: #818cf8;
+  --bubble-out: #4338ca;
+  --bubble-out-foreground: #f0f9ff;
+  --emoji-rgb-accent: 129, 140, 248;
+}
+
+[data-accent="lagoon"] {
+  --primary: #0d9488;
+  --primary-hover: #0f766e;
+  --primary-foreground: #ffffff;
+  --ring: #0d9488;
+  --info: #0d9488;
+  --sidebar-primary: #0d9488;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-ring: #0d9488;
+  --bubble-out: #0d9488;
+  --bubble-out-foreground: #ffffff;
+  --emoji-rgb-accent: 13, 148, 136;
+}
+
+.dark[data-accent="lagoon"],
+.dark [data-accent="lagoon"] {
+  --primary: #2dd4bf;
+  --primary-hover: #5eead4;
+  --primary-foreground: #0f1a23;
+  --ring: #2dd4bf;
+  --info: #2dd4bf;
+  --sidebar-primary: #2dd4bf;
+  --sidebar-primary-foreground: #0f1a23;
+  --sidebar-ring: #2dd4bf;
+  --bubble-out: #0f766e;
+  --bubble-out-foreground: #f0f9ff;
+  --emoji-rgb-accent: 45, 212, 191;
+}
+
+[data-accent="horizon"] {
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --primary-foreground: #ffffff;
+  --ring: #2563eb;
+  --info: #2563eb;
+  --sidebar-primary: #2563eb;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-ring: #2563eb;
+  --bubble-out: #2563eb;
+  --bubble-out-foreground: #ffffff;
+  --emoji-rgb-accent: 37, 99, 235;
+}
+
+.dark[data-accent="horizon"],
+.dark [data-accent="horizon"] {
+  --primary: #60a5fa;
+  --primary-hover: #93c5fd;
+  --primary-foreground: #0f1a23;
+  --ring: #60a5fa;
+  --info: #60a5fa;
+  --sidebar-primary: #60a5fa;
+  --sidebar-primary-foreground: #0f1a23;
+  --sidebar-ring: #60a5fa;
+  --bubble-out: #1d4ed8;
+  --bubble-out-foreground: #f0f9ff;
+  --emoji-rgb-accent: 96, 165, 250;
+}
+
+[data-accent="blossom"] {
+  --primary: #db2777;
+  --primary-hover: #be185d;
+  --primary-foreground: #ffffff;
+  --ring: #db2777;
+  --info: #db2777;
+  --sidebar-primary: #db2777;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-ring: #db2777;
+  --bubble-out: #db2777;
+  --bubble-out-foreground: #ffffff;
+  --emoji-rgb-accent: 219, 39, 119;
+}
+
+.dark[data-accent="blossom"],
+.dark [data-accent="blossom"] {
+  --primary: #f472b6;
+  --primary-hover: #f9a8d4;
+  --primary-foreground: #0f1a23;
+  --ring: #f472b6;
+  --info: #f472b6;
+  --sidebar-primary: #f472b6;
+  --sidebar-primary-foreground: #0f1a23;
+  --sidebar-ring: #f472b6;
+  --bubble-out: #be185d;
+  --bubble-out-foreground: #f0f9ff;
+  --emoji-rgb-accent: 244, 114, 182;
+}
+
+[data-accent="arctic"] {
+  --primary: #0891b2;
+  --primary-hover: #0e7490;
+  --primary-foreground: #ffffff;
+  --ring: #0891b2;
+  --info: #0891b2;
+  --sidebar-primary: #0891b2;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-ring: #0891b2;
+  --bubble-out: #0891b2;
+  --bubble-out-foreground: #ffffff;
+  --emoji-rgb-accent: 8, 145, 178;
+}
+
+.dark[data-accent="arctic"],
+.dark [data-accent="arctic"] {
+  --primary: #22d3ee;
+  --primary-hover: #67e8f9;
+  --primary-foreground: #0f1a23;
+  --ring: #22d3ee;
+  --info: #22d3ee;
+  --sidebar-primary: #22d3ee;
+  --sidebar-primary-foreground: #0f1a23;
+  --sidebar-ring: #22d3ee;
+  --bubble-out: #0e7490;
+  --bubble-out-foreground: #f0f9ff;
+  --emoji-rgb-accent: 34, 211, 238;
+}
+
+[data-accent="forest"] {
+  --primary: #059669;
+  --primary-hover: #047857;
+  --primary-foreground: #ffffff;
+  --ring: #059669;
+  --info: #059669;
+  --sidebar-primary: #059669;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-ring: #059669;
+  --bubble-out: #059669;
+  --bubble-out-foreground: #ffffff;
+  --emoji-rgb-accent: 5, 150, 105;
+}
+
+.dark[data-accent="forest"],
+.dark [data-accent="forest"] {
+  --primary: #34d399;
+  --primary-hover: #6ee7b7;
+  --primary-foreground: #0f1a23;
+  --ring: #34d399;
+  --info: #34d399;
+  --sidebar-primary: #34d399;
+  --sidebar-primary-foreground: #0f1a23;
+  --sidebar-ring: #34d399;
+  --bubble-out: #047857;
+  --bubble-out-foreground: #f0f9ff;
+  --emoji-rgb-accent: 52, 211, 153;
+}
+
+[data-accent="shadow"] {
+  --primary: #334155;
+  --primary-hover: #1e293b;
+  --primary-foreground: #ffffff;
+  --ring: #334155;
+  --info: #334155;
+  --sidebar-primary: #334155;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-ring: #334155;
+  --bubble-out: #334155;
+  --bubble-out-foreground: #ffffff;
+  --emoji-rgb-accent: 51, 65, 85;
+}
+
+.dark[data-accent="shadow"],
+.dark [data-accent="shadow"] {
+  --primary: #94a3b8;
+  --primary-hover: #cbd5e1;
+  --primary-foreground: #0f1a23;
+  --ring: #94a3b8;
+  --info: #94a3b8;
+  --sidebar-primary: #94a3b8;
+  --sidebar-primary-foreground: #0f1a23;
+  --sidebar-ring: #94a3b8;
+  --bubble-out: #334155;
+  --bubble-out-foreground: #f0f9ff;
+  --emoji-rgb-accent: 148, 163, 184;
+}
+
+[data-accent="passion"] {
+  --primary: #e11d48;
+  --primary-hover: #be123c;
+  --primary-foreground: #ffffff;
+  --ring: #e11d48;
+  --info: #e11d48;
+  --sidebar-primary: #e11d48;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-ring: #e11d48;
+  --bubble-out: #e11d48;
+  --bubble-out-foreground: #ffffff;
+  --emoji-rgb-accent: 225, 29, 72;
+}
+
+.dark[data-accent="passion"],
+.dark [data-accent="passion"] {
+  --primary: #fb7185;
+  --primary-hover: #fda4af;
+  --primary-foreground: #0f1a23;
+  --ring: #fb7185;
+  --info: #fb7185;
+  --sidebar-primary: #fb7185;
+  --sidebar-primary-foreground: #0f1a23;
+  --sidebar-ring: #fb7185;
+  --bubble-out: #be123c;
+  --bubble-out-foreground: #f0f9ff;
+  --emoji-rgb-accent: 251, 113, 133;
+}
+
+[data-accent="sunset"] {
+  --primary: #ea580c;
+  --primary-hover: #c2410c;
+  --primary-foreground: #ffffff;
+  --ring: #ea580c;
+  --info: #ea580c;
+  --sidebar-primary: #ea580c;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-ring: #ea580c;
+  --bubble-out: #ea580c;
+  --bubble-out-foreground: #ffffff;
+  --emoji-rgb-accent: 234, 88, 12;
+}
+
+.dark[data-accent="sunset"],
+.dark [data-accent="sunset"] {
+  --primary: #fb923c;
+  --primary-hover: #fdba74;
+  --primary-foreground: #0f1a23;
+  --ring: #fb923c;
+  --info: #fb923c;
+  --sidebar-primary: #fb923c;
+  --sidebar-primary-foreground: #0f1a23;
+  --sidebar-ring: #fb923c;
+  --bubble-out: #c2410c;
+  --bubble-out-foreground: #f0f9ff;
+  --emoji-rgb-accent: 251, 146, 60;
+}
+
+[data-accent="velvet"] {
+  --primary: #be123c;
+  --primary-hover: #9f1239;
+  --primary-foreground: #ffffff;
+  --ring: #be123c;
+  --info: #be123c;
+  --sidebar-primary: #be123c;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-ring: #be123c;
+  --bubble-out: #be123c;
+  --bubble-out-foreground: #ffffff;
+  --emoji-rgb-accent: 190, 18, 60;
+}
+
+.dark[data-accent="velvet"],
+.dark [data-accent="velvet"] {
+  --primary: #f43f5e;
+  --primary-hover: #fb7185;
+  --primary-foreground: #0f1a23;
+  --ring: #f43f5e;
+  --info: #f43f5e;
+  --sidebar-primary: #f43f5e;
+  --sidebar-primary-foreground: #0f1a23;
+  --sidebar-ring: #f43f5e;
+  --bubble-out: #9f1239;
+  --bubble-out-foreground: #f0f9ff;
+  --emoji-rgb-accent: 244, 63, 94;
+}
+
+[data-accent="autumn"] {
+  --primary: #b45309;
+  --primary-hover: #92400e;
+  --primary-foreground: #ffffff;
+  --ring: #b45309;
+  --info: #b45309;
+  --sidebar-primary: #b45309;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-ring: #b45309;
+  --bubble-out: #b45309;
+  --bubble-out-foreground: #ffffff;
+  --emoji-rgb-accent: 180, 83, 9;
+}
+
+.dark[data-accent="autumn"],
+.dark [data-accent="autumn"] {
+  --primary: #f59e0b;
+  --primary-hover: #fbbf24;
+  --primary-foreground: #0f1a23;
+  --ring: #f59e0b;
+  --info: #f59e0b;
+  --sidebar-primary: #f59e0b;
+  --sidebar-primary-foreground: #0f1a23;
+  --sidebar-ring: #f59e0b;
+  --bubble-out: #92400e;
+  --bubble-out-foreground: #f0f9ff;
+  --emoji-rgb-accent: 245, 158, 11;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-hover: var(--primary-hover);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-bubble-out: var(--bubble-out);
+  --color-bubble-out-foreground: var(--bubble-out-foreground);
+  --color-bubble-in: var(--bubble-in);
+  --color-bubble-in-foreground: var(--bubble-in-foreground);
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "JetBrains Mono", monospace;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    /* Chat is a fixed-height app shell; the message list scrolls, not the page. */
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  /* Thin, quiet scrollbars everywhere — the default chrome bar is wide enough
+     to crowd the composer and the sidebar. Firefox takes the standard
+     properties; WebKit needs its own pseudo-elements for the same result. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklab, var(--muted-foreground) 35%, transparent)
+      transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklab, var(--muted-foreground) 30%, transparent);
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklab, var(--muted-foreground) 55%, transparent);
+  }
+
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  /* The emoji picker is a shadow-DOM custom element, so it cannot be reached
+     with a class. Custom properties DO cross that boundary, and its own
+     `:host` defaults lose to a rule from this document — which is how it ends
+     up wearing the app's palette and radius in both themes. */
+  em-emoji-picker {
+    /* Its own `:host` is `width: min-content; height: 435px` — a size derived
+       from the emoji button size, which no placeholder can guess. Filling the
+       box the composer already reserved is what stops the panel resizing under
+       the pointer when the emoji data finishes loading. Pairs with
+       `dynamicWidth`, which re-flows the grid to whatever width it is given. */
+    width: 100%;
+    height: 100%;
+    --rgb-background: var(--emoji-rgb-background);
+    --rgb-color: var(--emoji-rgb-color);
+    --rgb-accent: var(--emoji-rgb-accent);
+    --rgb-input: var(--emoji-rgb-input);
+    /* Doubles as the search field's resting fill, so the solid `--border` would
+       read as a heavy slab across the top. Thinned, it matches our own inputs
+       and leaves the category dividers as hairlines. */
+    --color-border: color-mix(in oklab, var(--border) 45%, transparent);
+    --border-radius: var(--radius);
+  }
+
+  /* Tailwind v4 resets buttons to the default cursor. Anything clickable gets
+     the hand back, and anything disabled keeps the not-allowed cursor. */
+  button:not(:disabled),
+  [role='button']:not([aria-disabled='true']),
+  a[href],
+  label[for],
+  summary,
+  select:not(:disabled),
+  input[type='checkbox']:not(:disabled),
+  input[type='radio']:not(:disabled) {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  [role='button'][aria-disabled='true'] {
+    cursor: not-allowed;
+  }
+
+  /* A text field marks focus with its own 1px border, so the offset ring would
+     just be a second, fatter outline around it. */
+  input:focus-visible,
+  textarea:focus-visible {
+    outline: none;
+  }
+
+  /* Chrome paints an opaque slab over an autofilled field, which kills the
+     glass and swallows the leading icon. Clipping the background to the text
+     keeps the field transparent; the long transition stops the slab flashing
+     back on blur. `-webkit-text-fill-color` is the only way to recolour it. */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  input:-webkit-autofill:active {
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: var(--foreground);
+    caret-color: var(--foreground);
+    transition: background-color 100000s ease-in-out 0s;
+  }
+}
+
+@layer components {
+  /* A side sheet slides in from the edge it is anchored to; the scrim fades. */
+  .sheet-enter {
+    animation: sheet-enter 200ms ease-out;
+  }
+
+  .scrim-enter {
+    animation: scrim-enter 200ms ease-out;
+  }
+
+  /* A tooltip fades and scales up from the edge it is anchored to. */
+  .tooltip-enter {
+    animation: tooltip-enter 120ms ease-out;
+  }
+
+  /* ---- Sign-in canvas ------------------------------------------------- */
+  /* The base is a radial gradient — a bright sky in light, a deep one in dark —
+     with a glow that breathes over it, three blurred orbs on long orbits, and
+     `WebCanvas` drawing the web on top. All of it sits on negative z-indexes so
+     the card can blur it without catching itself. */
+  .auth-canvas {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    background-image: radial-gradient(
+      ellipse 120% 100% at 50% 0%,
+      var(--auth-space-near),
+      var(--auth-space-far) 72%
+    );
+  }
+
+  .auth-canvas::before {
+    content: '';
+    position: absolute;
+    inset: -25%;
+    z-index: -3;
+    background-image:
+      radial-gradient(38rem 38rem at 18% 22%, var(--auth-nebula-a), transparent 64%),
+      radial-gradient(34rem 34rem at 82% 78%, var(--auth-nebula-b), transparent 64%);
+    filter: blur(20px);
+    animation: auth-drift 28s ease-in-out infinite alternate;
+  }
+
+  /* Decorative blobs — `auth-layout` renders three, aria-hidden. */
+  .auth-orb {
+    position: absolute;
+    z-index: -2;
+    border-radius: 9999px;
+    filter: blur(72px);
+    will-change: transform;
+  }
+
+  .auth-orb-a {
+    top: -6rem;
+    left: -4rem;
+    width: 26rem;
+    height: 26rem;
+    background-color: var(--auth-orb-a);
+    animation: auth-float-a 22s ease-in-out infinite alternate;
+  }
+
+  .auth-orb-b {
+    right: -6rem;
+    bottom: -8rem;
+    width: 30rem;
+    height: 30rem;
+    background-color: var(--auth-orb-b);
+    animation: auth-float-b 28s ease-in-out infinite alternate;
+  }
+
+  .auth-orb-c {
+    top: 38%;
+    left: 52%;
+    width: 20rem;
+    height: 20rem;
+    background-color: var(--auth-orb-c);
+    animation: auth-float-c 19s ease-in-out infinite alternate;
+  }
+
+  /* The web from `WebCanvas` — above the nebula and the orbs, still behind the
+     card, which blurs it along with everything else. The mask lets the threads
+     fall away at the edges instead of being cut off by the viewport. */
+  .auth-web {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    width: 100%;
+    height: 100%;
+    -webkit-mask-image: radial-gradient(ellipse at center, #000 45%, transparent 92%);
+    mask-image: radial-gradient(ellipse at center, #000 45%, transparent 92%);
+  }
+
+  /* The theme switch floats over the sky rather than on a card, so it needs its
+     own stacking and its own contrast against whichever sky is up. */
+  .auth-theme-toggle {
+    z-index: 1;
+    color: var(--auth-chrome-fg);
+    background-color: var(--auth-chrome-bg);
+    border: 1px solid var(--auth-chrome-border);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+  }
+
+  /* No :hover rule here — `Button`'s `hover:bg-accent` is a utility and would
+     win the cascade anyway. The hover tint comes from the variant. */
+
+  /* ---- Glass ------------------------------------------------------------ */
+  .auth-glass {
+    background-color: var(--auth-glass);
+    border: 1px solid var(--auth-glass-border);
+    box-shadow:
+      0 24px 60px -20px var(--auth-glass-shadow),
+      inset 0 1px 0 var(--auth-glass-highlight);
+    -webkit-backdrop-filter: blur(28px) saturate(150%);
+    backdrop-filter: blur(28px) saturate(150%);
+  }
+
+  /* Blur only — the fill is set with `bg-[var(--auth-field)]` at the call site,
+     because a utility class always beats this layer and `Input` ships `bg-card`. */
+  .auth-field {
+    -webkit-backdrop-filter: blur(6px);
+    backdrop-filter: blur(6px);
+  }
+
+  /* The brand tile at the top of the card. */
+  .auth-mark {
+    background-image: linear-gradient(140deg, var(--auth-mark-from), var(--auth-mark-to));
+    color: var(--auth-mark-foreground);
+  }
+
+  /* Solid brand fill painted on the element itself, so the label sits on an even
+     colour rather than on whatever the card shows through. `isolation` still opens
+     a stacking context for ::after, the specular band that sweeps on hover. */
+  .auth-submit {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    border: 0;
+    color: var(--auth-mark-foreground);
+    background-image: linear-gradient(
+      180deg,
+      var(--auth-submit-from),
+      var(--auth-submit-to)
+    );
+    box-shadow:
+      0 10px 22px -12px var(--auth-submit-shadow),
+      inset 0 1px 0 var(--auth-submit-sheen);
+    transition:
+      transform 320ms cubic-bezier(0.22, 1, 0.36, 1),
+      box-shadow 320ms ease,
+      filter 320ms ease;
+  }
+
+  .auth-submit::after {
+    content: '';
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: -1;
+    width: 45%;
+    transform: skewX(-18deg) translateX(-180%);
+    background-image: linear-gradient(
+      90deg,
+      transparent,
+      var(--auth-submit-sheen),
+      transparent
+    );
+    transition: transform 750ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .auth-submit:hover:not(:disabled) {
+    transform: translateY(-1px);
+    filter: brightness(1.06);
+    box-shadow:
+      0 14px 26px -12px var(--auth-submit-shadow),
+      inset 0 1px 0 var(--auth-submit-sheen);
+  }
+
+  .auth-submit:hover:not(:disabled)::after {
+    transform: skewX(-18deg) translateX(400%);
+  }
+
+  .auth-submit:active:not(:disabled) {
+    transform: translateY(0) scale(0.99);
+    transition-duration: 120ms;
+  }
+
+  .auth-rise {
+    animation: auth-rise 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+}
+
+@keyframes auth-drift {
+  from {
+    transform: translate3d(-2%, -1%, 0) scale(1);
+  }
+  to {
+    transform: translate3d(2%, 1.5%, 0) scale(1.06);
+  }
+}
+
+@keyframes auth-float-a {
+  from {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    transform: translate3d(7rem, 4rem, 0) scale(1.15);
+  }
+}
+
+@keyframes auth-float-b {
+  from {
+    transform: translate3d(0, 0, 0) scale(1.1);
+  }
+  to {
+    transform: translate3d(-8rem, -5rem, 0) scale(0.95);
+  }
+}
+
+@keyframes auth-float-c {
+  from {
+    transform: translate3d(0, 0, 0) scale(0.9);
+  }
+  to {
+    transform: translate3d(-5rem, 6rem, 0) scale(1.2);
+  }
+}
+
+@keyframes auth-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes sheet-enter {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes scrim-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes tooltip-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
