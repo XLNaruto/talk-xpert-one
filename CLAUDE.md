@@ -1,4 +1,4 @@
-# CLAUDE.md — XpertOne Talk
+# CLAUDE.md — One Talk
 
 Guidance for Claude Code. Modular, **feature-based** architecture — the same
 folder shape and naming as the XpertOne admin portal, with a data layer built
@@ -10,7 +10,7 @@ for realtime chat instead of CRUD screens.
 - **react-router-dom 7** — route objects in `routes/app-routes.tsx`
 - **Zustand** — all client state, including the message cache
 - **socket.io-client** — realtime transport, behind `lib/socket-client.ts`
-- **IndexedDB** (`idb-keyval`) — offline message cache + encrypted session
+- **IndexedDB** (`idb-keyval`) — persisted stores + encrypted session
 - **Tailwind v4 + shadcn/ui** — styling & components
 - **Axios** — HTTP · **Zod** — validation · **react-hook-form** — forms
 - **react-virtuoso** — the virtualised message list
@@ -57,7 +57,7 @@ document, `TALK-IMPLEMENTATION.md` for the rules behind it):
 | `/login` | `features/auth/` | email + password + mandatory `platform` |
 | `/chat` | `features/chat/` | list, thread, composer, groups, media, search |
 
-### People come with names and photos — but there is still no directory
+### People come with names and photos, and there is now a directory
 
 Every person-shaped field carries a `name` and a `photo` **beside** its integer
 id: `sender_name`/`sender_photo` on a message and on its inline `reply_to`,
@@ -73,33 +73,118 @@ talk_user_id }` and `{ talk_user_id, is_online, at }`. `stores/talk-directory-st
 is the cache that closes that gap — every REST read feeds it on the way past, and
 the typing indicator looks a person up there.
 
-What is still missing is a DIRECTORY: nothing lists the account's Talk
-identities. So the pool for a new group is the people we have already seen, plus
-a typed id.
+`GET /talk/contacts` is the DIRECTORY — everyone I may start a chat with,
+alphabetically, with a server-side `search` over the name AND the Talk login,
+`company_id` / `department_id` filters and `limit`/`offset` paging. Reach is read
+live per request and is GRANTED, never assumed, so an empty list is a real answer
+(no grants) rather than a failed read; a row also carries `existing_chat_id`, my
+current direct chat with that person. It is `features/chat/api/use-contacts.ts`,
+and it is what `PeoplePicker` is built on — searching it is a REQUEST, never a
+filter over the loaded page.
 
 `features/chat/lib/talk-directory.ts` remains the single seam that decides how a
 person is WRITTEN — `resolveTalkUser(id, name, photo)`, falling back to
 `Member 42` for a nameless record, and `selfLabel` for yourself. **Change that
 file, not the components.**
 
+### A system message carries its operands, and has no sender
+
+A `system` row has `sender_talk_user_id: null` — it belongs to the conversation,
+not to a person. It answers `body` as a READY-TO-RENDER sentence ("Minato created
+the group and added Draco Employee") **and** `system_data` as the operands it was
+rendered from: `by_talk_user_id`/`by_name`/`by_photo` (the actor), `members[]`
+with the name and photo each person had AT THE TIME, and per-event extras
+(`from`/`to` on a rename).
+
+`features/chat/lib/system-messages.ts` renders from the OPERANDS for the five
+codes it knows (`group_created`, `group_renamed`, `member_added`,
+`member_removed`, `member_left`), because only the client knows who is reading
+and can write "You added Draco". An unrecognised code maps to `systemEvent: null`
+and falls through to the server's sentence — never onto a guessed event. Those
+names also feed `rememberPeople`, so typing and presence still resolve.
+
+### Three pin features, and no two share storage or audience
+
+- **Pin the CHAT in my list** — `PUT /talk/chats/{id}/pin`, private, `chat-list-store`.
+- **Pin a MESSAGE for EVERYONE** — `for_everyone: true` (the server's DEFAULT).
+  The announcement bar, the same for every reader: `message.is_pinned`.
+- **Pin a MESSAGE for ME** — `for_everyone: false`. A private bookmark:
+  `message.is_pinned_for_me`, nobody else's view changes and nobody is notified.
+
+The flag is sent EXPLICITLY in both directions, because omitting it pins for the
+whole chat. `GET /talk/chats/{id}/pins` takes `scope` (`everyone` | `me` | `all`)
+and `usePins` reads `all`, so a message pinned both ways is TWO rows with two
+pinners and two expiries — keyed on `pinKey()`, never on the message id alone.
+`PinnedBar` draws the chat-wide pins ONLY; the sheet holds both and labels the
+private ones. The private pin needs only MEMBERSHIP, so it works in a group you
+left or are muted in. Its two socket events, `talk.message.self_pinned` /
+`self_unpinned`, go to MY OTHER DEVICES and never to the room — no actor to
+compare, so they always bump the pin list.
+
+### The direct-chat block is a WINDOW, not a wall
+
+A blocked person's sends now SUCCEED — stored, receipted, answered 200 — so
+NOTHING may infer "you are blocked" from a send result. Only the other direction
+refuses: a 403 when *I* blocked *them*, which names itself. Creating a direct
+chat with somebody who blocked me succeeds too.
+
+The block is an interval `[blocked_at, unblocked_at)` and unblocking hands back
+NOTHING: messages written while it stood stay hidden from the blocker for good,
+everywhere — thread, search, gallery, pins, preview, unread. So there is no gap
+marker, no placeholder for a suppressed message, and no "load what I missed" to
+build; `personBlockCopy` says so before the user decides. While it stands the
+blocker receives no `talk.message.*` for that chat (an edit to a PRE-block
+message included, so their copy can be stale until the next read), and no
+`talk.chat.created` — that chat turns up as an empty direct thread instead, which
+must render without error. `talk:typing` and read receipts are NOT suppressed.
+This is all the DIRECT block; the group owner's block is untouched.
+
+### The chat row is per VIEWER, and `last_message_at` can be null
+
+`lastMessageAt` / `lastMessagePreview` / `lastMessageSender*` always describe the
+SAME message — the newest one *I* can still see. It is **null** on a chat I
+cleared with nothing newer, and on one nobody has spoken in, so `reorder()` in
+`chat-list-store` sorts those LAST rather than borrowing `createdAt`.
+`unread_count` excludes block-hidden messages, and `GET /talk/unread` is now
+literally the sum of the rows. `upto_message_id` is clamped to the named chat —
+still send an id that belongs to it, and omit it entirely for "mark all read",
+since one id applies to every chat in the call.
+
+### Opening a conversation is ONE round trip
+
+`talk:join { chat_id, with_chat: true }` acks `{ ok, chat }` — the same body
+`GET /talk/chats/{id}` answers — so `joinAndReadChat()` in `chat-api.ts` is how
+`useChat` and a freshly created chat subscribe and render at once. Three ways it
+comes back short (no socket, `ok: false`, no `chat` key) and all three fall back
+to the HTTP read, then re-join. The RECONNECT re-join must stay the pure key
+lookup it is — never `with_chat` there. `talk.chat.created` now carries the whole
+row from the RECIPIENT'S side, so it is inserted straight in; `adoptChat` is only
+the fallback for the null-`chat` race. A creator needs no read-back at all: the
+grant is issued at creation.
+
 ### Things the API cannot do, so the UI does not offer them
 
-- **Starting a chat with a stranger.** `POST /talk/chats/direct` needs a
-  `talk_user_id` and there is still nothing to browse, so `PeoplePicker` offers
-  everyone we have a name for — direct-chat counterparts, plus anyone a member
-  list or a message has named — and a typed-id field. The server drops ids
-  outside the account, so a wrong one is ignored rather than added.
+- **Reaching outside your grants.** `GET /talk/contacts` lists only the companies
+  and departments an administrator granted you, so `PeoplePicker` has nothing to
+  offer a person with no grants — the empty state says to ask an administrator
+  rather than implying a broken read. The type-an-id escape hatch is gone: the
+  directory replaced it, and the server drops ungranted ids anyway.
 - **Jumping to an old search hit.** History pages by id from the newest end, so
   `MessageSearchDialog` opens the hit's conversation instead of scrolling to it.
 - **Retrying a failed attachment.** The `File` does not survive a reload, so a
   failed media send asks for the file again; a failed text send replays as-is.
+- **Telling who blocked me.** Nothing fails and no event fires, by design — the
+  old 403 on a send was a reliable probe and it is gone.
+- **Reading what arrived while I had somebody blocked.** It is hidden for good;
+  an "unblock to catch up" affordance would promise something that cannot happen.
 
 ## Non-negotiable rules
 
 1. **Server data → the feature's `api/` hooks. Client/UI state → Zustand.**
    There are exactly **three** deliberate overlaps, all because the socket has to
    read or mutate them and a list held in a hook's `useState` is unreachable from
-   an event handler: `stores/message-cache-store.ts` (also the offline store),
+   an event handler: `stores/message-cache-store.ts` (in-memory ONLY — never
+   persisted; a reload re-reads from the API),
    `stores/chat-list-store.ts`, and `stores/talk-directory-store.ts` (id → name +
    photo, so the two nameless socket events can still print a person). All three
    **cache only** — the axios call still lives in `features/chat/api/`, which
@@ -126,15 +211,30 @@ file, not the components.**
     feature that cares (`features/chat/hooks/use-message-stream.ts`, mounted once
     by `chat-layout.tsx`). The gateway addresses rooms to the **person**, not to a
     screen, so a second subscription double-handles every event — and you receive
-    an echo of **your own** sends, which is why the cache merges by `id` and by
-    `client_message_id`.
-    Three more rules that are load-bearing and easy to lose:
+    an echo of **your own** sends, which is why the cache merges by `id` — and why
+    it lands an echo of a send STILL IN FLIGHT on that send's optimistic bubble.
+    `client_message_id` goes up with a send and is never echoed back, so a
+    pending row is matched on its sender, text and attachment count instead
+    (`adopt` in `stores/message-cache-store.ts`). Without it the sender watches
+    their own message appear twice until the HTTP response collapses it.
+    Four more rules that are load-bearing and easy to lose:
     - **Fetch, then `talk:join`.** A join with no preceding read is refused; the
       read is what issues the Redis grant. Rooms do **not** survive a reconnect.
     - **Re-join on every `connected`**, first connect included. Skipping it looks
       exactly like a healthy socket that delivers nothing.
-    - **Re-handshake after every token refresh** (`updateSocketToken`). The socket
-      never refreshes its own token and dies silently at the half-hour otherwise.
+    - **Push every rotated token to the socket** (`updateSocketToken`). It emits
+      `talk:auth.token`, which swaps the bearer **in place** — no reconnect, so
+      no lost rooms — and sets `socket.auth` so the next handshake uses it too.
+      Skip it and the socket goes on reporting connected while every write it
+      makes fails 401 from the half-hour onwards.
+    - **Writes go over the socket when it is live, HTTP when it is not.** Every
+      write is bridged: the gateway holds no database, so `talk:message.send` is
+      `POST /talk/chats/:id/messages` one hop away, called with our own bearer,
+      and the ack carries that route's status and body verbatim. `write()` in
+      `chat-api.ts` picks the transport; `socketCall()` owns the ack contract and
+      the single 401 refresh-and-replay. A refusal the route issued (403/404/409)
+      is thrown as-is — only a TRANSPORT failure retries over HTTP.
+      Reads, presigns, hide-chat, the private block and chat-pin stay HTTP only.
 11. **Anything stored locally goes in IndexedDB — never `localStorage`/
     `sessionStorage`.** Persisted stores use `createJSONStorage(createIdbStorage)`
     from `lib/idb-storage` (`createIdbSessionStorage` for anything holding
@@ -223,7 +323,8 @@ src/
 | A DTO → UI mapping | `features/<f>/lib/<f>-mappers.ts` |
 | A date/text formatter | `features/<f>/lib/message-formatters.ts` (chat) or `lib/utils.ts` (app-wide) |
 | Screen state / a submit handler | `features/<f>/hooks/use-<thing>-*.ts` — **not** in the component |
-| A new socket event | name in `features/chat/constants.ts`, handler in `use-message-stream.ts` |
+| A new inbound socket event (a write) | name in `SOCKET_ACTIONS` (`features/chat/constants.ts`), call through `write()` in `chat-api.ts` |
+| A new outbound socket event | name in `SOCKET_EVENTS` (`features/chat/constants.ts`), handler in `use-message-stream.ts` |
 | A way to label a person | `features/chat/lib/talk-directory.ts` — nowhere else |
 | A name for an id with no name in the payload | `stores/talk-directory-store.ts` (typing and presence only) |
 | A file upload | a presign path in `lib/endpoints.ts`, then `uploadFile` from `lib/uploads.ts` |

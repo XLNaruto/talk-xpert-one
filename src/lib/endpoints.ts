@@ -24,6 +24,14 @@ export const ENDPOINTS = {
     me: '/talk/me',
   },
 
+  /**
+   * The directory: every Talk identity of my organisation I am allowed to reach,
+   * alphabetically, with `search`/`company_id`/`department_id` + `limit`/`offset`.
+   * Read LIVE, so a narrowed grant takes effect at once. Its `talk_user_id` is
+   * what `chats.direct` and `chats.group` take.
+   */
+  contacts: '/talk/contacts',
+
   chats: {
     list: '/talk/chats',
     unreadSummary: '/talk/chats/unread-summary',

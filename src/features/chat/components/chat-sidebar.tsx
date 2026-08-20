@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { CheckCheck, Plus, Search, Trash2, X } from 'lucide-react'
+import { CheckCheck, Search, Trash2, UserRoundPlus, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { BrandLogo } from '@/components/common/brand-logo'
@@ -9,6 +9,7 @@ import { useAuthStore } from '@/stores/auth-store'
 import { cn } from '@/lib/utils'
 import { useChatList, type ChatFilter } from '../hooks/use-chat-list'
 import { ChatListItem } from './chat-list-item'
+import { ContactRow } from './contact-row'
 import { SidebarSkeleton } from './sidebar-skeleton'
 import { CreateGroupDialog } from './create-group-dialog'
 import { SidebarAccountBar } from './sidebar-account-bar'
@@ -35,9 +36,11 @@ export function ChatSidebar() {
     closeSearch,
     filter,
     setFilter,
-    totalUnread,
     activeChatId,
     selectChat,
+    setChatPinned,
+    deleteChat,
+    markChatRead,
     selectedIds,
     selectedDirectIds,
     toggleSelected,
@@ -45,6 +48,10 @@ export function ChatSidebar() {
     deleteSelected,
     markAllRead,
     hasSelection,
+    contacts,
+    isDirectoryLoading,
+    openContact,
+    isOpeningContact,
   } = useChatList()
 
   const selfTalkUserId = useAuthStore((s) => s.identity?.talkUserId ?? null)
@@ -56,11 +63,6 @@ export function ChatSidebar() {
         <div className="flex items-center justify-between gap-2">
           <BrandLogo />
           <div className="flex items-center gap-1">
-            {totalUnread > 0 && (
-              <span className="rounded-full bg-primary px-2 py-0.5 text-[11px] font-semibold text-primary-foreground">
-                {totalUnread > 99 ? '99+' : totalUnread}
-              </span>
-            )}
             {/* These moved up from the foot of the list when the profile row
                 took that space — they act on the whole list, so they belong
                 beside "New group" rather than next to your own name. */}
@@ -93,7 +95,9 @@ export function ChatSidebar() {
                 onClick={() => setCreatingGroup(true)}
                 aria-label="New group"
               >
-                <Plus />
+                {/* A bare plus says "add something" and nothing about WHAT — the
+                    person-with-a-plus names the action without the tooltip. */}
+                <UserRoundPlus />
               </Button>
             </Tip>
           </div>
@@ -173,15 +177,15 @@ export function ChatSidebar() {
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
         {isLoading ? (
           <SidebarSkeleton />
-        ) : chats.length === 0 ? (
+        ) : chats.length === 0 && contacts.length === 0 && !isDirectoryLoading ? (
           <EmptyState
             title={search ? 'No matches' : filter === 'unread' ? 'Nothing unread' : 'No conversations yet'}
             description={
               search
-                ? 'Try a different name.'
+                ? 'Try a different name, or ask an administrator for access to more people.'
                 : filter === 'unread'
                   ? 'You are caught up.'
                   : 'Start a group to get talking.'
@@ -189,14 +193,20 @@ export function ChatSidebar() {
             action={
               !search && filter === 'all' ? (
                 <Button size="sm" onClick={() => setCreatingGroup(true)}>
-                  <Plus />
+                  <UserRoundPlus />
                   New group
                 </Button>
               ) : undefined
             }
           />
         ) : (
-          <div className="space-y-1">
+          <div className="space-y-1.5">
+            {/* While searching, the two sources are labelled: the rows above are
+                conversations that exist, the rows below are people who would be
+                a new one. Unlabelled they read as one list and clicking the
+                wrong half is a surprise. */}
+            {search && chats.length > 0 && <SectionLabel>Conversations</SectionLabel>}
+
             {chats.map((chat) => (
               <ChatListItem
                 key={chat.id}
@@ -206,8 +216,32 @@ export function ChatSidebar() {
                 isSelected={hasSelection ? selectedIds.includes(chat.id) : null}
                 onSelect={selectChat}
                 onToggleSelected={toggleSelected}
+                onPin={setChatPinned}
+                onMarkRead={markChatRead}
+                onDelete={deleteChat}
               />
             ))}
+
+            {/* The directory — everyone you MAY start a chat with, matched
+                server-side on the name and the Talk login. Only while a term is
+                in the box; with none, this is the whole organisation. */}
+            {search && (contacts.length > 0 || isDirectoryLoading) && (
+              <>
+                <SectionLabel>People</SectionLabel>
+                {isDirectoryLoading && contacts.length === 0 ? (
+                  <p className="px-2 py-2 text-xs text-muted-foreground">Searching people…</p>
+                ) : (
+                  contacts.map((contact) => (
+                    <ContactRow
+                      key={contact.talkUserId}
+                      contact={contact}
+                      isPending={isOpeningContact}
+                      onOpen={openContact}
+                    />
+                  ))
+                )}
+              </>
+            )}
           </div>
         )}
       </div>
@@ -216,5 +250,13 @@ export function ChatSidebar() {
 
       {isCreatingGroup && <CreateGroupDialog onClose={() => setCreatingGroup(false)} />}
     </aside>
+  )
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="px-2 pt-2 pb-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
+      {children}
+    </p>
   )
 }

@@ -4,10 +4,12 @@ import { formatBytes } from '../lib/chat-labels'
 import { useFilePreviews } from '../hooks/use-file-previews'
 
 /**
- * The picked-but-not-yet-sent files, shown as a scrolling row of thumbnails.
+ * The picked-but-not-yet-sent files, shown as a wrapping grid of thumbnails.
  *
  * An image or a video shows its own first frame, because "IMG_2481.jpg" tells
- * the sender nothing about which photo they just picked.
+ * the sender nothing about which photo they just picked. Tiles wrap onto new
+ * rows rather than scrolling sideways, so every pick stays visible at a glance;
+ * past a few rows the block itself scrolls so it can never eat the composer.
  */
 export function AttachmentStrip({
   files,
@@ -21,7 +23,7 @@ export function AttachmentStrip({
   if (files.length === 0) return null
 
   return (
-    <ul className="mb-2 flex gap-2 overflow-x-auto px-1 pb-1">
+    <ul className="mb-2 flex max-h-52 flex-wrap gap-2 overflow-y-auto px-1 pb-1">
       {files.map((file, index) => (
         <AttachmentTile
           key={`${file.name}-${file.size}-${index}`}
@@ -82,8 +84,8 @@ function AttachmentTile({
         onClick={onRemove}
         aria-label={`Remove ${file.name}`}
         // Inside the tile, not straddling its corner: the strip scrolls
-        // horizontally, and `overflow-x` clips vertically too — an overhanging
-        // button loses its top half.
+        // vertically once it is several rows tall, and an overhanging button
+        // would be clipped on the first and last row.
         className="absolute top-2 right-2 rounded-full border border-border bg-card/90 p-0.5 text-muted-foreground shadow-sm hover:text-destructive"
       >
         <X className="size-3" />

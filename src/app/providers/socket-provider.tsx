@@ -22,8 +22,9 @@ import { logger } from '@/lib/logger'
  * three things the connection itself needs:
  *
  *  1. connect while signed in, disconnect on sign-out;
- *  2. re-handshake whenever the access token rotates — the socket does not
- *     refresh its own token, and would otherwise die silently at the half-hour;
+ *  2. hand the socket every rotated access token — it does not refresh its own,
+ *     and would otherwise go on reporting connected while every write it makes
+ *     fails 401 from the half-hour onwards;
  *  3. refresh once and reconnect when a handshake is refused as unauthorized.
  *
  * The realtime origin comes from `GET /config`, so this re-runs once that read
@@ -48,9 +49,11 @@ export function SocketProvider({ children }: { children: ReactNode }) {
 
     connectSocket()
 
-    // A rotated token means the socket is holding a dead one. Re-handshake with
-    // the new one rather than waiting for the connection to lapse.
-    const stopWatchingRotation = onAccessTokenRotated(updateSocketToken)
+    // A rotated token means the socket is holding a dead one. The bearer is
+    // replaced IN PLACE over `talk:auth.token`, so the rooms and the presence
+    // established under this connection survive; only a refusal falls back to
+    // reconnecting.
+    const stopWatchingRotation = onAccessTokenRotated((token) => void updateSocketToken(token))
 
     // A refused handshake is answered by refreshing; the reconnect then happens
     // through the rotation listener above, so it is not repeated here.

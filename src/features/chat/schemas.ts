@@ -4,11 +4,12 @@ import { requiredText } from '@/lib/validation'
 
 /**
  * A message needs text, attachments, or both — the API answers 400 for neither,
- * so the composer says so before spending a request.
+ * so the composer says so before spending a request. The body itself is
+ * unbounded: the server sets whatever ceiling exists, not the composer.
  */
 export const messageInputSchema = z
   .object({
-    body: z.string().max(4000, 'That message is too long — keep it under 4000 characters'),
+    body: z.string(),
     files: z
       .array(
         z

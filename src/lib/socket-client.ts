@@ -2,6 +2,8 @@ import { io, type Socket } from 'socket.io-client'
 import { socketUrl } from '@/config/env'
 import { useAuthStore } from '@/stores/auth-store'
 import { getAppConfig } from '@/stores/config-store'
+import { SocketAckError } from './api-error'
+import { refreshAccessToken } from './auth-refresh'
 import { resolveRealtimeTarget, type RealtimeTarget } from './config-mappers'
 import { logger } from './logger'
 import type { Id } from '@/types/api'
@@ -142,16 +144,59 @@ export function isSocketConnected(): boolean {
 }
 
 /**
- * Re-handshake with a rotated access token.
+ * Hand the socket a rotated access token.
  *
- * Called after every refresh. Without it the socket keeps whatever 30-minute
- * token it opened with and dies silently at the half-hour, with no request in
- * flight to hang a retry on.
+ * Called after EVERY refresh, and skipping it is the single most confusing
+ * failure in this contract: the connection keeps whatever 30-minute token it
+ * handshook with, still reports connected, and every write starts failing 401
+ * about half an hour in with no request in flight to hang a retry on.
+ *
+ * Two things are updated and they do different jobs:
+ *
+ *  - `talk:auth.token` replaces the bearer on the LIVE socket, in place. No
+ *    reconnect, so no lost rooms and no catch-up — which is why this is
+ *    preferred over the disconnect/connect it replaced.
+ *  - `socket.auth` fixes the NEXT handshake, so an automatic reconnect does not
+ *    dial with the dead token.
+ *
+ * The gateway re-verifies the replacement with the handshake's own checks and
+ * refuses a token naming a different person, so a failure here is answered by
+ * reconnecting outright rather than by carrying on.
  */
-export function updateSocketToken(token: string) {
-  if (!socket) return
-  socket.auth = { token }
-  socket.disconnect().connect()
+export function updateSocketToken(token: string): Promise<void> {
+  const active = socket
+  if (!active) return Promise.resolve()
+
+  // The next handshake, first — a reconnect may fire before the ack lands.
+  active.auth = { token }
+  if (!active.connected) {
+    // Down already: nothing to replace in place, and this may be the recovery
+    // from a handshake refused as unauthorized — so dial again with the new one.
+    active.connect()
+    return Promise.resolve()
+  }
+
+  return new Promise((resolve) => {
+    active
+      .timeout(ACK_TIMEOUT_MS)
+      .emit(
+        'talk:auth.token',
+        { token },
+        (timeout: Error | null, res: { ok?: boolean } | undefined) => {
+          if (!timeout && res?.ok) {
+            logger.debug('socket bearer replaced in place')
+            resolve()
+            return
+          }
+          // Rooms are lost by this, so it is the fallback and not the path:
+          // the reconnect re-handshakes with `socket.auth`, and the `connected`
+          // catch-up re-reads and re-joins.
+          logger.warn('talk:auth.token refused, reconnecting instead', timeout ?? res)
+          active.disconnect().connect()
+          resolve()
+        },
+      )
+  })
 }
 
 export function disconnectSocket() {
@@ -164,6 +209,104 @@ export function disconnectSocket() {
   socket = null
 }
 
+/* ---------------------------------------------------------------- */
+/* Writes over the socket — the ack contract                         */
+/* ---------------------------------------------------------------- */
+
+/**
+ * How long to wait for an ack.
+ *
+ * The gateway gives the REST route it bridges to 15 s before answering `503`,
+ * so anything past that is the socket itself being gone rather than the route
+ * being slow.
+ */
+const ACK_TIMEOUT_MS = 20_000
+
+/**
+ * Every bridged inbound event answers this, and only this.
+ *
+ * `status` is the HTTP status the underlying route returned and `data` is its
+ * response body byte-for-byte, so the same error handling works for both
+ * transports — the gateway holds no database and is literally calling the route
+ * one hop away with our own bearer token.
+ */
+export type TalkAck<T> =
+  | { ok: true; status: number; data: T }
+  | { ok: false; status: number; error: { code?: string; message?: string; details?: unknown } }
+
+/**
+ * Whether a write should go over the socket at all.
+ *
+ * False on a deployment with no realtime service, and false mid-reconnect — in
+ * both cases the caller falls back to HTTP, which is the same code path on the
+ * server and therefore not a degraded one.
+ */
+export function canSendOverSocket(): boolean {
+  return socket?.connected ?? false
+}
+
+/**
+ * Emit a bridged event and resolve its response body.
+ *
+ * Rejects with a `SocketAckError` carrying the route's own status and error
+ * envelope, so a screen above this cannot tell whether HTTP or the socket ran.
+ *
+ * A `401` means the access token expired underneath a socket that still looks
+ * healthy: refresh once, push the new bearer in place, replay once. A second
+ * `401` is a real one and is thrown.
+ */
+export async function socketCall<T>(
+  event: string,
+  payload: Record<string, unknown>,
+  retried = false,
+): Promise<T> {
+  const active = socket
+  if (!active?.connected) throw new SocketAckError(0, { code: 'OFFLINE', message: 'No connection' })
+
+  const ack = await new Promise<TalkAck<T>>((resolve, reject) => {
+    active
+      .timeout(ACK_TIMEOUT_MS)
+      .emit(event, payload, (timeout: Error | null, res: TalkAck<T> | undefined) => {
+        if (timeout || !res) {
+          reject(
+            new SocketAckError(0, {
+              code: 'TIMEOUT',
+              message: 'The server did not answer. Check your connection and try again.',
+            }),
+          )
+          return
+        }
+        resolve(res)
+      })
+  })
+
+  if (ack.ok) return ack.data
+
+  if (ack.status === 401 && !retried) {
+    const token = await refreshAccessToken()
+    await updateSocketToken(token)
+    return socketCall<T>(event, payload, true)
+  }
+
+  throw new SocketAckError(ack.status, ack.error)
+}
+
+/**
+ * What a join answers.
+ *
+ * `chat` is only ever present when the join asked for it with `with_chat`, and
+ * even then it is OPTIONAL: the gateway reads the chat as a favour, so a read
+ * that failed still leaves the subscription standing and simply omits the key.
+ * It is left UNTYPED here because this file knows nothing about chat shapes —
+ * `chat-api.ts` maps it with the same mapper `GET /talk/chats/:id` goes through,
+ * which is exactly what the payload is a copy of.
+ */
+export interface JoinResult {
+  ok: boolean
+  /** The chat row, built from OUR side, when `withChat` was asked for. */
+  chat: unknown | null
+}
+
 /**
  * Join a chat's room, so its `talk.message.*`, `talk.member.*` and
  * `talk.typing.*` events reach us.
@@ -173,20 +316,34 @@ export function disconnectSocket() {
  * already proves membership and this is a key lookup against it.
  *
  * **Fetch first, then join** — a join with no preceding read is refused. Resolves
- * false on `not permitted`, which means the grant lapsed: re-read the chat (that
- * re-issues it) and retry once.
+ * `ok: false` on `not permitted`, which means the grant lapsed: re-read the chat
+ * (that re-issues it) and retry once.
+ *
+ * `withChat` opts into the chat body riding back on the ack, so OPENING a
+ * conversation is one round trip instead of a read followed by a join. Two
+ * exceptions, both deliberate:
+ *
+ *  - the CREATOR of a chat needs no read first — the grant is issued at creation
+ *    — so this is the whole opening sequence for them;
+ *  - the reconnect re-join must NOT ask for it. That path issues one join per
+ *    open chat and is a pure key lookup by design; a read per room would turn a
+ *    reconnect into a stampede.
  */
-export function joinChatRoom(chatId: Id): Promise<boolean> {
+export function joinChatRoom(chatId: Id, withChat = false): Promise<JoinResult> {
   wantedRooms.add(chatId)
   const active = socket
-  if (!active?.connected) return Promise.resolve(false)
+  if (!active?.connected) return Promise.resolve({ ok: false, chat: null })
 
   return new Promise((resolve) => {
-    active.emit('talk:join', { chat_id: chatId }, (res: { ok?: boolean } | undefined) => {
-      const ok = Boolean(res?.ok)
-      if (!ok) logger.warn('talk:join refused', chatId, res)
-      resolve(ok)
-    })
+    active.emit(
+      'talk:join',
+      withChat ? { chat_id: chatId, with_chat: true } : { chat_id: chatId },
+      (res: { ok?: boolean; chat?: unknown } | undefined) => {
+        const ok = Boolean(res?.ok)
+        if (!ok) logger.warn('talk:join refused', chatId, res)
+        resolve({ ok, chat: res?.chat ?? null })
+      },
+    )
   })
 }
 
@@ -208,6 +365,7 @@ export function leaveChatRoom(chatId: Id) {
  */
 export async function rejoinChatRooms(): Promise<void> {
   const rooms = [...wantedRooms]
+  // No `with_chat` here: one join per open chat, and each one is a key lookup.
   await Promise.all(rooms.map((chatId) => joinChatRoom(chatId)))
 }
 

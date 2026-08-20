@@ -1,14 +1,23 @@
 import { apiClient } from '@/lib/api-client'
+import { SocketAckError } from '@/lib/api-error'
 import { ENDPOINTS } from '@/lib/endpoints'
+import { canSendOverSocket, joinChatRoom, socketCall } from '@/lib/socket-client'
 import { ATTACHMENT_CONTENT_TYPES, AVATAR_CONTENT_TYPES, uploadFile } from '@/lib/uploads'
 import { rememberPeople } from '@/stores/talk-directory-store'
 import type { Id, ListPage, MessagePage } from '@/types/api'
-import { CHAT_PAGE_SIZE, MESSAGE_PAGE_SIZE } from '../constants'
+import {
+  CHAT_PAGE_SIZE,
+  CONTACT_PAGE_SIZE,
+  MESSAGE_PAGE_SIZE,
+  PIN_PAGE_SIZE,
+  SOCKET_ACTIONS,
+} from '../constants'
 import {
   toBlockedPerson,
   toChat,
   toChatMember,
   toChatMessage,
+  toContact,
   toMessageMedia,
   toMessageReceipt,
   toMessageSearchHit,
@@ -17,6 +26,7 @@ import {
   type BlockedPersonDto,
   type ChatDto,
   type ChatMemberDto,
+  type ContactDto,
   type MessageDto,
   type MessageMediaDto,
   type MessageReceiptDto,
@@ -27,6 +37,7 @@ import {
 import {
   peopleInBlock,
   peopleInChat,
+  peopleInContact,
   peopleInMember,
   peopleInMessage,
   peopleInPin,
@@ -40,6 +51,8 @@ import type {
   ChatListQuery,
   ChatMember,
   ChatMessage,
+  Contact,
+  ContactQuery,
   CreateGroupInput,
   MediaKind,
   MessageMedia,
@@ -47,6 +60,7 @@ import type {
   MessageSearchHit,
   OutgoingMedia,
   PinnedMessage,
+  PinScope,
   Presence,
   SendMessageInput,
   UpdateChatInput,
@@ -62,6 +76,71 @@ import type {
 /** Drop undefined so axios doesn't serialise `?search=undefined`. */
 function params(record: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(record).filter(([, v]) => v !== undefined))
+}
+
+/* ---------------------------------------------------------------- */
+/* Writes: the socket when it is live, HTTP when it is not           */
+/* ---------------------------------------------------------------- */
+
+/**
+ * Run a write over whichever transport is available.
+ *
+ * These are the SAME code path on the server: the gateway holds no database, so
+ * an inbound event is the REST route one hop away, called with our own bearer
+ * token, and the ack carries that route's status and body verbatim. So the
+ * socket is preferred — one transport for the gesture and its consequence, one
+ * failure mode, no round trip through a second connection — and HTTP is not a
+ * degraded fallback but the identical operation.
+ *
+ * `overHttp` runs when there is no live socket (a deployment with no realtime
+ * service, or a moment mid-reconnect) and when the emit failed for TRANSPORT
+ * reasons — no ack, or the socket dropped in flight. A refusal the route
+ * actually issued (`403`, `404`, `409`, …) is thrown as-is: replaying it over
+ * HTTP would only be told the same thing.
+ */
+async function write<TAck, TResult>(
+  event: string,
+  payload: Record<string, unknown>,
+  fromAck: (data: TAck) => TResult,
+  overHttp: () => Promise<TResult>,
+): Promise<TResult> {
+  if (!canSendOverSocket()) return overHttp()
+  try {
+    return fromAck(await socketCall<TAck>(event, params(payload)))
+  } catch (error) {
+    if (error instanceof SocketAckError && error.status === 0) return overHttp()
+    throw error
+  }
+}
+
+/* ---------------------------------------------------------------- */
+/* Contacts — the directory                                          */
+/* ---------------------------------------------------------------- */
+
+/**
+ * People I may start a chat with, alphabetically.
+ *
+ * `search` must be server-side: this pages, so filtering the page in the browser
+ * would search the thirty rows we happen to hold rather than the organisation.
+ *
+ * Reach is read LIVE per request and is granted, never assumed — an empty list
+ * means an administrator has granted me nobody, not that the read failed.
+ */
+export async function fetchContacts(query: ContactQuery = {}): Promise<ListPage<Contact>> {
+  const res = await apiClient.get<{ items: ContactDto[]; total: number }>(ENDPOINTS.contacts, {
+    params: params({
+      search: query.search?.trim() || undefined,
+      company_id: query.companyId,
+      department_id: query.departmentId,
+      limit: query.limit ?? CONTACT_PAGE_SIZE,
+      offset: query.offset ?? 0,
+    }),
+  })
+  const items = (res.data.items ?? []).map(toContact)
+  // The one read that names people we have never messaged — so typing and
+  // presence can print a name for someone whose first message is still to come.
+  rememberPeople(items.flatMap(peopleInContact))
+  return { items, total: res.data.total ?? 0 }
 }
 
 /* ---------------------------------------------------------------- */
@@ -104,48 +183,101 @@ export async function fetchChat(chatId: Id): Promise<Chat> {
   return chat
 }
 
+/**
+ * Subscribe to a chat AND read it in ONE round trip.
+ *
+ * `talk:join` with `with_chat` answers the same body `GET /talk/chats/:id`
+ * would, built from our own side, so opening a conversation costs one hop
+ * instead of two. Three ways it can come back short, and all three mean the
+ * same thing to a caller — read it over HTTP instead:
+ *
+ *  - no live socket at all;
+ *  - the join was REFUSED (`ok: false`), which means the grant lapsed: a read
+ *    re-issues it, and `joinAll` retries the join afterwards;
+ *  - the join stood but the read behind it failed, so the ack carried no `chat`.
+ */
+export async function joinAndReadChat(chatId: Id): Promise<Chat | null> {
+  if (!canSendOverSocket()) return null
+  const { chat } = await joinChatRoom(chatId, true)
+  if (!chat) return null
+  const mapped = toChat(chat as ChatDto)
+  rememberPeople(peopleInChat(mapped))
+  return mapped
+}
+
 export async function fetchUnreadSummary(): Promise<number> {
   const res = await apiClient.get<{ total_unread?: number }>(ENDPOINTS.chats.unreadSummary)
   return res.data.total_unread ?? 0
 }
 
-/** Idempotent — answers the existing chat when there already is one. */
+/**
+ * Idempotent — answers the existing chat when there already is one, which is
+ * why tapping a contact never has to know whether it is the first time.
+ */
 export async function openDirectChat(
   talkUserId: Id,
 ): Promise<{ chatId: Id; created: boolean }> {
-  const res = await apiClient.post<{ chat_id: number; created?: boolean }>(
-    ENDPOINTS.chats.direct,
+  type Ack = { chat_id: number; created?: boolean }
+  return write<Ack, { chatId: Id; created: boolean }>(
+    SOCKET_ACTIONS.chatCreateDirect,
     { talk_user_id: talkUserId },
+    (data) => ({ chatId: data.chat_id, created: data.created ?? false }),
+    async () => {
+      const res = await apiClient.post<Ack>(ENDPOINTS.chats.direct, {
+        talk_user_id: talkUserId,
+      })
+      return { chatId: res.data.chat_id, created: res.data.created ?? false }
+    },
   )
-  return { chatId: res.data.chat_id, created: res.data.created ?? false }
 }
 
 export async function createGroup(input: CreateGroupInput): Promise<{ chatId: Id }> {
-  const res = await apiClient.post<{ chat_id?: number; id?: number }>(ENDPOINTS.chats.group, {
+  type Ack = { chat_id?: number; id?: number }
+  const body = {
     name: input.name,
     description: input.description ?? undefined,
     avatar_url: input.avatarUrl ?? undefined,
     company_id: input.companyId ?? undefined,
     talk_user_ids: input.talkUserIds,
-  })
-  return { chatId: res.data.chat_id ?? res.data.id ?? 0 }
+  }
+  return write<Ack, { chatId: Id }>(
+    SOCKET_ACTIONS.chatCreateGroup,
+    body,
+    (data) => ({ chatId: data.chat_id ?? data.id ?? 0 }),
+    async () => {
+      const res = await apiClient.post<Ack>(ENDPOINTS.chats.group, params(body))
+      return { chatId: res.data.chat_id ?? res.data.id ?? 0 }
+    },
+  )
 }
 
 /** Rename / re-describe / re-picture a group. Owner only, groups only. */
 export async function updateChat(chatId: Id, input: UpdateChatInput): Promise<void> {
-  await apiClient.patch(
-    ENDPOINTS.chats.update(chatId),
-    params({
-      name: input.name,
-      description: input.description,
-      avatar_url: input.avatarUrl,
-    }),
+  const changes = {
+    name: input.name,
+    description: input.description,
+    avatar_url: input.avatarUrl,
+  }
+  await write<unknown, void>(
+    SOCKET_ACTIONS.chatUpdate,
+    { chat_id: chatId, ...changes },
+    () => undefined,
+    async () => {
+      await apiClient.patch(ENDPOINTS.chats.update(chatId), params(changes))
+    },
   )
 }
 
 /** Disband a group for EVERYONE. Owner only, and the only such deletion in Talk. */
 export async function disbandChat(chatId: Id): Promise<void> {
-  await apiClient.delete(ENDPOINTS.chats.disband(chatId))
+  await write<unknown, void>(
+    SOCKET_ACTIONS.chatDelete,
+    { chat_id: chatId },
+    () => undefined,
+    async () => {
+      await apiClient.delete(ENDPOINTS.chats.disband(chatId))
+    },
+  )
 }
 
 /**
@@ -161,12 +293,25 @@ export async function deleteChatsForMe(chatIds: Id[]): Promise<void> {
  *
  * This clears my badge AND turns the senders' ticks blue. Without
  * `uptoMessageId` it means each chat's newest message, which is what "mark as
- * read" means.
+ * read" means — and that is the only correct form for a bulk "mark all read",
+ * because one id applies to EVERY chat named in the call.
+ *
+ * The server now CLAMPS `uptoMessageId` to a message of the named chat, so an id
+ * from another thread can no longer park a read frontier past ids that do not
+ * exist yet and pin the chat at zero unread for good. Send an id that belongs to
+ * the chat anyway: clamping is a backstop, not a feature.
  */
 export async function markChatsRead(chatIds: Id[], uptoMessageId?: Id): Promise<void> {
-  await apiClient.post(
-    ENDPOINTS.chats.read,
-    params({ chat_ids: chatIds, upto_message_id: uptoMessageId }),
+  await write<unknown, void>(
+    SOCKET_ACTIONS.messageRead,
+    { chat_ids: chatIds, upto_message_id: uptoMessageId },
+    () => undefined,
+    async () => {
+      await apiClient.post(
+        ENDPOINTS.chats.read,
+        params({ chat_ids: chatIds, upto_message_id: uptoMessageId }),
+      )
+    },
   )
 }
 
@@ -199,16 +344,37 @@ export async function fetchMembers(chatId: Id): Promise<ChatMember[]> {
 
 /** Owner only. Ids that aren't Talk identities of this account are dropped. */
 export async function addMembers(chatId: Id, talkUserIds: Id[]): Promise<void> {
-  await apiClient.post(ENDPOINTS.members.add(chatId), { talk_user_ids: talkUserIds })
+  await write<unknown, void>(
+    SOCKET_ACTIONS.memberAdd,
+    { chat_id: chatId, talk_user_ids: talkUserIds },
+    () => undefined,
+    async () => {
+      await apiClient.post(ENDPOINTS.members.add(chatId), { talk_user_ids: talkUserIds })
+    },
+  )
 }
 
 /** Anyone may leave — except the owner, who disbands instead. */
 export async function leaveChat(chatId: Id): Promise<void> {
-  await apiClient.post(ENDPOINTS.members.leave(chatId))
+  await write<unknown, void>(
+    SOCKET_ACTIONS.memberLeave,
+    { chat_id: chatId },
+    () => undefined,
+    async () => {
+      await apiClient.post(ENDPOINTS.members.leave(chatId))
+    },
+  )
 }
 
 export async function removeMember(chatId: Id, talkUserId: Id): Promise<void> {
-  await apiClient.delete(ENDPOINTS.members.remove(chatId, talkUserId))
+  await write<unknown, void>(
+    SOCKET_ACTIONS.memberRemove,
+    { chat_id: chatId, talk_user_id: talkUserId },
+    () => undefined,
+    async () => {
+      await apiClient.delete(ENDPOINTS.members.remove(chatId, talkUserId))
+    },
+  )
 }
 
 /**
@@ -220,7 +386,14 @@ export async function setMemberBlocked(
   talkUserId: Id,
   blocked: boolean,
 ): Promise<void> {
-  await apiClient.put(ENDPOINTS.members.block(chatId, talkUserId), { blocked })
+  await write<unknown, void>(
+    SOCKET_ACTIONS.memberBlock,
+    { chat_id: chatId, talk_user_id: talkUserId, blocked },
+    () => undefined,
+    async () => {
+      await apiClient.put(ENDPOINTS.members.block(chatId, talkUserId), { blocked })
+    },
+  )
 }
 
 /* ---------------------------------------------------------------- */
@@ -264,20 +437,40 @@ export async function fetchMessages(
  * answers the SAME message instead of posting a second bubble. It is the single
  * most visible bug a chat can have and the server can only prevent it if we
  * supply the id, so it is required by `SendMessageInput` rather than optional.
+ *
+ * Sending to somebody who has BLOCKED me SUCCEEDS — the message is stored and
+ * acknowledged like any other, it simply never reaches them. So a send result
+ * says nothing about who blocked me, and nothing here may infer it. The only
+ * refusal left is the other direction: a 403 when *I* blocked *them*.
  */
 export async function sendMessage(input: SendMessageInput): Promise<ChatMessage> {
-  const res = await apiClient.post<MessageDto>(
-    ENDPOINTS.messages.send(input.chatId),
-    params({
-      body: input.body?.trim() || undefined,
-      media: input.media?.length ? input.media.map(toOutgoingMediaDto) : undefined,
-      reply_to_message_id: input.replyToMessageId ?? undefined,
-      client_message_id: input.clientMessageId,
-    }),
+  const body = {
+    body: input.body?.trim() || undefined,
+    media: input.media?.length ? input.media.map(toOutgoingMediaDto) : undefined,
+    reply_to_message_id: input.replyToMessageId ?? undefined,
+    client_message_id: input.clientMessageId,
+  }
+
+  const received = (dto: MessageDto) => {
+    const message = toChatMessage(dto)
+    rememberPeople(peopleInMessage(message))
+    return message
+  }
+
+  // The bytes never travel here either way — they went straight to storage
+  // during the presign, and `media[].file_url` is the key that came back.
+  return write<MessageDto, ChatMessage>(
+    SOCKET_ACTIONS.messageSend,
+    { chat_id: input.chatId, ...body },
+    received,
+    async () => {
+      const res = await apiClient.post<MessageDto>(
+        ENDPOINTS.messages.send(input.chatId),
+        params(body),
+      )
+      return received(res.data)
+    },
   )
-  const message = toChatMessage(res.data)
-  rememberPeople(peopleInMessage(message))
-  return message
 }
 
 function toOutgoingMediaDto(media: OutgoingMedia) {
@@ -294,18 +487,46 @@ function toOutgoingMediaDto(media: OutgoingMedia) {
   })
 }
 
-/** Sender only — not the owner, whose authority is over membership. */
+/**
+ * Sender only — not the owner, whose authority is over membership.
+ *
+ * The two transports answer different shapes for this one: HTTP returns the
+ * whole message, the ack returns `{ message_id, edited_at }`. Both are narrowed
+ * to what an edit actually changes, so the caller does not have to care.
+ */
+export interface EditedMessage {
+  messageId: Id
+  body: string | null
+  editedAt: string
+}
+
 export async function editMessage(
   chatId: Id,
   messageId: Id,
   body: string,
-): Promise<ChatMessage> {
-  const res = await apiClient.patch<MessageDto>(ENDPOINTS.messages.edit(chatId, messageId), {
-    body,
-  })
-  const message = toChatMessage(res.data)
-  rememberPeople(peopleInMessage(message))
-  return message
+): Promise<EditedMessage> {
+  type Ack = { message_id?: number; edited_at?: string }
+  return write<Ack, EditedMessage>(
+    SOCKET_ACTIONS.messageEdit,
+    { chat_id: chatId, message_id: messageId, body },
+    (data) => ({
+      messageId: data.message_id ?? messageId,
+      body,
+      editedAt: data.edited_at ?? new Date().toISOString(),
+    }),
+    async () => {
+      const res = await apiClient.patch<MessageDto>(ENDPOINTS.messages.edit(chatId, messageId), {
+        body,
+      })
+      const message = toChatMessage(res.data)
+      rememberPeople(peopleInMessage(message))
+      return {
+        messageId: message.id,
+        body: message.body,
+        editedAt: message.editedAt ?? new Date().toISOString(),
+      }
+    },
+  )
 }
 
 /**
@@ -320,33 +541,98 @@ export async function deleteMessages(
   messageIds: Id[],
   forEveryone = false,
 ): Promise<void> {
-  await apiClient.post(ENDPOINTS.messages.delete(chatId), {
-    message_ids: messageIds,
-    for_everyone: forEveryone,
-  })
+  await write<unknown, void>(
+    SOCKET_ACTIONS.messageDelete,
+    { chat_id: chatId, message_ids: messageIds, for_everyone: forEveryone },
+    () => undefined,
+    async () => {
+      await apiClient.post(ENDPOINTS.messages.delete(chatId), {
+        message_ids: messageIds,
+        for_everyone: forEveryone,
+      })
+    },
+  )
 }
 
-/** Pins at the top of the thread for EVERYONE — not the same as pinning a chat. */
+/**
+ * Pin a message — for the whole chat, or only for me.
+ *
+ * `forEveryone: true` is the announcement bar every participant sees.
+ * `forEveryone: false` is a PRIVATE bookmark: nobody else's view changes, nobody
+ * else is notified, and it neither sets nor clears the chat-wide pin. The two
+ * are separate storage, so the same message can carry both.
+ *
+ * It is sent explicitly in both directions because the server DEFAULTS to
+ * `true` — a private pin that forgot the flag would pin for the whole chat.
+ *
+ * `expiresAt` behaves the same either way, and both kinds are IDEMPOTENT:
+ * re-pinning is how an expiry is extended. A private pin needs only MEMBERSHIP,
+ * so it is offered in a group you have left or one you are muted in, where the
+ * chat-wide pin is refused.
+ */
 export async function setMessagePinned(
   chatId: Id,
   messageId: Id,
   pinned: boolean,
-  expiresAt?: string,
+  { expiresAt, forEveryone = true }: { expiresAt?: string; forEveryone?: boolean } = {},
 ): Promise<void> {
-  await apiClient.put(
-    ENDPOINTS.messages.pin(chatId, messageId),
-    params({ pinned, expires_at: expiresAt }),
+  // One event for all four outcomes: `pinned` picks the direction and
+  // `for_everyone` picks the audience, so the room hears
+  // `talk.message.pinned`/`unpinned` or my other devices hear
+  // `talk.message.self_pinned`/`self_unpinned`.
+  await write<unknown, void>(
+    SOCKET_ACTIONS.messagePin,
+    {
+      chat_id: chatId,
+      message_id: messageId,
+      pinned,
+      for_everyone: forEveryone,
+      expires_at: expiresAt,
+    },
+    () => undefined,
+    async () => {
+      await apiClient.put(
+        ENDPOINTS.messages.pin(chatId, messageId),
+        params({ pinned, for_everyone: forEveryone, expires_at: expiresAt }),
+      )
+    },
   )
 }
 
-/** The pin bar: live, unexpired pins, newest first. */
-export async function fetchPins(chatId: Id): Promise<PinnedMessage[]> {
-  const res = await apiClient.get<{ items: PinnedMessageDto[] }>(
+/**
+ * The pinned messages of a chat: live, unexpired pins, newest PIN first — the
+ * order is when somebody decided a message mattered, not when it was written.
+ *
+ * Each row carries the message itself, so the sheet renders in one call. It obeys
+ * MY history exactly as the thread does: a pin whose message I deleted for
+ * myself, or which sits before I cleared the chat, or which was written while I
+ * had the sender blocked, is absent from both the page and `total` — even for a
+ * chat-wide pin, and even for one I set myself.
+ *
+ * `scope` picks the audience: `everyone` for the chat-wide bar, `me` for my
+ * private bookmarks, `all` for both. Under `all` a message pinned BOTH ways
+ * comes back TWICE — two rows, two pinners, two expiries — so a caller keys on
+ * the pair rather than on the message id.
+ */
+export async function fetchPins(
+  chatId: Id,
+  query: { scope?: PinScope; limit?: number; offset?: number } = {},
+): Promise<ListPage<PinnedMessage>> {
+  const res = await apiClient.get<{ items: PinnedMessageDto[]; total: number }>(
     ENDPOINTS.messages.pins(chatId),
+    {
+      params: params({
+        // Sent always: the server defaults to `everyone`, so the private
+        // bookmarks would simply be missing from a read that left it off.
+        scope: query.scope ?? 'everyone',
+        limit: query.limit ?? PIN_PAGE_SIZE,
+        offset: query.offset ?? 0,
+      }),
+    },
   )
   const items = (res.data.items ?? []).map(toPinnedMessage)
   rememberPeople(items.flatMap(peopleInPin))
-  return items
+  return { items, total: res.data.total ?? items.length }
 }
 
 /**
@@ -393,10 +679,19 @@ export async function uploadAttachment(
 
 /** A forward is a NEW message, not a pointer — the destination can't see the source. */
 export async function forwardMessages(messageIds: Id[], toChatIds: Id[]): Promise<void> {
-  await apiClient.post(ENDPOINTS.messages.forward, {
-    message_ids: messageIds,
-    to_chat_ids: toChatIds,
-  })
+  // Each destination gets its own `talk.message.new`, so a forward into a chat
+  // we are looking at appears there without a re-read.
+  await write<unknown, void>(
+    SOCKET_ACTIONS.messageForward,
+    { message_ids: messageIds, to_chat_ids: toChatIds },
+    () => undefined,
+    async () => {
+      await apiClient.post(ENDPOINTS.messages.forward, {
+        message_ids: messageIds,
+        to_chat_ids: toChatIds,
+      })
+    },
+  )
 }
 
 /** Full-text search, inside one chat or across every chat I am in. */
@@ -426,7 +721,13 @@ export async function searchMessages({
 
 /**
  * My private, account-wide block in direct chats. DIRECTED and never disclosed:
- * the other person is not told, and it survives the chat being deleted.
+ * the other person is not told — on the block OR the unblock — and it survives
+ * the chat being deleted.
+ *
+ * It is an INTERVAL, not a switch. `blocked: false` closes the window and hands
+ * nothing back: messages written while it stood stay hidden from me for good, in
+ * the thread, search, the gallery, the pins, the preview and every unread count.
+ * So there is no backlog to offer and no "load what I missed" to build.
  */
 export async function setPersonBlocked(talkUserId: Id, blocked: boolean): Promise<void> {
   await apiClient.put(ENDPOINTS.blocks, { talk_user_id: talkUserId, blocked })

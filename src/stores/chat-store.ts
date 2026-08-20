@@ -27,10 +27,20 @@ interface ChatState {
   activeChatId: Id | null
   /** Unsent text per chat, so switching threads doesn't lose a draft. */
   drafts: Record<string, string>
+  /**
+   * Files picked or dropped but not yet sent, per chat.
+   *
+   * Here rather than in the composer's `useState` because the drop target is the
+   * WHOLE thread pane — `chat-area.tsx` accepts the drop, `message-input.tsx`
+   * draws the strip, and neither can reach the other's local state. Nothing in
+   * this store is persisted, which is what makes holding `File` objects safe.
+   */
+  attachments: Record<string, File[]>
   /** The message being replied to, per chat. */
   replyTo: Record<string, MessageQuote | null>
-  /** The message being edited, per chat — id and the text as it stands. */
-  editing: Record<string, { messageId: Id; body: string } | null>
+  /** The message being edited, per chat — id, the text as it stands, and
+   *  whether that text is a CAPTION on media, which may be cleared. */
+  editing: Record<string, { messageId: Id; body: string; hasMedia: boolean } | null>
   /** Who is typing, per chat. */
   typing: Record<string, TypingEntry[]>
   /** Presence by `talk_user_id`, for everyone we display. */
@@ -38,11 +48,32 @@ interface ChatState {
   /** People I have blocked (account-wide, direct chats). */
   blockedTalkUserIds: Id[]
 
+  /**
+   * Cache-invalidation ticks, per chat, for the two lists a socket event
+   * changes but cannot itself carry: the pin bar and the member sheet.
+   *
+   * `talk.message.pinned` says a pin happened, not what the bar should now read
+   * — pins EXPIRE at read time, so only `GET /talk/chats/:id/pins` knows. The
+   * member events say who joined or left, not their role or block flag, which
+   * the server owns. Both lists live in a hook's `useState` and are unreachable
+   * from a socket handler, so the handler bumps a number and the hook re-reads.
+   *
+   * The bump is skipped for a change I MADE — my own write already re-read —
+   * so each change costs exactly one request, on the side that caused it.
+   */
+  pinRevision: Record<string, number>
+  memberRevision: Record<string, number>
+
   setActiveChat: (chatId: Id | null) => void
   setDraft: (chatId: Id, text: string) => void
   clearDraft: (chatId: Id) => void
+  setAttachments: (chatId: Id, files: File[]) => void
+  clearAttachments: (chatId: Id) => void
   setReplyTo: (chatId: Id, quote: MessageQuote | null) => void
-  setEditing: (chatId: Id, editing: { messageId: Id; body: string } | null) => void
+  setEditing: (
+    chatId: Id,
+    editing: { messageId: Id; body: string; hasMedia: boolean } | null,
+  ) => void
 
   /** `talk.typing.start` — records the signal with a fresh expiry. */
   startTyping: (chatId: Id, talkUserId: Id, expiresAt: number) => void
@@ -55,6 +86,10 @@ interface ChatState {
 
   /** Merge presence, whether from `GET /talk/presence` or `talk.presence`. */
   applyPresence: (entries: Presence[]) => void
+  /** `talk.message.pinned` / `talk.message.unpinned` from somebody else. */
+  bumpPins: (chatId: Id) => void
+  /** `talk.member.*` from somebody else. */
+  bumpMembers: (chatId: Id) => void
   setBlockedTalkUserIds: (ids: Id[]) => void
   setBlocked: (talkUserId: Id, blocked: boolean) => void
 
@@ -64,11 +99,14 @@ interface ChatState {
 export const useChatStore = create<ChatState>((set) => ({
   activeChatId: null,
   drafts: {},
+  attachments: {},
   replyTo: {},
   editing: {},
   typing: {},
   presence: {},
   blockedTalkUserIds: [],
+  pinRevision: {},
+  memberRevision: {},
 
   setActiveChat: (chatId) => set({ activeChatId: chatId }),
 
@@ -80,6 +118,16 @@ export const useChatStore = create<ChatState>((set) => ({
       const drafts = { ...s.drafts }
       delete drafts[keyOf(chatId)]
       return { drafts }
+    }),
+
+  setAttachments: (chatId, files) =>
+    set((s) => ({ attachments: { ...s.attachments, [keyOf(chatId)]: files } })),
+
+  clearAttachments: (chatId) =>
+    set((s) => {
+      const attachments = { ...s.attachments }
+      delete attachments[keyOf(chatId)]
+      return { attachments }
     }),
 
   setReplyTo: (chatId, quote) =>
@@ -149,6 +197,20 @@ export const useChatStore = create<ChatState>((set) => ({
       return { presence }
     }),
 
+  bumpPins: (chatId) =>
+    set((s) => {
+      const key = keyOf(chatId)
+      return { pinRevision: { ...s.pinRevision, [key]: (s.pinRevision[key] ?? 0) + 1 } }
+    }),
+
+  bumpMembers: (chatId) =>
+    set((s) => {
+      const key = keyOf(chatId)
+      return {
+        memberRevision: { ...s.memberRevision, [key]: (s.memberRevision[key] ?? 0) + 1 },
+      }
+    }),
+
   setBlockedTalkUserIds: (blockedTalkUserIds) => set({ blockedTalkUserIds }),
 
   setBlocked: (talkUserId, blocked) =>
@@ -162,11 +224,14 @@ export const useChatStore = create<ChatState>((set) => ({
     set({
       activeChatId: null,
       drafts: {},
+      attachments: {},
       replyTo: {},
       editing: {},
       typing: {},
       presence: {},
       blockedTalkUserIds: [],
+      pinRevision: {},
+      memberRevision: {},
     }),
 }))
 

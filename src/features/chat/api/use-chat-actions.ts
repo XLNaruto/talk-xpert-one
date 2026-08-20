@@ -5,9 +5,30 @@ import { useChatListStore } from '@/stores/chat-list-store'
 import { useChatStore } from '@/stores/chat-store'
 import { useMessageCacheStore } from '@/stores/message-cache-store'
 import type { Id } from '@/types/api'
-import type { CreateGroupInput, UpdateChatInput } from '../types'
+import type { Chat, CreateGroupInput, UpdateChatInput } from '../types'
 import * as chatApi from './chat-api'
 import { joinAll } from './use-chats'
+
+/**
+ * Take on a chat we just CREATED: subscribe and read it in one round trip.
+ *
+ * The creator earns the room grant at creation, so `talk:join` on the returned
+ * id succeeds straight away with no read in front of it — and `with_chat` brings
+ * the row back on the same ack. HTTP covers a deployment with no socket, a
+ * refused join and a read that failed behind an accepted one.
+ *
+ * The creator never receives `talk.chat.created` for their own creation: this
+ * row is the only one they get.
+ */
+async function adoptCreated(chatId: Id, upsertChat: (chat: Chat) => void): Promise<void> {
+  const joined = await chatApi.joinAndReadChat(chatId)
+  if (joined) {
+    upsertChat(joined)
+    return
+  }
+  upsertChat(await chatApi.fetchChat(chatId))
+  await joinAll([chatId])
+}
 
 /**
  * Chat-level writes: opening, creating, pinning, renaming, leaving, disbanding,
@@ -41,15 +62,19 @@ export function useChatActions() {
     [clearChatCache, removeChats, setActiveChat],
   )
 
-  /** Idempotent: opening the same direct chat twice answers the same id. */
+  /**
+   * Idempotent: opening the same direct chat twice answers the same id.
+   *
+   * It also succeeds with somebody who has BLOCKED me — the thread is created
+   * and I may send into it; they simply never see any of it. Only the other
+   * direction is refused, and that refusal names itself.
+   */
   const openDirect = useCallback(
     async (talkUserId: Id): Promise<Id | null> => {
       setPending(true)
       try {
         const { chatId } = await chatApi.openDirectChat(talkUserId)
-        const chat = await chatApi.fetchChat(chatId)
-        upsertChat(chat)
-        await joinAll([chatId])
+        await adoptCreated(chatId, upsertChat)
         setActiveChat(chatId)
         return chatId
       } catch (error) {
@@ -67,9 +92,7 @@ export function useChatActions() {
       setPending(true)
       try {
         const { chatId } = await chatApi.createGroup(input)
-        const chat = await chatApi.fetchChat(chatId)
-        upsertChat(chat)
-        await joinAll([chatId])
+        await adoptCreated(chatId, upsertChat)
         setActiveChat(chatId)
         toastSuccess(`${input.name} is ready`)
         return chatId

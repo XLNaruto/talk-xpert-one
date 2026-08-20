@@ -5,6 +5,8 @@ interface TipProps {
   /** What the control does. Sentence case, no full stop. */
   label: ReactNode
   side?: 'top' | 'right' | 'bottom' | 'left'
+  /** Extra classes on the bubble — the lightbox needs one to clear its portal. */
+  className?: string
   /** Exactly one element — it becomes the trigger and keeps its own props. */
   children: ReactElement
 }
@@ -22,11 +24,13 @@ interface TipProps {
  * keep `aria-label` on icon-only buttons, because a tooltip is not announced by
  * every screen reader.
  */
-export function Tip({ label, side = 'bottom', children }: TipProps) {
+export function Tip({ label, side = 'bottom', className, children }: TipProps) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>{children}</TooltipTrigger>
-      <TooltipContent side={side}>{label}</TooltipContent>
+      <TooltipContent side={side} className={className}>
+        {label}
+      </TooltipContent>
     </Tooltip>
   )
 }

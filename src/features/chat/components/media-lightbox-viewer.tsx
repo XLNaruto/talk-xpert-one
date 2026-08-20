@@ -6,6 +6,13 @@ import Zoom from 'yet-another-react-lightbox/plugins/zoom'
 import 'yet-another-react-lightbox/styles.css'
 import 'yet-another-react-lightbox/plugins/counter.css'
 import { useMediaViewerStore } from '@/stores/media-viewer-store'
+import {
+  LightboxCloseButton,
+  LightboxDownloadButton,
+  LightboxNextButton,
+  LightboxPrevButton,
+  LightboxZoomButtons,
+} from './media-lightbox-controls'
 
 /**
  * The lightbox itself, in a module of its own so `media-lightbox` can `lazy()` it:
@@ -38,6 +45,15 @@ export default function MediaLightboxViewer() {
       // person swipes — reading it back is what keeps arrows and counter in sync.
       on={{ view: ({ index: next }) => setIndex(next) }}
       styles={{ container: { backgroundColor: 'rgb(0 0 0 / 0.92)' } }}
+      // Every control is re-rendered so it carries the app's tooltip instead of
+      // the OS one the library's `title` attribute produces.
+      render={{
+        buttonZoom: LightboxZoomButtons,
+        buttonDownload: LightboxDownloadButton,
+        buttonClose: LightboxCloseButton,
+        buttonPrev: LightboxPrevButton,
+        buttonNext: LightboxNextButton,
+      }}
     />
   )
 }

@@ -4,9 +4,9 @@ import { Avatar } from '@/components/ui/avatar'
 import { Modal } from '@/components/common/modal'
 import { useMediaUrl } from '@/hooks/use-app-config'
 import { toApiError } from '@/lib/api-error'
-import { format } from 'date-fns'
 import type { Id } from '@/types/api'
 import * as chatApi from '../api/chat-api'
+import { formatDateTime } from '../lib/message-formatters'
 import { resolveTalkUser } from '../lib/talk-directory'
 import type { MessageReceipt } from '../types'
 
@@ -76,9 +76,9 @@ export function MessageInfoDialog({
                   <span className="block truncate text-sm">{person.name}</span>
                   <span className="block text-[11px] text-muted-foreground">
                     {receipt.readAt
-                      ? `Read ${format(new Date(receipt.readAt), 'd MMM, HH:mm')}`
+                      ? `Read ${formatDateTime(receipt.readAt)}`
                       : receipt.deliveredAt
-                        ? `Delivered ${format(new Date(receipt.deliveredAt), 'd MMM, HH:mm')}`
+                        ? `Delivered ${formatDateTime(receipt.deliveredAt)}`
                         : 'Not delivered yet'}
                   </span>
                 </span>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAuthStore } from '@/stores/auth-store'
 import { useChatStore } from '@/stores/chat-store'
 import type { Id } from '@/types/api'
@@ -7,7 +7,8 @@ import { useMessageActions } from '../api/use-message-actions'
 import { usePins } from '../api/use-pins'
 import { startsNewDay, startsNewGroup } from '../lib/message-formatters'
 import { useTypingNames } from './use-typing'
-import type { Chat, ChatMessage, MessageQuote } from '../types'
+import { useThreadScroll } from './use-thread-scroll'
+import type { Chat, ChatMessage, MessageQuote, PinnedMessage } from '../types'
 
 /** One rendered row: the message plus the flags the list needs to lay it out. */
 export interface ThreadRow {
@@ -28,7 +29,15 @@ export function useMessageThread(chat: Chat | null) {
   const chatId = chat?.id ?? null
   const selfId = useAuthStore((s) => s.identity?.talkUserId ?? null)
   const { messages, isLoading, isLoadingMore, hasEarlier, loadEarlier } = useMessages(chatId)
-  const { pins, refetch: refetchPins } = usePins(chatId)
+  const {
+    pins,
+    total: pinTotal,
+    isLoading: isLoadingPins,
+    isLoadingMore: isLoadingMorePins,
+    hasMore: hasMorePins,
+    loadMore: loadMorePins,
+    refetch: refetchPins,
+  } = usePins(chatId)
   const typingNames = useTypingNames(chatId)
   // Destructured so the effects below can depend on the individual callbacks,
   // which are stable — the returned object is not, and would re-fire them.
@@ -65,28 +74,84 @@ export function useMessageThread(chat: Chat | null) {
     [messages, selfId],
   )
 
-  /** The pin bar shows the pinned messages we actually hold, newest first. */
-  const pinnedMessages = useMemo(() => {
+  /**
+   * The pinned messages, newest pin first.
+   *
+   * Every pin carries its own copy of the message, so a pin from months back
+   * renders without walking the history to find it. The THREAD's copy still wins
+   * where we hold one: it is the copy an edit or a delete-for-everyone has been
+   * applied to, and the pin's copy is a snapshot from the moment of the read.
+   */
+  const pinnedRows = useMemo(() => {
     if (pins.length === 0) return []
     const byId = new Map(messages.map((m) => [m.id, m]))
     return pins
-      .map((pin) => byId.get(pin.messageId))
-      .filter((message): message is ChatMessage => message !== undefined)
+      .map((pin) => {
+        const message = byId.get(pin.messageId) ?? pin.message
+        return message ? { pin, message } : null
+      })
+      .filter((row): row is { pin: PinnedMessage; message: ChatMessage } => row !== null)
   }, [pins, messages])
 
   /**
-   * Mark read as new messages land while the thread is open.
+   * What the one-line bar above the thread draws: the CHAT-WIDE pins only.
    *
-   * Keyed on the newest id rather than on the array, so it fires once per arrival
-   * instead of on every unrelated cache write.
+   * The bar is the announcement everybody in the conversation sees, so a private
+   * bookmark has no business in it — it would read as "everyone can see this"
+   * for something only I pinned. The sheet holds both and says which is which.
    */
-  const newestId = messages.length > 0 ? messages[messages.length - 1].id : null
-  const unreadCount = chat?.unreadCount ?? 0
-  useEffect(() => {
-    if (chatId == null || newestId == null || newestId < 0) return
-    if (unreadCount === 0) return
-    markRead([chatId], newestId)
-  }, [chatId, newestId, unreadCount, markRead])
+  const pinnedMessages = useMemo(
+    () => pinnedRows.filter((row) => row.pin.forEveryone).map((row) => row.message),
+    [pinnedRows],
+  )
+
+  /** How many of those the bar's counter is over — the server's own total
+      minus my private rows, which the bar never shows. */
+  const pinnedForEveryoneTotal = useMemo(
+    () => Math.max(pinTotal - pinnedRows.filter((row) => !row.pin.forEveryone).length, 0),
+    [pinTotal, pinnedRows],
+  )
+
+  /**
+   * Send a receipt for what has actually been seen.
+   *
+   * The thread no longer marks itself read the moment it opens: that would clear
+   * the frontier before the reader had looked at anything, and the unread
+   * divider would never have a place to sit. `use-thread-scroll.ts` decides WHEN
+   * — when those rows were on screen and the list had stopped moving — and calls
+   * this with the newest message that was visible.
+   */
+  const markReadUpTo = useCallback(
+    (uptoMessageId: Id) => {
+      if (chatId == null || uptoMessageId < 0) return
+      markRead([chatId], uptoMessageId)
+    },
+    [chatId, markRead],
+  )
+
+  // The unread state as it stood when the chat was OPENED. Frozen here because
+  // `markReadUpTo` clears the live count within a second of arriving, and the
+  // divider has to outlive that.
+  const entryUnread = useRef<{ chatId: Id | null; count: number; lastReadId: Id | null }>({
+    chatId: null,
+    count: 0,
+    lastReadId: null,
+  })
+  if (entryUnread.current.chatId !== chatId) {
+    entryUnread.current = {
+      chatId,
+      count: chat?.unreadCount ?? 0,
+      lastReadId: chat?.self.lastReadMessageId ?? null,
+    }
+  }
+
+  const scroll = useThreadScroll({
+    chatId,
+    rows,
+    unreadCount: entryUnread.current.count,
+    lastReadMessageId: entryUnread.current.lastReadId,
+    onRead: markReadUpTo,
+  })
 
   const startReply = useCallback(
     (message: ChatMessage) => {
@@ -115,7 +180,11 @@ export function useMessageThread(chat: Chat | null) {
   const startEditing = useCallback(
     (message: ChatMessage) => {
       if (chatId == null || message.senderTalkUserId !== selfId) return
-      setEditing(chatId, { messageId: message.id, body: message.body ?? '' })
+      setEditing(chatId, {
+        messageId: message.id,
+        body: message.body ?? '',
+        hasMedia: message.media.length > 0,
+      })
       setDraft(chatId, message.body ?? '')
       setReplyTo(chatId, null)
     },
@@ -132,10 +201,14 @@ export function useMessageThread(chat: Chat | null) {
 
   const clearSelection = useCallback(() => setSelectedIds([]), [])
 
+  /**
+   * Pin or unpin — `forEveryone` picks between the chat-wide announcement and my
+   * own private bookmark, which are separate pins on the same message.
+   */
   const setPinned = useCallback(
-    async (messageId: Id, pinned: boolean) => {
+    async (messageId: Id, pinned: boolean, forEveryone = true) => {
       if (chatId == null) return
-      const ok = await pinMessage(chatId, messageId, pinned)
+      const ok = await pinMessage(chatId, messageId, pinned, forEveryone)
       // Pins expire at read time, so the bar is re-read rather than patched.
       if (ok) await refetchPins()
     },
@@ -154,6 +227,27 @@ export function useMessageThread(chat: Chat | null) {
   )
 
   /**
+   * Delete ONE message straight from its context menu.
+   *
+   * The menu already knows which message it belongs to, so routing it through
+   * selection mode only to delete a single row is a detour — the two ways of
+   * deleting are named on the menu instead, and act at once.
+   *
+   * The id is dropped from any selection it was part of, or a selection bar
+   * would go on counting a row that is no longer there.
+   */
+  const deleteMessage = useCallback(
+    async (message: ChatMessage, forEveryone: boolean) => {
+      if (chatId == null) return
+      const ok = forEveryone
+        ? await deleteForEveryone(chatId, [message.id])
+        : await deleteForMe(chatId, [message.id])
+      if (ok) setSelectedIds((held) => held.filter((id) => id !== message.id))
+    },
+    [chatId, deleteForEveryone, deleteForMe],
+  )
+
+  /**
    * Whether "delete for everyone" may be offered.
    *
    * Anyone may hide anything they can see, but only the sender can withdraw a
@@ -168,16 +262,25 @@ export function useMessageThread(chat: Chat | null) {
 
   return {
     rows,
+    scroll,
     isLoading,
     isLoadingMore,
     hasEarlier,
     loadEarlier,
     pinnedMessages,
+    pinnedForEveryoneTotal,
+    pinnedRows,
+    pinTotal,
+    isLoadingPins,
+    isLoadingMorePins,
+    hasMorePins,
+    loadMorePins,
     typingNames,
     selfId,
     selectedIds,
     hasSelection: selectedIds.length > 0,
     canDeleteForEveryone,
+    deleteMessage,
     toggleSelected,
     clearSelection,
     deleteSelected,

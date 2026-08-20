@@ -3,7 +3,7 @@
 @custom-variant dark (&:is(.dark *));
 
 /* ------------------------------------------------------------------ */
-/* Design tokens — the XpertOne Talk design system                    */
+/* Design tokens — the One Talk design system                    */
 /* ------------------------------------------------------------------ */
 /* Palette: sky accent (#0ea5e9) on a blue-tinted base.
    #0ea5e9 itself only carries white text at ~2.7:1, so filled surfaces in the
@@ -31,6 +31,20 @@
   --muted-foreground: #5b7386;
   --accent: #c7dded;
   --accent-foreground: #16303f;
+
+  /* Avatar fallbacks — a person with no photo gets one of eight fixed fills,
+     picked from their name so the same person is always the same colour. They
+     are deliberately saturated: `--accent` sat too close to `--sidebar-accent`
+     and an initials avatar vanished on the ACTIVE row. */
+  --avatar-1: #e11d48;
+  --avatar-2: #ea580c;
+  --avatar-3: #b45309;
+  --avatar-4: #059669;
+  --avatar-5: #0d9488;
+  --avatar-6: #0891b2;
+  --avatar-7: #4f46e5;
+  --avatar-8: #7c3aed;
+  --avatar-foreground: #ffffff;
 
   --destructive: #ef4444;
   --destructive-foreground: #ffffff;
@@ -570,6 +584,15 @@
   --color-muted-foreground: var(--muted-foreground);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
+  --color-avatar-1: var(--avatar-1);
+  --color-avatar-2: var(--avatar-2);
+  --color-avatar-3: var(--avatar-3);
+  --color-avatar-4: var(--avatar-4);
+  --color-avatar-5: var(--avatar-5);
+  --color-avatar-6: var(--avatar-6);
+  --color-avatar-7: var(--avatar-7);
+  --color-avatar-8: var(--avatar-8);
+  --color-avatar-foreground: var(--avatar-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
   --color-success: var(--success);
@@ -624,6 +647,27 @@
   :focus-visible {
     outline: 2px solid var(--ring);
     outline-offset: 2px;
+  }
+
+  /* Tailwind v4's reset gives buttons the default arrow. In a chat app every
+     control is a click target, so the pointer comes back for anything that acts
+     on a click. Utilities live in a later cascade layer, so a deliberate
+     `cursor-text` on the composer or `cursor-zoom-in` on a photo still wins. */
+  a[href],
+  button:not(:disabled),
+  summary,
+  label[for],
+  select:not(:disabled),
+  [role='button']:not([aria-disabled='true']),
+  [role='menuitem'],
+  [role='menuitemcheckbox'],
+  [role='menuitemradio'],
+  [role='option'],
+  [role='tab'],
+  [role='switch'],
+  [role='checkbox'],
+  [role='radio'] {
+    cursor: pointer;
   }
 
   /* Thin, quiet scrollbars everywhere — the default chrome bar is wide enough

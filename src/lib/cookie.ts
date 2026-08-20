@@ -3,7 +3,7 @@ import { env } from '@/config/env'
 /**
  * Cookie access, namespaced per app via `VITE_APP_COOKIE_PREFIX`.
  *
- * The prefix is what stops XpertOne Talk and the XpertOne admin app from
+ * The prefix is what stops One Talk and the XpertOne admin app from
  * overwriting each other's session when they share an origin. Never touch
  * `document.cookie` outside this file.
  */

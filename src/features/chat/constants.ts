@@ -2,10 +2,72 @@
  * Socket event names, mirrored from the server contract. Never a string literal
  * at a call site.
  *
- * Everything under `talk.` is SERVER → CLIENT. The socket accepts exactly three
- * inbound messages, and they live in `lib/socket-client.ts` because that is the
- * only file allowed to touch socket.io: `talk:join`, `talk:leave`, `talk:typing`.
- * Every other write goes over HTTP.
+ * The naming tells you the direction. **Inbound is `talk:` with a colon** and an
+ * imperative — what we SEND. **Outbound is `talk.` with a dot** and a past
+ * participle — what we RECEIVE.
+ *
+ * Every write is now bridged: the gateway holds no database, so an inbound event
+ * is a reference to the REST route that owns the operation, called with our own
+ * bearer token. The ack carries that route's HTTP status and its response body
+ * verbatim, which is why `chat-api.ts` can prefer the socket and fall back to
+ * axios without a screen above it knowing which ran.
+ */
+
+/**
+ * What we SEND. Emitted only through `lib/socket-client.ts`, which owns the ack
+ * contract and the single 401 refresh-and-replay.
+ *
+ * Payloads are ONE FLAT snake_case object — the union of what HTTP puts in the
+ * path and in the body — and ids in them must be real integers: `{ chat_id: '42' }`
+ * is refused with a 400 before the URL is even built.
+ */
+export const SOCKET_ACTIONS = {
+  /** `{ chat_id, body?, media?, reply_to_message_id?, client_message_id? }` → the full message. */
+  messageSend: 'talk:message.send',
+  /** `{ chat_id, message_id, body }` → `{ message_id, edited_at }`. */
+  messageEdit: 'talk:message.edit',
+  /** `{ chat_id, message_ids, for_everyone }` → `{ affected }`. */
+  messageDelete: 'talk:message.delete',
+  /** `{ message_ids, to_chat_ids }` → `{ forwarded }`. One `talk.message.new` per destination. */
+  messageForward: 'talk:message.forward',
+  /** `{ chat_ids, upto_message_id? }` → `{ affected }`. Takes a LIST — mark-all is one emit. */
+  messageRead: 'talk:message.read',
+  /**
+   * `{ chat_id, message_id, pinned, expires_at?, for_everyone? }` → `{ pinned }`.
+   *
+   * `pinned` picks the direction and `for_everyone` picks the AUDIENCE, so the
+   * pair chooses between four events: the chat-wide `talk.message.pinned` /
+   * `unpinned`, and the private `talk.message.self_pinned` / `self_unpinned`.
+   * `for_everyone` DEFAULTS TO TRUE server-side — omitting it pins for the whole
+   * chat, so the private pin must always send it explicitly.
+   */
+  messagePin: 'talk:message.pin',
+
+  /** `{ talk_user_id }` → `{ chat_id, created }`. Idempotent — `created` says which. */
+  chatCreateDirect: 'talk:chat.create.direct',
+  /** `{ name, talk_user_ids, description?, avatar_url?, company_id? }` → `{ chat_id }`. */
+  chatCreateGroup: 'talk:chat.create.group',
+  /** `{ chat_id, name?, description?, avatar_url? }` → `{ chat_id }`. */
+  chatUpdate: 'talk:chat.update',
+  /** `{ chat_id }` → `{ deleted }`. Disbands a GROUP for everyone — not "hide from my list". */
+  chatDelete: 'talk:chat.delete',
+
+  /** `{ chat_id, talk_user_ids }` → `{ added }`. */
+  memberAdd: 'talk:member.add',
+  /** `{ chat_id }` → `{ left }`. */
+  memberLeave: 'talk:member.leave',
+  /** `{ chat_id, talk_user_id }` → `{ removed }`. */
+  memberRemove: 'talk:member.remove',
+  /** `{ chat_id, talk_user_id, blocked }` → `{ blocked }`. The OWNER's block, not the private one. */
+  memberBlock: 'talk:member.block',
+} as const
+
+/**
+ * What we RECEIVE. Every payload carries `type` (its own name) and, for anything
+ * addressed to a chat room, `chat_id`.
+ *
+ * Names and photos ride along on purpose, so an event can be drawn before that
+ * person's directory entry has ever been read. `photo` is a storage KEY.
  */
 export const SOCKET_EVENTS = {
   /** `{ chat_id, message }` — the full message object. */
@@ -14,35 +76,60 @@ export const SOCKET_EVENTS = {
   messageEdited: 'talk.message.edited',
   /** `{ chat_id, message_ids }` — delete for EVERYONE only. */
   messageDeleted: 'talk.message.deleted',
-  /** `{ chat_id, message_ids, by_talk_user_id }` — turns your own ticks blue. */
+  /** `{ chat_id, message_ids, by_talk_user_id, by_name, by_photo }` — turns your ticks blue. */
   messageRead: 'talk.message.read',
-  /** `{ chat_id, message_id, by_talk_user_id }` */
+  /** `{ chat_id, message_id, by_talk_user_id, by_name, by_photo }` */
   messagePinned: 'talk.message.pinned',
   messageUnpinned: 'talk.message.unpinned',
+  /**
+   * `{ type, chat_id, message_id, expires_at }` — MY OWN private bookmark, sent
+   * to my other devices and to nobody else. It is not a chat event: no other
+   * participant receives it, and it neither sets nor clears the chat-wide pin.
+   * `expires_at` is null on the unpin.
+   */
+  messageSelfPinned: 'talk.message.self_pinned',
+  messageSelfUnpinned: 'talk.message.self_unpinned',
 
-  /** `{ chat_id, type, name? }` — you were added to a new chat. */
+  /**
+   * `{ chat_id, type, name?, created_by_*, chat }` — addressed to you
+   * PERSONALLY, so it needs no join: you cannot have joined a chat that did not
+   * exist.
+   *
+   * `chat` is the whole row built from YOUR OWN side — byte-identical to what
+   * `GET /talk/chats/:id` would answer, `self.member_role` and a direct chat's
+   * `counterpart_*` (naming the CREATOR) included — so it is inserted straight
+   * into the list. It may be **null** in the rare race where the chat was
+   * deleted in the same breath, and then the read is the fallback it always was.
+   *
+   * Withheld from somebody who has BLOCKED the creator: no live row appears, and
+   * the chat instead turns up as an empty thread on their next full list read.
+   */
   chatCreated: 'talk.chat.created',
   /** `{ chat_id, name, description, avatar_url }` */
   chatUpdated: 'talk.chat.updated',
-  /** `{ chat_id, by_talk_user_id }` — group disbanded. */
+  /** `{ chat_id, by_talk_user_id, by_name, by_photo }` — disbanded; eviction follows. */
   chatDeleted: 'talk.chat.deleted',
 
-  /** `{ chat_id, talk_user_ids, by_talk_user_id }` */
+  /** `{ chat_id, talk_user_ids, members[], by_talk_user_id, by_name, by_photo }` */
   memberAdded: 'talk.member.added',
-  /** `{ chat_id, talk_user_id }` */
+  /** `{ chat_id, talk_user_id, name, photo }` */
   memberLeft: 'talk.member.left',
-  /** `{ chat_id, talk_user_id, by_talk_user_id }` — if it is you, drop the chat. */
+  /**
+   * `{ chat_id, talk_user_id, name, photo, by_* }` — sent TWICE by design: once
+   * to the room and once to the person being removed, who is cut off a moment
+   * later. Compare `talk_user_id` to your own id before deciding what it means.
+   */
   memberRemoved: 'talk.member.removed',
-  /** `{ chat_id, talk_user_id, blocked, by_talk_user_id }` */
+  /** `{ chat_id, talk_user_id, name, photo, blocked, by_* }` */
   memberBlocked: 'talk.member.blocked',
 
-  /** `{ chat_id, talk_user_id }` */
+  /** `{ chat_id, talk_user_id, name, photo }` — sender excluded server-side. */
   typingStart: 'talk.typing.start',
   typingStop: 'talk.typing.stop',
 
   /**
-   * `{ talk_user_id, is_online, at }` — NO `chat_id`. The one Talk event
-   * broadcast to the whole account, so it must be filtered client-side.
+   * `{ talk_user_id, name, photo, is_online, at }` — NO `chat_id`. The one Talk
+   * event broadcast to the whole account, so it must be filtered client-side.
    */
   presence: 'talk.presence',
 } as const
@@ -78,6 +165,19 @@ export const CHAT_URL_PARAM = 'data'
 
 /** How many chats one page of the sidebar pulls. The API caps `limit` at 100. */
 export const CHAT_PAGE_SIZE = 30
+
+/**
+ * How many pins one page of the pinned-messages sheet pulls. The API caps
+ * `limit` at 100, and each row carries a whole message, so this stays modest.
+ */
+export const PIN_PAGE_SIZE = 20
+
+/**
+ * How many people one page of the directory pulls. The API caps `limit` at 100.
+ * Deliberately small: the picker is a search box, not a phone book, and a wide
+ * grant can reach thousands of colleagues.
+ */
+export const CONTACT_PAGE_SIZE = 30
 
 /**
  * Send `typing: true` at most this often while the composer is active — NEVER
@@ -117,3 +217,93 @@ export const EMPTY_GROUP_FORM = {
   description: '',
   talkUserIds: [] as number[],
 }
+
+/**
+ * How long to let the virtualised list settle after opening a thread before any
+ * read receipt is sent.
+ *
+ * Virtuoso reports several intermediate ranges while it works its way from the
+ * bottom to `initialTopMostItemIndex`, and each one looks exactly like the user
+ * having read those messages. Marking read off the first range would clear the
+ * unread frontier the moment the chat opened — which is the one thing the unread
+ * divider exists to prevent.
+ */
+export const THREAD_READ_SETTLE_MS = 600
+
+/**
+ * How close to the end counts as "at the bottom", in pixels.
+ *
+ * The threshold is what decides whether an arriving message scrolls the view or
+ * only bumps the badge, so it is deliberately tight: a user who has scrolled up
+ * even slightly is reading history and must not be yanked away from it.
+ */
+export const THREAD_AT_BOTTOM_THRESHOLD_PX = 24
+
+/**
+ * How long a freshly-opened chat keeps re-asserting the bottom of the thread.
+ *
+ * Opening is not one event but several: cached rows paint, a fresh page
+ * replaces them, row heights are measured for the first time, and media decodes
+ * — each one moves the end of the list after the initial scroll has finished.
+ * The window closes the moment the reader scrolls away themselves.
+ */
+export const THREAD_OPEN_SETTLE_MS = 2500
+
+/** How often the bottom is re-asserted during that window. */
+export const THREAD_OPEN_SETTLE_TICK_MS = 100
+
+/**
+ * How long a jumped-to message stays banded.
+ *
+ * Long enough to catch the eye after the scroll settles, short enough that the
+ * band is gone by the time the reader starts reading around it.
+ */
+export const THREAD_JUMP_HIGHLIGHT_MS = 2200
+
+/**
+ * The index Virtuoso gives the newest-loaded page's first row when a thread
+ * opens, decremented by one per message prepended above it.
+ *
+ * Virtuoso needs this to know that a page landed at the TOP rather than the
+ * bottom: without it a prepend leaves the scroller where it was, so the reader
+ * is thrown up into the page they just pulled — and `startReached` de-dupes on
+ * the first rendered item's index, which never moves off 0, so it fires exactly
+ * once per thread and older-message paging dies after one page.
+ *
+ * A large base because it may only ever COUNT DOWN, and it must stay positive.
+ */
+export const THREAD_FIRST_ITEM_INDEX_BASE = 1_000_000
+
+/**
+ * How long history paging rests after a page lands.
+ *
+ * One flick to the top of a thread used to pull SEVEN pages back to back: each
+ * prepend puts the reader at the top again, `startReached` fires again, and the
+ * next request goes out before Virtuoso has finished compensating the scroll for
+ * the last one — which is what made the list blank and jump. A short rest lets
+ * one page settle and the reader land in it before the next is asked for; if
+ * they are still at the top when it expires, the next page is fetched normally.
+ */
+export const THREAD_HISTORY_PAGE_COOLDOWN_MS = 400
+
+/**
+ * How far outside the viewport Virtuoso keeps rows mounted, in pixels.
+ *
+ * Virtuoso mounts only what is visible, so a fast scroll outruns it and shows
+ * bare background until the next render catches up. Rendering a screenful of
+ * slack in each direction covers the gap; more than that costs mount time on
+ * every page of history for rows nobody is going to see.
+ */
+export const THREAD_OVERSCAN_PX = 600
+
+/**
+ * How close to the end counts as landed, when CORRECTING the scroll.
+ *
+ * Deliberately much tighter than `THREAD_AT_BOTTOM_THRESHOLD_PX`, which answers
+ * a different question. That one asks "is the reader caught up", where a couple
+ * of dozen pixels of slack is right. This one asks "has the opening scroll
+ * arrived", and the same slack there leaves the newest bubble clipped by the
+ * composer. It only has to absorb the sub-pixel remainder of a fractional
+ * `scrollTop` against a rounded `scrollHeight`.
+ */
+export const THREAD_AT_END_TOLERANCE_PX = 2

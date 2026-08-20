@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toastApiError, toastSuccess } from '@/lib/api-toast'
-import type { Id } from '@/types/api'
+import { useChatStore } from '@/stores/chat-store'
+import { keyOf, type Id } from '@/types/api'
 import type { ChatMember } from '../types'
 import * as chatApi from './chat-api'
 
@@ -10,10 +11,18 @@ import * as chatApi from './chat-api'
  *
  * The list is re-read rather than patched after a write, because the server owns
  * roles and block flags and a local guess at either would drift.
+ *
+ * SOMEBODY ELSE's change arrives as `talk.member.added` / `.left` / `.removed` /
+ * `.blocked`, which the stream turns into a bump on `memberRevision` — without
+ * it an open sheet would sit stale while another owner rearranged the group. My
+ * own change does not bump: the write below already re-read.
  */
 export function useMembers(chatId: Id | null, enabled = true) {
   const [members, setMembers] = useState<ChatMember[]>([])
   const [isLoading, setLoading] = useState(false)
+  const revision = useChatStore((s) =>
+    chatId == null ? 0 : (s.memberRevision[keyOf(chatId)] ?? 0),
+  )
 
   const refetch = useCallback(async () => {
     if (chatId == null) return
@@ -30,7 +39,7 @@ export function useMembers(chatId: Id | null, enabled = true) {
   useEffect(() => {
     if (!enabled || chatId == null) return
     void refetch()
-  }, [enabled, chatId, refetch])
+  }, [enabled, chatId, refetch, revision])
 
   /** Owner only. Ids outside this account are dropped silently by the server. */
   const addMembers = useCallback(

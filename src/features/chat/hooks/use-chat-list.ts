@@ -5,10 +5,11 @@ import { useChatStore } from '@/stores/chat-store'
 import { useUiStore } from '@/stores/ui-store'
 import type { Id } from '@/types/api'
 import { useChats } from '../api/use-chats'
+import { useContacts } from '../api/use-contacts'
 import { useChatActions } from '../api/use-chat-actions'
 import { useMessageActions } from '../api/use-message-actions'
 import { usePresence, useBlockList } from '../api/use-presence'
-import type { ChatType } from '../types'
+import type { ChatType, Contact } from '../types'
 
 /** Which band of the list the sidebar is showing. */
 export type ChatFilter = 'all' | 'direct' | 'group' | 'unread'
@@ -43,6 +44,25 @@ export function useChatList() {
     unreadOnly: filter === 'unread' || undefined,
   })
 
+  /**
+   * The directory, searched alongside the conversation list.
+   *
+   * A name you have never messaged is in `GET /talk/contacts` and nowhere else,
+   * so a sidebar that only searched `GET /talk/chats` could not find a new
+   * colleague at all. Read ONLY while the field is open and holds a term —
+   * `/talk/contacts` with no search is the whole organisation, which is the
+   * picker's job, not the sidebar's.
+   */
+  const searchTerm = search.trim()
+  const {
+    contacts: directory,
+    isLoading: isDirectoryLoading,
+    isSearching: isDirectorySearching,
+  } = useContacts({
+    search,
+    enabled: isSearchOpen && searchTerm.length > 0,
+  })
+
   usePresence()
   useBlockList()
 
@@ -51,7 +71,7 @@ export function useChatList() {
   const clearTyping = useChatStore((s) => s.clearTyping)
   const totalUnread = useChatListStore((s) => s.totalUnread)
   const setSidebarOpen = useUiStore((s) => s.setSidebarOpen)
-  const { setChatPinned, deleteForMe } = useChatActions()
+  const { setChatPinned, deleteForMe, openDirect, isPending: isOpeningContact } = useChatActions()
   const { markRead } = useMessageActions()
 
   const selectChat = useCallback(
@@ -91,6 +111,48 @@ export function useChatList() {
     const ok = await deleteForMe(selectedDirectIds)
     if (ok) clearSelection()
   }, [selectedDirectIds, deleteForMe, clearSelection])
+
+  /**
+   * The row's own actions, behind a right-click. Each takes one id, where the
+   * selection bar's versions take the ticked set.
+   */
+  const deleteChat = useCallback(
+    async (chatId: Id) => {
+      await deleteForMe([chatId])
+    },
+    [deleteForMe],
+  )
+
+  const markChatRead = useCallback((chatId: Id) => markRead([chatId]), [markRead])
+
+  /**
+   * Directory hits worth showing: anyone whose existing chat is already a row
+   * above would otherwise appear twice under two different labels.
+   */
+  const contacts = useMemo(() => {
+    if (!searchTerm) return []
+    return directory.filter(
+      (contact) =>
+        contact.existingChatId === null ||
+        !chats.some((chat) => chat.id === contact.existingChatId),
+    )
+  }, [chats, directory, searchTerm])
+
+  /**
+   * Opening a directory hit. `existing_chat_id` rides along on the row, so a
+   * person you already talk to costs no request at all; anyone else goes through
+   * `POST /talk/chats/direct`, which is idempotent.
+   */
+  const openContact = useCallback(
+    async (contact: Contact) => {
+      const chatId = contact.existingChatId ?? (await openDirect(contact.talkUserId))
+      if (chatId === null) return
+      selectChat(chatId)
+      setSearchOpen(false)
+      setSearch('')
+    },
+    [openDirect, selectChat],
+  )
 
   /**
    * Closing search clears the term, so the list is never left filtered by a
@@ -136,6 +198,13 @@ export function useChatList() {
     clearSelection,
     deleteSelected,
     markAllRead,
+    deleteChat,
+    markChatRead,
     hasSelection: selectedIds.length > 0,
+    contacts,
+    /** True until the directory has answered the term now in the box. */
+    isDirectoryLoading: isDirectoryLoading || isDirectorySearching,
+    openContact,
+    isOpeningContact,
   }
 }

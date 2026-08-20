@@ -1,14 +1,14 @@
 import { useRef } from 'react'
-import { Loader2, Paperclip, Send, Upload, X } from 'lucide-react'
+import { Loader2, Paperclip, Send, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { cn } from '@/lib/utils'
 import { ATTACHMENT_CONTENT_TYPES } from '@/lib/uploads'
-import { useChatActions } from '../api/use-chat-actions'
-import { quoteText } from '../lib/chat-labels'
+import { chatLabel, quoteText } from '../lib/chat-labels'
 import { resolveTalkUser } from '../lib/talk-directory'
 import { useMessageInput } from '../hooks/use-message-input'
+import { usePersonBlock } from '../hooks/use-person-block'
 import { AttachmentStrip } from './attachment-strip'
 import { EmojiPicker } from './emoji-picker'
+import { PersonBlockDialog } from './person-block-dialog'
 import type { Chat } from '../types'
 import { Tip } from '@/components/common/tip'
 
@@ -27,7 +27,6 @@ export function MessageInput({ chat }: { chat: Chat }) {
     onKeyDown,
     onPaste,
     insertEmoji,
-    dropZone,
     files,
     addFiles,
     removeFile,
@@ -45,31 +44,31 @@ export function MessageInput({ chat }: { chat: Chat }) {
   } = useMessageInput(chat)
 
   const fileInput = useRef<HTMLInputElement>(null)
-  const { setPersonBlocked } = useChatActions()
+  const block = usePersonBlock()
   const counterpartId = chat.counterpartTalkUserId
-  const { isDragging, ...dragHandlers } = dropZone
 
   if (blockedReason) {
     return (
-      <div className="shrink-0 bg-background px-3 py-3">
+      <div className="shrink-0 px-3 py-3">
         <p className="text-center text-xs text-muted-foreground">{blockedReason}</p>
         {canUnblock && counterpartId !== null && (
           <div className="mt-2 flex justify-center">
             <Button
               size="sm"
               variant="secondary"
-              onClick={() => void setPersonBlocked(counterpartId, false)}
+              onClick={() => block.ask(counterpartId, chatLabel(chat).title, false)}
             >
               Unblock
             </Button>
           </div>
         )}
+        <PersonBlockDialog block={block} />
       </div>
     )
   }
 
   return (
-    <div className="relative shrink-0 bg-background px-3 py-2.5" {...dragHandlers}>
+    <div className="relative shrink-0 px-3 py-2.5">
       {editing && (
         <div className="mb-2 flex items-center gap-2 rounded-md border-l-2 border-primary bg-secondary px-2 py-1.5 text-xs">
           <span className="min-w-0 flex-1">
@@ -108,10 +107,7 @@ export function MessageInput({ chat }: { chat: Chat }) {
       {/* One field-shaped box holds every control, so a click anywhere in it lands
           in the text — the same target Teams gives you. */}
       <div
-        className={cn(
-          'flex cursor-text items-end gap-1 rounded-xl bg-card px-2 py-1.5 ring-1 transition-colors',
-          isDragging ? 'ring-2 ring-primary' : 'ring-border focus-within:ring-ring',
-        )}
+        className="flex cursor-text items-end gap-1 rounded-xl bg-card/70 px-2 py-1.5 ring-1 ring-border backdrop-blur-sm transition-colors focus-within:ring-ring"
         onClick={() => textareaRef.current?.focus()}
       >
         {!editing && <EmojiPicker onSelect={insertEmoji} />}
@@ -174,15 +170,6 @@ export function MessageInput({ chat }: { chat: Chat }) {
           {isSending ? <Loader2 className="animate-spin" /> : <Send />}
         </Button>
       </div>
-
-      {/* The hint covers the composer only, not the thread — dropping on a bubble
-          does nothing, so promising otherwise would be a lie. */}
-      {isDragging && !editing && (
-        <div className="pointer-events-none absolute inset-2 flex items-center justify-center gap-2 rounded-xl border-2 border-dashed border-primary bg-background/90 text-sm font-medium text-primary">
-          <Upload className="size-4" aria-hidden />
-          Drop to attach
-        </div>
-      )}
     </div>
   )
 }

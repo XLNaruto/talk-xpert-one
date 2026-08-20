@@ -1,5 +1,4 @@
 import { Loader2 } from 'lucide-react'
-import { format } from 'date-fns'
 import { Input } from '@/components/ui/input'
 import { Modal } from '@/components/common/modal'
 import { useChatListStore } from '@/stores/chat-list-store'
@@ -7,6 +6,7 @@ import { useChatStore } from '@/stores/chat-store'
 import type { Id } from '@/types/api'
 import { useMessageSearch } from '../api/use-message-search'
 import { chatLabel } from '../lib/chat-labels'
+import { formatDateTime } from '../lib/message-formatters'
 import { resolveTalkUser } from '../lib/talk-directory'
 
 /**
@@ -80,7 +80,7 @@ export function MessageSearchDialog({
                         {who}
                       </span>
                       <span className="shrink-0 text-[10px] text-muted-foreground">
-                        {format(new Date(hit.createdAt), 'd MMM, HH:mm')}
+                        {formatDateTime(hit.createdAt)}
                       </span>
                     </span>
                     <span className="mt-0.5 block truncate text-xs text-muted-foreground">

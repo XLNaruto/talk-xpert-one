@@ -8,11 +8,28 @@ import { useMessageCacheStore } from '@/stores/message-cache-store'
 import { knownPerson, rememberPeople } from '@/stores/talk-directory-store'
 import type { Id } from '@/types/api'
 import { SOCKET_EVENTS, TYPING_EXPIRY_MS } from '../constants'
-import { toChatMessage, type MessageDto } from '../lib/chat-mappers'
-import { peopleInMessage } from '../lib/talk-directory'
+import { toChat, toChatMessage, type ChatDto, type MessageDto } from '../lib/chat-mappers'
+import { peopleInChat, peopleInMessage } from '../lib/talk-directory'
 import { catchUpMessages } from '../api/use-messages'
 import * as chatApi from '../api/chat-api'
 import { joinAll } from '../api/use-chats'
+
+/**
+ * Whoever performed the action, as every `talk.*` event now reports them.
+ * Present on the read receipt, the pin, the disband and every membership change.
+ */
+interface EventActor {
+  by_talk_user_id?: number
+  by_name?: string | null
+  by_photo?: string | null
+}
+
+/** Whoever the action was ABOUT — the member, the typist, the presence row. */
+interface EventSubject {
+  talk_user_id: number
+  name?: string | null
+  photo?: string | null
+}
 
 /**
  * The realtime subscription.
@@ -43,6 +60,36 @@ export function useMessageStream() {
     const list = useChatListStore.getState
     const ui = useChatStore.getState
 
+    /**
+     * Every event now names the people in it — `name`/`photo` for the subject,
+     * `by_name`/`by_photo` for whoever acted. Feeding those into the directory
+     * on the way past is what keeps the two nameless events (typing, presence)
+     * printing a name for somebody whose first message we never read.
+     */
+    const rememberActor = (payload: EventActor) => {
+      rememberPeople([
+        payload.by_talk_user_id == null
+          ? null
+          : {
+              talkUserId: payload.by_talk_user_id,
+              name: payload.by_name ?? null,
+              photo: payload.by_photo ?? null,
+            },
+      ])
+    }
+
+    const rememberSubject = (payload: EventSubject) => {
+      rememberPeople([
+        payload.talk_user_id == null
+          ? null
+          : {
+              talkUserId: payload.talk_user_id,
+              name: payload.name ?? null,
+              photo: payload.photo ?? null,
+            },
+      ])
+    }
+
     /* ---- messages ---- */
 
     const onMessageNew = (payload: { chat_id: number; message: MessageDto }) => {
@@ -55,10 +102,11 @@ export function useMessageStream() {
       // never seen before is named the moment they first speak.
       rememberPeople(peopleInMessage(message))
 
-      // We receive an echo of our OWN sends, because our socket is in the room.
-      // The cache merges by id and by `clientMessageId`, so this reconciles the
-      // optimistic bubble instead of appending a duplicate — and a message sent
-      // on another device of ours still appears here.
+      // We receive an echo of our OWN sends, because our socket is in the room,
+      // and it usually beats our own HTTP response. The cache merges by id and
+      // lands an echo of a send still in flight ON its optimistic bubble, so
+      // this never appends a duplicate — and a message sent on another device of
+      // ours still appears here.
       cache().upsertOne(chatId, message)
 
       const isOpen = activeChatId() === chatId
@@ -135,27 +183,101 @@ export function useMessageStream() {
       chat_id: number
       message_ids: number[]
       by_talk_user_id: number
-    }) => {
+    } & EventActor) => {
+      rememberActor(payload)
       // Somebody else read MY messages: this is what turns my ticks blue. My own
       // read of their messages tells me nothing, so it is ignored.
       if (payload.by_talk_user_id === selfId.current) return
       cache().applyRead(payload.chat_id, payload.message_ids ?? [])
     }
 
-    const onMessagePinned = (payload: { chat_id: number; message_id: number }) => {
-      cache().applyPinned(payload.chat_id, payload.message_id, true)
+    /**
+     * The pin bar cannot be patched from the event.
+     *
+     * Pins EXPIRE, and the expiry is filtered at READ time rather than swept, so
+     * only `GET /talk/chats/:id/pins` knows what the bar should now show. The
+     * event flips the flag on the bubble and asks the bar to re-read — unless the
+     * pin was mine, in which case `use-message-thread` has already done it.
+     */
+    const applyPinEvent = (
+      payload: { chat_id: number; message_id: number } & EventActor,
+      pinned: boolean,
+    ) => {
+      rememberActor(payload)
+      cache().applyPinned(payload.chat_id, payload.message_id, pinned, true)
+      if (payload.by_talk_user_id === selfId.current) return
+      ui().bumpPins(payload.chat_id)
     }
 
-    const onMessageUnpinned = (payload: { chat_id: number; message_id: number }) => {
-      cache().applyPinned(payload.chat_id, payload.message_id, false)
+    const onMessagePinned = (payload: { chat_id: number; message_id: number } & EventActor) =>
+      applyPinEvent(payload, true)
+
+    const onMessageUnpinned = (payload: { chat_id: number; message_id: number } & EventActor) =>
+      applyPinEvent(payload, false)
+
+    /**
+     * MY OWN private bookmark, from ANOTHER DEVICE of mine.
+     *
+     * Not a chat event: it is addressed to my subject alone, never to the room,
+     * so no other participant sees it and it says nothing about the chat-wide
+     * pin. There is no actor to compare — every one of these is mine — so the
+     * pin list is always asked to re-read: the device that made the pin already
+     * re-read as part of its own write, and this arrives at the others.
+     */
+    const applySelfPinEvent = (
+      payload: { chat_id: number; message_id: number },
+      pinned: boolean,
+    ) => {
+      cache().applyPinned(payload.chat_id, payload.message_id, pinned, false)
+      ui().bumpPins(payload.chat_id)
     }
+
+    const onMessageSelfPinned = (payload: {
+      chat_id: number
+      message_id: number
+      expires_at?: string | null
+    }) => applySelfPinEvent(payload, true)
+
+    const onMessageSelfUnpinned = (payload: { chat_id: number; message_id: number }) =>
+      applySelfPinEvent(payload, false)
 
     /* ---- chats and members ---- */
 
-    const onChatCreated = () => {
-      // The event carries only an id, a type and maybe a name — not enough to
-      // draw a row — so the list is re-read, which also issues the new grant.
-      void refreshList()
+    const onChatCreated = (
+      payload: {
+        chat_id: number
+        created_by_talk_user_id?: number
+        created_by_name?: string | null
+        created_by_photo?: string | null
+        /** The whole row, built from OUR side. Null in a delete-in-the-same-breath race. */
+        chat?: ChatDto | null
+      },
+    ) => {
+      // Addressed to us personally, so it arrives with no join and before any
+      // read of our own.
+      rememberPeople([
+        payload.created_by_talk_user_id == null
+          ? null
+          : {
+              talkUserId: payload.created_by_talk_user_id,
+              name: payload.created_by_name ?? null,
+              photo: payload.created_by_photo ?? null,
+            },
+      ])
+
+      // The row now rides along, byte-identical to what `GET /talk/chats/:id`
+      // would answer and already from OUR side — `self.member_role`, and a
+      // direct chat's `counterpart_*` naming the creator — so it is inserted
+      // straight in and the read is saved. The join still needs a grant, which
+      // this event is not, so `adoptChat` reads first when there is no row.
+      const chat = payload.chat ? toChat(payload.chat) : null
+      if (chat) {
+        rememberPeople(peopleInChat(chat))
+        useChatListStore.getState().upsertChat(chat)
+        void joinAll([chat.id])
+        return
+      }
+      void adoptChat(payload.chat_id)
     }
 
     const onChatUpdated = (payload: {
@@ -171,62 +293,107 @@ export function useMessageStream() {
       })
     }
 
-    const onChatDeleted = (payload: { chat_id: number }) => {
+    const onChatDeleted = (payload: { chat_id: number } & EventActor) => {
+      // Announced just BEFORE the disband, while we are still subscribed. We
+      // are evicted immediately after, so this is final.
+      rememberActor(payload)
       forgetChat(payload.chat_id)
     }
 
-    const onMemberAdded = (payload: { chat_id: number; talk_user_ids: number[] }) => {
-      // Membership drives the member sheet and the group's member count, both of
-      // which the server owns — so re-read the header rather than guess at it.
-      void refreshChat(payload.chat_id)
+    /**
+     * Membership drives the group's member count in the header AND the member
+     * sheet, and the server owns both the roles and the block flags — so each is
+     * re-read rather than guessed at. The sheet's own list is in a hook's state,
+     * so it is asked to re-read through a revision tick.
+     *
+     * Skipped when the change was MINE: `use-members` re-read as part of the
+     * write, and a second request would say the same thing.
+     */
+    const membersChanged = (chatId: number, byTalkUserId: number | undefined) => {
+      void refreshChat(chatId)
+      if (byTalkUserId === selfId.current) return
+      ui().bumpMembers(chatId)
     }
 
-    const onMemberLeft = (payload: { chat_id: number; talk_user_id: number }) => {
+    const onMemberAdded = (
+      payload: {
+        chat_id: number
+        talk_user_ids: number[]
+        members?: Array<{ talk_user_id: number; name?: string | null; photo?: string | null }>
+      } & EventActor,
+    ) => {
+      rememberActor(payload)
+      // `members[]` names everyone who just joined, so the sheet can print them
+      // even before its own re-read lands.
+      rememberPeople(
+        (payload.members ?? []).map((member) => ({
+          talkUserId: member.talk_user_id,
+          name: member.name ?? null,
+          photo: member.photo ?? null,
+        })),
+      )
+      membersChanged(payload.chat_id, payload.by_talk_user_id)
+    }
+
+    const onMemberLeft = (payload: { chat_id: number } & EventSubject) => {
+      rememberSubject(payload)
       if (payload.talk_user_id === selfId.current) {
         list().setSelfLeft(payload.chat_id)
         return
       }
-      void refreshChat(payload.chat_id)
+      // Nobody else acts for you when you leave, so the leaver IS the actor.
+      membersChanged(payload.chat_id, payload.talk_user_id)
     }
 
-    const onMemberRemoved = (payload: { chat_id: number; talk_user_id: number }) => {
+    const onMemberRemoved = (payload: { chat_id: number } & EventSubject & EventActor) => {
+      rememberSubject(payload)
+      rememberActor(payload)
+      // This arrives TWICE for the person being removed — once addressed to
+      // them, once to the room — so who it is about is decided by the id, never
+      // by which delivery came first.
       // We are told just BEFORE the removal takes effect — afterwards we would no
       // longer be in the fan-out and would never learn of it.
       if (payload.talk_user_id === selfId.current) {
         forgetChat(payload.chat_id)
         return
       }
-      void refreshChat(payload.chat_id)
+      membersChanged(payload.chat_id, payload.by_talk_user_id)
     }
 
-    const onMemberBlocked = (payload: {
-      chat_id: number
-      talk_user_id: number
-      blocked: boolean
-    }) => {
+    const onMemberBlocked = (
+      payload: { chat_id: number; blocked: boolean } & EventSubject & EventActor,
+    ) => {
+      rememberSubject(payload)
+      rememberActor(payload)
       if (payload.talk_user_id === selfId.current) {
         // Disable the composer, keep the chat readable — that is the whole point
         // of the owner's block, as against a removal.
         list().setSelfBlocked(payload.chat_id, payload.blocked)
         return
       }
-      void refreshChat(payload.chat_id)
+      membersChanged(payload.chat_id, payload.by_talk_user_id)
     }
 
     /* ---- typing and presence ---- */
 
-    const onTypingStart = (payload: { chat_id: number; talk_user_id: number }) => {
+    const onTypingStart = (payload: { chat_id: number } & EventSubject) => {
+      // The relay now carries a name, so "Asha is typing…" no longer depends on
+      // having read this person somewhere else first. It is still remembered
+      // rather than used directly, because presence has no such luxury.
+      rememberSubject(payload)
       // The expiry is set here rather than trusted from a later `stop`: a client
       // that crashes mid-sentence never sends one.
       ui().startTyping(payload.chat_id, payload.talk_user_id, Date.now() + TYPING_EXPIRY_MS)
     }
 
-    const onTypingStop = (payload: { chat_id: number; talk_user_id: number }) => {
+    const onTypingStop = (payload: { chat_id: number } & EventSubject) => {
       ui().stopTyping(payload.chat_id, payload.talk_user_id)
     }
 
     const onPresence = (payload: {
       talk_user_id: number
+      name?: string | null
+      photo?: string | null
       is_online: boolean
       at?: string
     }) => {
@@ -235,15 +402,16 @@ export function useMessageStream() {
       // is filtered here — otherwise the store fills with colleagues we have
       // never messaged.
       if (!isDisplayed(payload.talk_user_id)) return
-      // The event is an id and a flag — no name, no photo — so the label comes
-      // from whatever named this person earlier. Overwriting a row with nulls
-      // here would blank the member sheet every time somebody went offline.
+      // A heartbeat may arrive with nothing but the id, so the directory backs
+      // it up: overwriting a row with nulls would blank the member sheet every
+      // time somebody went offline.
       const known = knownPerson(payload.talk_user_id)
+      rememberSubject(payload)
       ui().applyPresence([
         {
           talkUserId: payload.talk_user_id,
-          name: known?.name ?? null,
-          photo: known?.photo ?? null,
+          name: payload.name ?? known?.name ?? null,
+          photo: payload.photo ?? known?.photo ?? null,
           isOnline: payload.is_online,
           lastSeenAt: payload.at ?? null,
         },
@@ -256,6 +424,8 @@ export function useMessageStream() {
     socket.on(SOCKET_EVENTS.messageRead, onMessageRead)
     socket.on(SOCKET_EVENTS.messagePinned, onMessagePinned)
     socket.on(SOCKET_EVENTS.messageUnpinned, onMessageUnpinned)
+    socket.on(SOCKET_EVENTS.messageSelfPinned, onMessageSelfPinned)
+    socket.on(SOCKET_EVENTS.messageSelfUnpinned, onMessageSelfUnpinned)
     socket.on(SOCKET_EVENTS.chatCreated, onChatCreated)
     socket.on(SOCKET_EVENTS.chatUpdated, onChatUpdated)
     socket.on(SOCKET_EVENTS.chatDeleted, onChatDeleted)
@@ -274,6 +444,8 @@ export function useMessageStream() {
       socket.off(SOCKET_EVENTS.messageRead, onMessageRead)
       socket.off(SOCKET_EVENTS.messagePinned, onMessagePinned)
       socket.off(SOCKET_EVENTS.messageUnpinned, onMessageUnpinned)
+      socket.off(SOCKET_EVENTS.messageSelfPinned, onMessageSelfPinned)
+      socket.off(SOCKET_EVENTS.messageSelfUnpinned, onMessageSelfUnpinned)
       socket.off(SOCKET_EVENTS.chatCreated, onChatCreated)
       socket.off(SOCKET_EVENTS.chatUpdated, onChatUpdated)
       socket.off(SOCKET_EVENTS.chatDeleted, onChatDeleted)
@@ -334,7 +506,9 @@ async function runCatchUp(isReconnect: boolean): Promise<void> {
 async function refreshList(): Promise<Id[]> {
   try {
     const page = await chatApi.fetchChats({})
-    useChatListStore.getState().setChats(page.items, page.total)
+    // A catch-up, not a query — it must not wipe out a search the user is
+    // in the middle of typing.
+    useChatListStore.getState().setChats(page.items, page.total, 'refresh')
     void chatApi
       .fetchUnreadSummary()
       .then((total) => useChatListStore.getState().setTotalUnread(total))
@@ -344,6 +518,25 @@ async function refreshList(): Promise<Id[]> {
     logger.warn('catch-up list read failed', error)
     return []
   }
+}
+
+/**
+ * Take on a chat we have just been told about.
+ *
+ * The FALLBACK, for the race where `talk.chat.created` carried no `chat`: the
+ * event needs no join — you cannot have joined a chat that did not exist — but
+ * for the same reason no read has happened yet, so there is no grant and a join
+ * would be refused. Reading the chat is what issues one, so the order here is
+ * load-bearing: read, insert the row, then join.
+ */
+async function adoptChat(chatId: Id): Promise<void> {
+  try {
+    useChatListStore.getState().upsertChat(await chatApi.fetchChat(chatId))
+  } catch (error) {
+    logger.warn('could not read a newly created chat', chatId, error)
+    return
+  }
+  await joinAll([chatId])
 }
 
 /** Re-read one chat's header after a membership change. */

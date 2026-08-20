@@ -51,7 +51,7 @@ function describe(error: unknown): { title: string; description: string } {
     if (error.status === 404) {
       return {
         title: 'Page not found',
-        description: "That address doesn't exist in XpertOne Talk.",
+        description: "That address doesn't exist in One Talk.",
       }
     }
     return {

@@ -6,16 +6,19 @@ import type {
   ChatMessage,
   ChatSelf,
   ChatType,
+  Contact,
   MediaKind,
   MemberRole,
   MessageMedia,
   MessageQuote,
   MessageReceipt,
   MessageSearchHit,
+  MessageSystemData,
   MessageType,
   PinnedMessage,
   Presence,
   SystemEvent,
+  SystemParticipant,
 } from '../types'
 
 /* ---------------------------------------------------------------- */
@@ -62,8 +65,12 @@ export interface MessageDto {
   edited_at?: string | null
   is_deleted_for_everyone?: boolean
   system_event?: string | null
+  system_data?: Record<string, unknown> | null
   media?: MessageMediaDto[] | null
+  /** The CHAT-WIDE pin — the same value for every reader. */
   is_pinned?: boolean
+  /** MY private bookmark on the same message. The two are independent. */
+  is_pinned_for_me?: boolean
   is_read_by_all?: boolean
   read_count?: number
   created_at: string
@@ -115,11 +122,15 @@ export interface ChatMemberDto {
 
 export interface PinnedMessageDto {
   message_id: number
+  /** True for the chat-wide pin, false for the pinner's own private one. */
+  for_everyone?: boolean
   pinned_by_talk_user_id: number
   pinned_by_name?: string | null
   pinned_by_photo?: string | null
   pinned_at: string
   expires_at?: string | null
+  /** The pinned message, inline — the pin screen needs no second round trip. */
+  message?: MessageDto | null
 }
 
 export interface PresenceDto {
@@ -147,6 +158,20 @@ export interface MessageSearchHitDto {
   type: string
   body?: string | null
   created_at: string
+}
+
+export interface ContactDto {
+  talk_user_id: number
+  name?: string | null
+  photo?: string | null
+  email: string
+  is_employee?: boolean
+  company_id?: number | null
+  company_name?: string | null
+  department_id?: number | null
+  department_name?: string | null
+  designation_name?: string | null
+  existing_chat_id?: number | null
 }
 
 export interface BlockedPersonDto {
@@ -207,6 +232,100 @@ export function toMessageQuote(dto: MessageQuoteDto): MessageQuote {
   }
 }
 
+/**
+ * A system message's operands.
+ *
+ * The server sends `body` already rendered, so this is not what the line SAYS —
+ * it is what the line is ABOUT: who acted, who it happened to, and the old and
+ * new names on a rename. The shape is PER-EVENT and not uniform: a
+ * `member_added` carries the actor in `by_*` and the people in `members[]`,
+ * while a `member_left` carries one person FLAT (`talk_user_id`/`name`/`photo`)
+ * because the actor and the subject are the same person. So the flat person is
+ * read into `subject` and the renderer decides which role it plays for the
+ * event it is writing. Whatever this mapper does not recognise survives in
+ * `extra` rather than being dropped.
+ */
+export function toMessageSystemData(
+  raw: Record<string, unknown> | null | undefined,
+): MessageSystemData | null {
+  if (!raw || typeof raw !== 'object') return null
+
+  const {
+    by_talk_user_id,
+    actor_talk_user_id,
+    by_name,
+    by_photo,
+    talk_user_id,
+    name,
+    photo,
+    members,
+    member_talk_user_ids,
+    from,
+    to,
+    old_name,
+    new_name,
+    ...extra
+  } = raw as Record<string, unknown>
+
+  const byId = numberOrNull(by_talk_user_id) ?? numberOrNull(actor_talk_user_id)
+
+  return {
+    by:
+      byId === null
+        ? null
+        : { talkUserId: byId, name: stringOrNull(by_name), photo: stringOrNull(by_photo) },
+    subject: toSystemParticipant(talk_user_id, name, photo),
+    members: toSystemParticipants(members, member_talk_user_ids),
+    from: stringOrNull(from) ?? stringOrNull(old_name),
+    to: stringOrNull(to) ?? stringOrNull(new_name),
+    extra,
+  }
+}
+
+/** The one person a flat, single-subject event is about — `member_left`. */
+function toSystemParticipant(
+  talkUserId: unknown,
+  name: unknown,
+  photo: unknown,
+): SystemParticipant | null {
+  const id = numberOrNull(talkUserId)
+  if (id === null) return null
+  return { talkUserId: id, name: stringOrNull(name), photo: stringOrNull(photo) }
+}
+
+/**
+ * `members` is the rich list; `member_talk_user_ids` is the same people as bare
+ * ids and is the fallback, so a payload that only carried ids still names
+ * everybody through the directory rather than rendering nothing.
+ */
+function toSystemParticipants(members: unknown, ids: unknown): SystemParticipant[] {
+  if (Array.isArray(members)) {
+    return members
+      .map((entry) => {
+        const row = (entry ?? {}) as Record<string, unknown>
+        return toSystemParticipant(row.talk_user_id, row.name, row.photo)
+      })
+      .filter((entry): entry is SystemParticipant => entry !== null)
+  }
+
+  if (Array.isArray(ids)) {
+    return ids
+      .map((id) => numberOrNull(id))
+      .filter((id): id is number => id !== null)
+      .map((talkUserId) => ({ talkUserId, name: null, photo: null }))
+  }
+
+  return []
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value : null
+}
+
 export function toChatMessage(dto: MessageDto): ChatMessage {
   return {
     id: dto.id,
@@ -223,11 +342,16 @@ export function toChatMessage(dto: MessageDto): ChatMessage {
     isEdited: dto.is_edited ?? false,
     editedAt: dto.edited_at ?? null,
     isDeletedForEveryone: dto.is_deleted_for_everyone ?? false,
-    systemEvent: dto.system_event
-      ? oneOf(dto.system_event, SYSTEM_EVENTS, 'group_created')
+    // An event code this client has never heard of stays NULL rather than being
+    // forced onto a known one: the renderer then prints the server's own
+    // sentence, which is right, instead of a confidently wrong one.
+    systemEvent: SYSTEM_EVENTS.includes(dto.system_event as SystemEvent)
+      ? (dto.system_event as SystemEvent)
       : null,
+    systemData: toMessageSystemData(dto.system_data),
     media: (dto.media ?? []).map(toMessageMedia).sort((a, b) => a.position - b.position),
     isPinned: dto.is_pinned ?? false,
+    isPinnedForMe: dto.is_pinned_for_me ?? false,
     isReadByAll: dto.is_read_by_all ?? false,
     readCount: dto.read_count ?? 0,
     createdAt: dto.created_at,
@@ -287,12 +411,26 @@ export function toChatMember(dto: ChatMemberDto): ChatMember {
 export function toPinnedMessage(dto: PinnedMessageDto): PinnedMessage {
   return {
     messageId: dto.message_id,
+    // The server's own default: a pin with no flag on it is the chat-wide one.
+    forEveryone: dto.for_everyone ?? true,
     pinnedByTalkUserId: dto.pinned_by_talk_user_id,
     pinnedByName: dto.pinned_by_name ?? null,
     pinnedByPhoto: dto.pinned_by_photo ?? null,
     pinnedAt: dto.pinned_at,
     expiresAt: dto.expires_at ?? null,
+    message: dto.message ? toChatMessage(dto.message) : null,
   }
+}
+
+/**
+ * What tells two pins on the same message apart: WHO they are for.
+ *
+ * Under `scope=all` a message pinned both ways comes back as two rows — two
+ * pinners, two expiries, and unpinning one leaves the other — so the message id
+ * alone is not a key, and de-duping on it would silently drop one of them.
+ */
+export function pinKey(pin: PinnedMessage): string {
+  return `${pin.messageId}:${pin.forEveryone ? 'all' : 'me'}`
 }
 
 export function toPresence(dto: PresenceDto): Presence {
@@ -325,6 +463,22 @@ export function toMessageSearchHit(dto: MessageSearchHitDto): MessageSearchHit {
     type: oneOf(dto.type, MESSAGE_TYPES, 'text'),
     body: dto.body ?? null,
     createdAt: dto.created_at,
+  }
+}
+
+export function toContact(dto: ContactDto): Contact {
+  return {
+    talkUserId: dto.talk_user_id,
+    name: dto.name ?? null,
+    photo: dto.photo ?? null,
+    email: dto.email,
+    isEmployee: dto.is_employee ?? false,
+    companyId: dto.company_id ?? null,
+    companyName: dto.company_name ?? null,
+    departmentId: dto.department_id ?? null,
+    departmentName: dto.department_name ?? null,
+    designationName: dto.designation_name ?? null,
+    existingChatId: dto.existing_chat_id ?? null,
   }
 }
 
@@ -388,8 +542,10 @@ export function draftMessage(
     editedAt: null,
     isDeletedForEveryone: false,
     systemEvent: null,
+    systemData: null,
     media,
     isPinned: false,
+    isPinnedForMe: false,
     isReadByAll: false,
     readCount: 0,
     createdAt: new Date().toISOString(),

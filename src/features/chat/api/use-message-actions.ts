@@ -24,7 +24,7 @@ export function useMessageActions() {
     async (chatId: Id, messageId: Id, body: string): Promise<boolean> => {
       try {
         const saved = await chatApi.editMessage(chatId, messageId, body)
-        applyEdit(chatId, messageId, saved.body, saved.editedAt ?? new Date().toISOString())
+        applyEdit(chatId, saved.messageId, saved.body, saved.editedAt)
         toastSuccess('Message edited')
         return true
       } catch (error) {
@@ -76,15 +76,27 @@ export function useMessageActions() {
     [applyDeleteForEveryone],
   )
 
+  /**
+   * Pin, either way round and for either audience.
+   *
+   * `forEveryone` is the whole difference between an announcement and a
+   * bookmark, so it is named in the toast too: a user who meant to save a
+   * message for themselves must never be left wondering whether the chat saw it.
+   */
   const setPinned = useCallback(
-    async (chatId: Id, messageId: Id, pinned: boolean): Promise<boolean> => {
-      applyPinned(chatId, messageId, pinned)
+    async (
+      chatId: Id,
+      messageId: Id,
+      pinned: boolean,
+      forEveryone = true,
+    ): Promise<boolean> => {
+      applyPinned(chatId, messageId, pinned, forEveryone)
       try {
-        await chatApi.setMessagePinned(chatId, messageId, pinned)
-        toastSuccess(pinned ? 'Message pinned' : 'Pin removed')
+        await chatApi.setMessagePinned(chatId, messageId, pinned, { forEveryone })
+        toastSuccess(pinTitle(pinned, forEveryone))
         return true
       } catch (error) {
-        applyPinned(chatId, messageId, !pinned)
+        applyPinned(chatId, messageId, !pinned, forEveryone)
         toastApiError(error, pinned ? 'That message was not pinned' : 'That pin was not removed')
         return false
       }
@@ -128,4 +140,10 @@ export function useMessageActions() {
   )
 
   return { edit, deleteForMe, deleteForEveryone, setPinned, forward, markRead }
+}
+
+/** What a pin toast says — the audience is the part worth confirming. */
+function pinTitle(pinned: boolean, forEveryone: boolean): string {
+  if (forEveryone) return pinned ? 'Pinned for everyone' : 'Pin removed for everyone'
+  return pinned ? 'Pinned for me' : 'Unpinned for me'
 }

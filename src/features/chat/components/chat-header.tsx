@@ -1,15 +1,18 @@
-import { ArrowLeft, Ban, Info, LogOut, Pin, PinOff, Search, Trash2, Users } from 'lucide-react'
+import { ArrowLeft, Ban, Info, LogOut, Pin, Search, Trash2, Users } from 'lucide-react'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/common/confirm-dialog'
 import { Tip } from '@/components/common/tip'
 import { useMediaUrl } from '@/hooks/use-app-config'
 import { useChatStore } from '@/stores/chat-store'
 import { useUiStore } from '@/stores/ui-store'
 import { cn } from '@/lib/utils'
 import { keyOf } from '@/types/api'
-import { useChatActions } from '../api/use-chat-actions'
 import { chatLabel } from '../lib/chat-labels'
 import { formatLastSeen, formatTypingLine } from '../lib/message-formatters'
+import { useChatHeaderActions } from '../hooks/use-chat-header-actions'
+import { usePersonBlock } from '../hooks/use-person-block'
+import { PersonBlockDialog } from './person-block-dialog'
 import { useTypingNames } from '../hooks/use-typing'
 import type { Chat } from '../types'
 
@@ -19,6 +22,10 @@ interface ChatHeaderProps {
   /** Toggles the find bar — the same button closes it again. */
   onOpenSearch: () => void
   isSearchOpen: boolean
+  /** Opens the pinned-messages sheet. */
+  onOpenPins: () => void
+  /** The server's pin count, for the badge on the button. */
+  pinCount: number
 }
 
 export function ChatHeader({
@@ -26,6 +33,8 @@ export function ChatHeader({
   onOpenDetails,
   onOpenSearch,
   isSearchOpen,
+  onOpenPins,
+  pinCount,
 }: ChatHeaderProps) {
   const mediaUrl = useMediaUrl()
   const label = chatLabel(chat)
@@ -37,8 +46,8 @@ export function ChatHeader({
       ? undefined
       : s.presence[keyOf(chat.counterpartTalkUserId)],
   )
-  const { setChatPinned, leaveGroup, disbandGroup, deleteForMe, setPersonBlocked } =
-    useChatActions()
+  const block = usePersonBlock()
+  const confirm = useChatHeaderActions(chat.id)
 
   const isOwner = chat.self.memberRole === 'owner'
   const counterpartId = chat.counterpartTalkUserId
@@ -107,20 +116,29 @@ export function ChatHeader({
         </Button>
       </Tip>
 
-      <Tip
-        label={
-          chat.self.isPinned
-            ? 'Unpin from your list'
-            : 'Pin to the top of your list (only you see this)'
-        }
-      >
+      {/* THE OTHER PIN. This opens the messages pinned for everyone in the chat;
+          pinning the CONVERSATION to my own list is private to me and lives in
+          the sidebar row's right-click menu, where it cannot be mistaken for
+          this one. */}
+      <Tip label="Pinned messages">
         <Button
           variant="ghost"
           size="icon"
-          onClick={() => void setChatPinned(chat.id, !chat.self.isPinned)}
-          aria-label={chat.self.isPinned ? 'Unpin this conversation' : 'Pin this conversation'}
+          onClick={onOpenPins}
+          aria-label={
+            pinCount > 0 ? `Pinned messages (${pinCount})` : 'Pinned messages'
+          }
+          className="relative"
         >
-          {chat.self.isPinned ? <PinOff /> : <Pin />}
+          <Pin />
+          {pinCount > 0 && (
+            <span
+              aria-hidden
+              className="absolute top-0.5 right-0.5 flex size-3.5 items-center justify-center rounded-full bg-primary text-[9px] font-semibold text-primary-foreground"
+            >
+              {pinCount > 9 ? '9+' : pinCount}
+            </span>
+          )}
         </Button>
       </Tip>
 
@@ -129,7 +147,7 @@ export function ChatHeader({
           <Button
             variant="ghost"
             size="icon"
-            onClick={() => void setPersonBlocked(counterpartId, !isBlockedByMe)}
+            onClick={() => block.ask(counterpartId, label.title, !isBlockedByMe)}
             aria-label={isBlockedByMe ? 'Unblock this person' : 'Block this person'}
           >
             <Ban className={isBlockedByMe ? 'text-destructive' : undefined} />
@@ -145,7 +163,7 @@ export function ChatHeader({
             <Button
               variant="ghost"
               size="icon"
-              onClick={() => void disbandGroup(chat.id)}
+              onClick={() => confirm.ask('disband')}
               aria-label="Delete this group for everyone"
             >
               <Trash2 />
@@ -157,7 +175,7 @@ export function ChatHeader({
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={() => void leaveGroup(chat.id)}
+                onClick={() => confirm.ask('leave')}
                 aria-label="Leave this group"
               >
                 <LogOut />
@@ -170,7 +188,7 @@ export function ChatHeader({
           <Button
             variant="ghost"
             size="icon"
-            onClick={() => void deleteForMe([chat.id])}
+            onClick={() => confirm.ask('remove')}
             aria-label="Remove this conversation from your list"
           >
             <Trash2 />
@@ -188,6 +206,36 @@ export function ChatHeader({
           <Info />
         </Button>
       </Tip>
+      {confirm.confirmKind !== null && (
+        <ConfirmDialog
+          title={
+            confirm.confirmKind === 'disband'
+              ? 'Delete this group for everyone?'
+              : confirm.confirmKind === 'leave'
+                ? 'Leave this group?'
+                : 'Remove this conversation?'
+          }
+          message={
+            confirm.confirmKind === 'disband'
+              ? `${label.title} and its messages go away for every member. This cannot be undone.`
+              : confirm.confirmKind === 'leave'
+                ? `You stop receiving messages in ${label.title}. The history stays readable, and an owner can add you back.`
+                : `${label.title} leaves your list and its messages are hidden from you. The conversation comes back if they message you again.`
+          }
+          confirmLabel={
+            confirm.confirmKind === 'disband'
+              ? 'Delete for everyone'
+              : confirm.confirmKind === 'leave'
+                ? 'Leave'
+                : 'Remove'
+          }
+          tone="destructive"
+          isPending={confirm.isPending}
+          onConfirm={() => void confirm.run()}
+          onCancel={confirm.cancel}
+        />
+      )}
+      <PersonBlockDialog block={block} />
     </header>
   )
 }

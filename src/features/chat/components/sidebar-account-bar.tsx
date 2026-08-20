@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { LogOut, Moon, Palette, Settings, UserRound } from 'lucide-react'
+import { LogOut, Moon, Palette, Settings, ShieldOff, UserRound } from 'lucide-react'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { OnlineBadge } from '@/components/common/online-badge'
@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 import { useUiStore } from '@/stores/ui-store'
 import { selfLabel } from '../lib/talk-directory'
+import { BlockedPeopleDialog } from './blocked-people-dialog'
 import { Tip } from '@/components/common/tip'
 
 /**
@@ -32,6 +33,7 @@ export function SidebarAccountBar() {
   const [isMenuOpen, setMenuOpen] = useState(false)
   const [showAccount, setShowAccount] = useState(false)
   const [showThemes, setShowThemes] = useState(false)
+  const [showBlocked, setShowBlocked] = useState(false)
   const bar = useRef<HTMLDivElement>(null)
 
   // A menu that only closes on its own items is a trap — Escape and a click
@@ -159,6 +161,19 @@ export function SidebarAccountBar() {
             <span className="flex-1 text-left">Your account</span>
           </button>
 
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setMenuOpen(false)
+              setShowBlocked(true)
+            }}
+            className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm hover:bg-accent"
+          >
+            <ShieldOff className="size-4 text-muted-foreground" aria-hidden />
+            <span className="flex-1 text-left">Blocked contacts</span>
+          </button>
+
           <div className="my-1 h-px bg-border" />
 
           <button
@@ -176,6 +191,7 @@ export function SidebarAccountBar() {
 
       {showAccount && <AccountSheet onClose={() => setShowAccount(false)} />}
       {showThemes && <ThemePickerDialog onClose={() => setShowThemes(false)} />}
+      {showBlocked && <BlockedPeopleDialog onClose={() => setShowBlocked(false)} />}
     </div>
   )
 }

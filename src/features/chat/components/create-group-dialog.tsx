@@ -23,7 +23,7 @@ export function CreateGroupDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <Modal
-      title="New group"
+      title="Create group"
       description="Name it, then choose who is in it."
       onClose={onClose}
       side="right"

@@ -1,15 +1,20 @@
 import { useCallback, useMemo, useState } from 'react'
-import { useChatListStore } from '@/stores/chat-list-store'
 import { useTalkDirectoryStore } from '@/stores/talk-directory-store'
 import { keyOf, type Id } from '@/types/api'
+import { useContacts } from '../api/use-contacts'
+import { contactSubtitle } from '../lib/chat-labels'
 import { resolveTalkUser } from '../lib/talk-directory'
+import type { Contact } from '../types'
 
 interface UsePeoplePickerOptions {
   selectedIds: Id[]
   /** Ids to hide — already in the group, or myself. */
   excludeIds?: Id[]
   onChange: (ids: Id[]) => void
-  /** Free text to narrow the list by name. */
+  /**
+   * The search box, when the SCREEN owns it (the New group sheet has its own).
+   * Leave it out and the picker keeps its own — `search`/`setSearch` below.
+   */
   query?: string
 }
 
@@ -18,89 +23,119 @@ export interface PickerCandidate {
   name: string
   /** A storage KEY — the component runs it through `useMediaUrl()`. */
   avatarKey: string | null
+  /** Their role and where they work, or their login — how to tell two Ashas apart. */
+  subtitle: string | null
   isSelected: boolean
 }
 
 /**
- * Who a group can be built from, and the two ways of choosing them.
+ * Who a group can be built from, and how they are found.
  *
- * The Talk API still has NO directory endpoint: names and photos now ride along
- * with every id it returns, but nothing LISTS the account's Talk identities. So
- * the pool is everyone we have already seen — the counterparts of our direct
- * chats, plus anyone a chat, a member list or a message has named — and ids
- * typed in by hand from an administrator.
+ * `GET /talk/contacts` is the DIRECTORY, so the pool is no longer whoever we
+ * happened to have seen: it is every Talk identity of the organisation an
+ * administrator granted me reach to, read live, alphabetically. Reach is granted
+ * rather than assumed, so an empty list is a real answer — nobody was granted —
+ * and not a failed read.
  *
- * The server drops ids that are not Talk identities of this account, so a typed
- * id is safe to submit: a wrong one is ignored rather than added.
+ * SEARCH IS SERVER-SIDE. The list pages, so filtering the loaded page in the
+ * browser would search thirty names instead of the organisation, and it matches
+ * the Talk login as well as the name, which the rows do not all carry.
+ *
+ * A person chosen and then searched away STAYS on screen and stays counted —
+ * a selection that vanishes because the query moved reads as having been undone.
  */
 export function usePeoplePicker({
   selectedIds,
   excludeIds = [],
   onChange,
-  query = '',
+  query,
 }: UsePeoplePickerOptions) {
-  const chats = useChatListStore((s) => s.chats)
-  const people = useTalkDirectoryStore((s) => s.people)
-  const [manualId, setManualId] = useState('')
-  const [manualIds, setManualIds] = useState<Id[]>([])
+  const [ownQuery, setOwnQuery] = useState('')
+  // Controlled when the screen passes a query; self-owned otherwise.
+  const search = query ?? ownQuery
 
-  // `excludeIds` is usually a fresh array each render, so key the memo on its
-  // contents rather than its identity or the list rebuilds on every keystroke.
+  const { contacts, total, isLoading, isSearching, isLoadingMore, hasMore, loadMore } =
+    useContacts({ search })
+
+  // Everyone the user has ticked, remembered as they were drawn — the next
+  // search will not contain them and the row still has to render.
+  const [picked, setPicked] = useState<Record<string, PickerCandidate>>({})
+  const people = useTalkDirectoryStore((s) => s.people)
+
+  // `excludeIds` and `selectedIds` are usually fresh arrays each render, so key
+  // the memo on their contents or the list rebuilds on every keystroke.
   const excludeKey = excludeIds.join(',')
   const selectedKey = selectedIds.join(',')
 
   const candidates = useMemo<PickerCandidate[]>(() => {
     const excluded = new Set(excludeKey ? excludeKey.split(',').map(Number) : [])
-    const selected = new Set(selectedKey ? selectedKey.split(',').map(Number) : [])
-    const known = chats
-      .filter((chat) => chat.type === 'direct' && chat.counterpartTalkUserId !== null)
-      .map((chat) => chat.counterpartTalkUserId as Id)
-    // Anyone a group's member list or a message has named is choosable too —
-    // a colleague we share a group with but have never messaged directly.
-    const seen = Object.values(people).map((entry) => entry.talkUserId)
-    const needle = query.trim().toLowerCase()
+    const selected = selectedKey ? selectedKey.split(',').map(Number) : []
+    const isSelected = new Set(selected)
 
-    return [...new Set([...known, ...seen, ...manualIds])]
-      .filter((id) => !excluded.has(id))
+    const rows = contacts
+      .filter((contact) => !excluded.has(contact.talkUserId))
+      .map((contact) => toCandidate(contact, isSelected.has(contact.talkUserId)))
+
+    const shown = new Set(rows.map((row) => row.id))
+    // Chosen, but off the current page or outside the current search.
+    const offscreen = selected
+      .filter((id) => !shown.has(id) && !excluded.has(id))
       .map((id) => {
+        const held = picked[keyOf(id)]
+        if (held) return { ...held, isSelected: true }
         const entry = people[keyOf(id)]
         const person = resolveTalkUser(id, entry?.name, entry?.photo)
         return {
           id,
           name: person.name,
           avatarKey: person.avatarKey,
-          isSelected: selected.has(id),
+          subtitle: null,
+          isSelected: true,
         }
       })
-      .filter((candidate) => !needle || candidate.name.toLowerCase().includes(needle))
-  }, [chats, people, manualIds, excludeKey, selectedKey, query])
+
+    return [...offscreen, ...rows]
+  }, [contacts, excludeKey, people, picked, selectedKey])
 
   const toggle = useCallback(
     (id: Id) => {
-      onChange(
-        selectedIds.includes(id)
-          ? selectedIds.filter((held) => held !== id)
-          : [...selectedIds, id],
-      )
+      const isOn = selectedIds.includes(id)
+      if (!isOn) {
+        const contact = contacts.find((row) => row.talkUserId === id)
+        if (contact) {
+          setPicked((held) => ({ ...held, [keyOf(id)]: toCandidate(contact, true) }))
+        }
+      }
+      onChange(isOn ? selectedIds.filter((held) => held !== id) : [...selectedIds, id])
     },
-    [onChange, selectedIds],
+    [contacts, onChange, selectedIds],
   )
-
-  /** Take the typed id into the pool AND into the selection — typing it is the choice. */
-  const addManual = useCallback(() => {
-    const parsed = Number(manualId.trim())
-    if (!Number.isInteger(parsed) || parsed <= 0) return
-    setManualIds((held) => [...new Set([...held, parsed])])
-    if (!selectedIds.includes(parsed)) onChange([...selectedIds, parsed])
-    setManualId('')
-  }, [manualId, onChange, selectedIds])
 
   return {
     candidates,
     toggle,
-    manualId,
-    /** Digits only — a Talk ID is an integer. */
-    setManualId: useCallback((value: string) => setManualId(value.replace(/\D/g, '')), []),
-    addManual,
+    /** How many the directory has for this search, not how many are drawn. */
+    total,
+    isLoading,
+    /** True while the debounce still holds the newest keystroke. */
+    isSearching,
+    isLoadingMore,
+    hasMore,
+    loadMore,
+    search,
+    setSearch: setOwnQuery,
+    /** False when the screen owns the search box, so the picker hides its own. */
+    ownsSearch: query === undefined,
+  }
+}
+
+function toCandidate(contact: Contact, isSelected: boolean): PickerCandidate {
+  const person = resolveTalkUser(contact.talkUserId, contact.name, contact.photo)
+  return {
+    id: contact.talkUserId,
+    name: person.name,
+    avatarKey: person.avatarKey,
+    subtitle: contactSubtitle(contact),
+    isSelected,
   }
 }

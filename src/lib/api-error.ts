@@ -10,6 +10,30 @@ interface TalkErrorBody {
   details?: Array<{ message?: string; params?: { issue?: { path?: Array<string | number> } } }>
 }
 
+/**
+ * A refused socket ack, raised as an error so a screen cannot tell which
+ * transport ran.
+ *
+ * Every bridged inbound event (`talk:message.send`, `talk:chat.update`, …) is
+ * the REST route one hop away: the gateway calls it with our own bearer token
+ * and passes the response back verbatim. So the ack carries the HTTP `status`
+ * and the API's own `{ code, message, details }` envelope, and `toApiError`
+ * normalises it into exactly the shape an axios failure produces.
+ */
+export class SocketAckError extends Error {
+  readonly status: number
+  readonly code: string
+  readonly details?: unknown
+
+  constructor(status: number, error?: { code?: string; message?: string; details?: unknown }) {
+    super(error?.message || 'The server refused that request')
+    this.name = 'SocketAckError'
+    this.status = status
+    this.code = error?.code ?? 'SOCKET'
+    this.details = error?.details
+  }
+}
+
 export interface ApiError {
   status: number
   /** The server's own `code` — `UNAUTHORIZED`, `VALIDATION`, `FORBIDDEN`, … */
@@ -28,6 +52,16 @@ export function toApiError(error: unknown, fallback = 'Something went wrong'): A
       code: body?.code ?? 'NETWORK',
       message: body?.message || error.message || fallback,
       fields: toFieldErrors(body?.details),
+    }
+  }
+  // A socket ack failure already IS the API's envelope — same status, same
+  // code, same user-facing message — so it maps across unchanged.
+  if (error instanceof SocketAckError) {
+    return {
+      status: error.status,
+      code: error.code,
+      message: error.message || fallback,
+      fields: toFieldErrors(error.details as TalkErrorBody['details']),
     }
   }
   if (error instanceof Error) return { status: 0, code: 'CLIENT', message: error.message }

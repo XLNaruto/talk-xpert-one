@@ -5,8 +5,10 @@ import type {
   Chat,
   ChatMember,
   ChatMessage,
+  Contact,
   MessageReceipt,
   MessageSearchHit,
+  MessageSystemData,
   PinnedMessage,
   Presence,
 } from '../types'
@@ -149,6 +151,25 @@ export function peopleInMessage(message: ChatMessage): (TalkPerson | null)[] {
           message.replyTo.senderPhoto,
         )
       : null,
+    // A system message has no sender, so the only names it carries are the ones
+    // in its operands — the actor and the people it happened to.
+    ...peopleInSystemData(message.systemData),
+  ]
+}
+
+/**
+ * Everyone a system message named. These are the names they had AT THE TIME, so
+ * a thread of old events still seeds the directory for typing and presence when
+ * nothing fresher has named them.
+ */
+function peopleInSystemData(data: MessageSystemData | null): (TalkPerson | null)[] {
+  if (!data) return []
+  return [
+    data.by ? person(data.by.talkUserId, data.by.name, data.by.photo) : null,
+    data.subject
+      ? person(data.subject.talkUserId, data.subject.name, data.subject.photo)
+      : null,
+    ...data.members.map((member) => person(member.talkUserId, member.name, member.photo)),
   ]
 }
 
@@ -167,12 +188,24 @@ export function peopleInPresence(entry: Presence): (TalkPerson | null)[] {
   return [person(entry.talkUserId, entry.name, entry.photo)]
 }
 
+/**
+ * The directory read — the ONE response that names people we have never
+ * exchanged a message with, so it is the richest feed the cache gets.
+ */
+export function peopleInContact(contact: Contact): (TalkPerson | null)[] {
+  return [person(contact.talkUserId, contact.name, contact.photo)]
+}
+
 export function peopleInBlock(block: BlockedPerson): (TalkPerson | null)[] {
   return [person(block.talkUserId, block.name, block.photo)]
 }
 
 export function peopleInPin(pin: PinnedMessage): (TalkPerson | null)[] {
-  return [person(pin.pinnedByTalkUserId, pin.pinnedByName, pin.pinnedByPhoto)]
+  return [
+    person(pin.pinnedByTalkUserId, pin.pinnedByName, pin.pinnedByPhoto),
+    // The pin carries its message, so its author is named here too.
+    ...(pin.message ? peopleInMessage(pin.message) : []),
+  ]
 }
 
 export function peopleInSearchHit(hit: MessageSearchHit): (TalkPerson | null)[] {

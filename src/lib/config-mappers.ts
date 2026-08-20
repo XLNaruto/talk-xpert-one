@@ -57,13 +57,20 @@ export function resolveRealtimeTarget(
  * `<img src>` in the app goes through this rather than concatenating by hand.
  *
  * An absolute URL is passed through untouched — some records already carry one.
+ * So is a `blob:` object URL: an optimistic attachment preview is a local handle
+ * on the file being uploaded, and prefixing it with the media path would make it
+ * a path that resolves to nothing — the broken tile a send used to draw while
+ * the bytes were still going up.
  */
 export function joinMediaPath(mediaPath: string, key: string | null | undefined): string {
   if (!key) return ''
-  if (/^(https?:)?\/\//i.test(key) || key.startsWith('data:')) return key
+  if (PASSTHROUGH_URL.test(key)) return key
   if (!mediaPath) return key
   return `${stripTrailingSlash(mediaPath)}/${key.replace(/^\/+/, '')}`
 }
+
+/** Already a usable src: absolute http(s), protocol-relative, blob or data. */
+const PASSTHROUGH_URL = /^(https?:)?\/\/|^(blob|data):/i
 
 function stripTrailingSlash(value: string): string {
   return value.replace(/\/+$/, '')

@@ -14,6 +14,8 @@ export type {
   ChatMessage,
   ChatSelf,
   ChatType,
+  Contact,
+  ContactQuery,
   MediaKind,
   MemberRole,
   MessageMedia,

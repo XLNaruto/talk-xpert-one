@@ -2,14 +2,21 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { toastApiError } from '@/lib/api-toast'
 import { joinChatRoom } from '@/lib/socket-client'
 import { logger } from '@/lib/logger'
-import { useMessageCacheStore, newestMessageId } from '@/stores/message-cache-store'
+import { useMessageCacheStore, newestMessageId, oldestMessageId } from '@/stores/message-cache-store'
 import { keyOf, type Id } from '@/types/api'
-import { MESSAGE_PAGE_SIZE } from '../constants'
+import { MESSAGE_PAGE_SIZE, THREAD_HISTORY_PAGE_COOLDOWN_MS } from '../constants'
 import * as chatApi from './chat-api'
 
 /**
- * History for one chat, backed by the IndexedDB cache so a cold start paints
- * instantly and the network fill-in merges in behind it.
+ * One shared empty page. A fresh `[]` per render would give `rows` a new
+ * identity every time, which hands Virtuoso new `data` and re-renders the list
+ * for a thread that has nothing in it.
+ */
+const NO_MESSAGES: never[] = []
+
+/**
+ * History for one chat, backed by the in-memory cache — nothing is persisted, so
+ * a reload always re-reads the newest page from the API.
  *
  * Opening a thread reads it and then joins its room — in that order, because a
  * join with no preceding read is refused. The read also refreshes the grant, so
@@ -19,9 +26,23 @@ export function useMessages(chatId: Id | null) {
   const messages = useMessageCacheStore((s) => (chatId == null ? undefined : s.byChat[keyOf(chatId)]))
   const paging = useMessageCacheStore((s) => (chatId == null ? undefined : s.paging[keyOf(chatId)]))
   const setPage = useMessageCacheStore((s) => s.setPage)
+  const retain = useMessageCacheStore((s) => s.retain)
 
   const [isLoading, setLoading] = useState(false)
   const [isLoadingMore, setLoadingMore] = useState(false)
+  /**
+   * The same flag as a ref. `startReached` can fire again before React has
+   * re-rendered with `isLoadingMore` true, and two reads from the same cursor
+   * would fetch the same page twice.
+   */
+  const loadingMoreRef = useRef(false)
+  /**
+   * When the next history page may be asked for. See
+   * `THREAD_HISTORY_PAGE_COOLDOWN_MS` — without it one flick to the top pulls
+   * the whole conversation in a burst, each page prepending before Virtuoso has
+   * compensated the scroll for the last.
+   */
+  const nextPageAllowedAtRef = useRef(0)
   /** Which chats this mount has already read, so a re-render can't refetch. */
   const opened = useRef(new Set<string>())
 
@@ -49,15 +70,23 @@ export function useMessages(chatId: Id | null) {
     const key = keyOf(chatId)
     if (opened.current.has(key)) return
     opened.current.add(key)
+    // Bound the cache before the page lands, so this chat is never the one evicted.
+    retain(chatId)
     void loadLatest(chatId)
-  }, [chatId, loadLatest])
+  }, [chatId, loadLatest, retain])
 
   /** Scroll up: one page older, from the oldest id held. */
   const loadEarlier = useCallback(async () => {
-    if (chatId == null || isLoadingMore) return
-    const oldestId = paging?.oldestId
-    if (oldestId == null || paging?.hasMore === false) return
+    if (chatId == null || loadingMoreRef.current) return
+    if (Date.now() < nextPageAllowedAtRef.current) return
+    if (paging?.hasMore === false) return
+    // The topmost ROW is the cursor, not the last page's `oldestId` — see
+    // `oldestMessageId`. Falls back to the recorded cursor for the window
+    // between `retain` evicting the rows and the first page landing.
+    const oldestId = oldestMessageId(chatId) ?? paging?.oldestId
+    if (oldestId == null) return
 
+    loadingMoreRef.current = true
     setLoadingMore(true)
     try {
       const page = await chatApi.fetchMessages(chatId, {
@@ -73,13 +102,15 @@ export function useMessages(chatId: Id | null) {
     } catch (error) {
       toastApiError(error, 'Could not load earlier messages')
     } finally {
+      nextPageAllowedAtRef.current = Date.now() + THREAD_HISTORY_PAGE_COOLDOWN_MS
+      loadingMoreRef.current = false
       setLoadingMore(false)
     }
-  }, [chatId, isLoadingMore, paging?.oldestId, paging?.hasMore, setPage])
+  }, [chatId, paging?.oldestId, paging?.hasMore, setPage])
 
   return {
-    messages: messages ?? [],
-    // Restored rows paint at once, so this only covers a genuinely empty thread.
+    messages: messages ?? NO_MESSAGES,
+    // Rows already held paint at once, so this only covers an empty thread.
     isLoading: isLoading && !messages?.length,
     isLoadingMore,
     hasEarlier: paging?.hasMore !== false && Boolean(paging?.oldestId),

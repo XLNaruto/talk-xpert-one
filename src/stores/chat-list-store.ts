@@ -16,16 +16,41 @@ import type { Chat, ChatType } from '@/features/chat/types'
  * It caches only. Fetching stays in `features/chat/api/use-chats.ts`, which is
  * the only thing that calls axios and then writes here.
  */
+/**
+ * Why a list read happened, and so what it may do to the visible listing.
+ *
+ * - `replace` — an unfiltered read: it is the inventory, and nothing is hidden.
+ * - `filter` — a search or a tab: it answers a question, so it refreshes the
+ *   rows it returned and records which they were, keeping the rest.
+ * - `refresh` — the reconnect catch-up: it renews every row and its socket
+ *   grant, but it is nobody's query, so it leaves the listing alone.
+ */
+type ListScope = 'replace' | 'filter' | 'refresh'
+
 interface ChatListState {
+  /**
+   * Every chat we know about — NOT what the sidebar draws.
+   *
+   * A search or a tab filter answers a question; it is not an inventory. If a
+   * filtered read replaced this outright, the open conversation would be evicted
+   * the moment its name stopped matching, and the thread would collapse to "Pick
+   * a conversation" mid-search. Its socket room would go with it, too, since the
+   * reconnect re-join walks exactly these ids.
+   */
   chats: Chat[]
+  /** Which of them the last list read returned. `null` means "all of them". */
+  listedIds: Id[] | null
   total: number
   /** Whether a first read has landed, so the sidebar can tell empty from unread. */
   isLoaded: boolean
   /** `GET /talk/chats/unread-summary` — the app badge. */
   totalUnread: number
 
-  /** Replace the list with a fresh page (the API already ordered it). */
-  setChats: (chats: Chat[], total: number) => void
+  /**
+   * A fresh page from `GET /talk/chats` (the API already ordered it). What it
+   * does to the visible listing depends on WHY it was read — see `ListScope`.
+   */
+  setChats: (chats: Chat[], total: number, scope?: ListScope) => void
   /** Merge one chat's header in — from `GET /talk/chats/:id` or a socket event. */
   upsertChat: (chat: Chat) => void
   setTotalUnread: (total: number) => void
@@ -33,6 +58,10 @@ interface ChatListState {
   /**
    * A message arrived: refresh the preview, move the row to the top of its
    * pinned band, and add to the unread badge unless this chat is open.
+   *
+   * The preview, the timestamp and the sender are set together and always
+   * describe the SAME message — the newest one visible to me — which is the
+   * contract the server's own row keeps.
    */
   applyIncoming: (
     chatId: Id,
@@ -66,7 +95,14 @@ interface ChatListState {
 }
 
 /**
- * Re-sort the way the server does: PINNED first, then newest activity.
+ * Re-sort the way the server does: PINNED first, then by MY OWN last visible
+ * message, and chats with nothing left to show last.
+ *
+ * `lastMessageAt` is per viewer — it is when the newest message *I* can still
+ * see was sent — so it is null on a chat I cleared with nothing newer since, and
+ * on one nobody has spoken in. Those sort to the bottom rather than borrowing
+ * `createdAt`, which would float a freshly created empty chat over conversations
+ * that actually have something in them.
  *
  * The list arrives already ordered and must not be re-sorted on arrival. This
  * runs only after a LOCAL change to the ordering keys — a new message, or a pin
@@ -75,7 +111,13 @@ interface ChatListState {
 function reorder(chats: Chat[]): Chat[] {
   return [...chats].sort((a, b) => {
     if (a.self.isPinned !== b.self.isPinned) return a.self.isPinned ? -1 : 1
-    return (b.lastMessageAt ?? b.createdAt).localeCompare(a.lastMessageAt ?? a.createdAt)
+    if (!a.lastMessageAt || !b.lastMessageAt) {
+      if (a.lastMessageAt) return -1
+      if (b.lastMessageAt) return 1
+      // Both empty: newest chat first, so a group just created is reachable.
+      return b.createdAt.localeCompare(a.createdAt)
+    }
+    return b.lastMessageAt.localeCompare(a.lastMessageAt)
   })
 }
 
@@ -87,11 +129,34 @@ export const useChatListStore = create<ChatListState>()(
   persist(
     (set) => ({
       chats: [],
+      listedIds: null,
       total: 0,
       isLoaded: false,
       totalUnread: 0,
 
-      setChats: (chats, total) => set({ chats, total, isLoaded: true }),
+      setChats: (chats, total, scope = 'replace') =>
+        set((s) => {
+          if (scope !== 'filter') {
+            return {
+              chats,
+              listedIds: scope === 'refresh' ? s.listedIds : null,
+              total,
+              isLoaded: true,
+            }
+          }
+
+          const incoming = new Map(chats.map((chat) => [chat.id, chat]))
+          const refreshed = s.chats.map((held) => incoming.get(held.id) ?? held)
+          const held = new Set(s.chats.map((chat) => chat.id))
+          const added = chats.filter((chat) => !held.has(chat.id))
+
+          return {
+            chats: added.length > 0 ? reorder([...refreshed, ...added]) : refreshed,
+            listedIds: chats.map((chat) => chat.id),
+            total,
+            isLoaded: true,
+          }
+        }),
 
       upsertChat: (chat) =>
         set((s) => {
@@ -99,7 +164,14 @@ export const useChatListStore = create<ChatListState>()(
           const chats = exists
             ? patchOne(s.chats, chat.id, (held) => ({ ...held, ...chat }))
             : [chat, ...s.chats]
-          return { chats: reorder(chats), total: exists ? s.total : s.total + 1 }
+          return {
+            chats: reorder(chats),
+            // A chat opened while a search is running — from a directory hit —
+            // belongs in the results, not hidden behind the term that found it.
+            listedIds:
+              s.listedIds === null || exists ? s.listedIds : [chat.id, ...s.listedIds],
+            total: exists ? s.total : s.total + 1,
+          }
         }),
 
       setTotalUnread: (totalUnread) => set({ totalUnread }),
@@ -183,12 +255,14 @@ export const useChatListStore = create<ChatListState>()(
           const removedUnread = going.reduce((sum, c) => sum + c.unreadCount, 0)
           return {
             chats: s.chats.filter((c) => !ids.has(c.id)),
+            listedIds: s.listedIds?.filter((id) => !ids.has(id)) ?? null,
             total: Math.max(0, s.total - going.length),
             totalUnread: Math.max(0, s.totalUnread - removedUnread),
           }
         }),
 
-      clear: () => set({ chats: [], total: 0, isLoaded: false, totalUnread: 0 }),
+      clear: () =>
+        set({ chats: [], listedIds: null, total: 0, isLoaded: false, totalUnread: 0 }),
     }),
     {
       name: 'xpertone-talk-chats',
@@ -196,6 +270,8 @@ export const useChatListStore = create<ChatListState>()(
       skipHydration: true,
       // `isLoaded` describes THIS launch — a restored list is a paint, not a read,
       // and the sidebar still shows its loading state until the refetch lands.
+      // `listedIds` is left out on purpose: a restored session has no search
+      // running, so it rehydrates as `null` and paints every cached row.
       partialize: (s) => ({ chats: s.chats, total: s.total, totalUnread: s.totalUnread }),
     },
   ),

@@ -6,7 +6,6 @@ import { router } from '@/app/router/router'
 import { useAuthStore } from '@/stores/auth-store'
 import { useChatListStore } from '@/stores/chat-list-store'
 import { bootstrapAppConfig, useConfigStore } from '@/stores/config-store'
-import { useMessageCacheStore } from '@/stores/message-cache-store'
 import { useUiStore } from '@/stores/ui-store'
 import '@/styles/globals.css'
 
@@ -14,7 +13,6 @@ import '@/styles/globals.css'
 // rehydrate them ALL before mounting the router:
 //  • auth — the route guards read the store synchronously and would otherwise
 //    bounce a signed-in user to /login on refresh;
-//  • messages — the thread should paint from cache, not from an empty list;
 //  • chats — the sidebar should paint its last known rows rather than a spinner
 //    while the list read is in flight;
 //  • ui — first paint should already carry the saved theme (no flash);
@@ -24,7 +22,7 @@ import '@/styles/globals.css'
 //
 // ADD ANY NEW PERSISTED STORE TO THIS LIST.
 Promise.all(
-  [useAuthStore, useChatListStore, useConfigStore, useMessageCacheStore, useUiStore].map(
+  [useAuthStore, useChatListStore, useConfigStore, useUiStore].map(
     (store) => Promise.resolve(store.persist.rehydrate()),
   ),
 )
