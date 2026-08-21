@@ -1,4 +1,4 @@
-# Deploy workflow for the XpertOne Talk SPA (talk.xpertoneindia.com).
+# Deploy workflow for the XpertOne Talk SPA (talk.dev.xpertoneindia.com).
 #
 # Mirrors app-xpert-one/.github/workflows/deploy-app.yml — same OIDC role per
 # environment, same "hashed assets first, shell second" upload order. What
@@ -31,18 +31,13 @@
 #      reverse proxy only, and setting it in a build would point axios at a
 #      same-origin /api that nothing serves.
 #
-#   4. In EACH environment add the deploy TARGET. Either point at CloudFormation:
-#          CFN_STACK_NAME            e.g. XpertOne-Dev-Assets
-#          BUCKET_OUTPUT_KEY         e.g. talkWebBucketName
-#          DISTRIBUTION_OUTPUT_KEY   e.g. talkWebDistributionId
-#      or skip the lookup and name the resources directly:
-#          S3_BUCKET
-#          CLOUDFRONT_DISTRIBUTION_ID
-#      The direct values win when both are present. Nothing account-specific is
-#      hardcoded in this file either way. If neither resolves, the deploy fails
-#      AFTER printing the stack's real outputs, the stacks in the account, the
-#      buckets the role can list and the CloudFront ids with their aliases —
-#      configure the environment from that log rather than guessing.
+#   4. Nothing to configure for the deploy target. The bucket and distribution
+#      are read from XpertOne-<Dev|Prod>-Assets at run time as talkBucketName /
+#      talkDistributionId, alongside the admin app's webBucketName and the
+#      landing site's landingBucketName in the same stack. Dev resolves to
+#      talk-dev-473671718877 behind https://talk.dev.xpertoneindia.com.
+#      The S3_BUCKET / CLOUDFRONT_DISTRIBUTION_ID variables are an escape hatch
+#      for a one-off target and are normally unset.
 #
 # WHAT IT DOES
 #   push to master    -> deploys to dev
@@ -80,6 +75,11 @@ jobs:
     env:
       AWS_REGION: ap-south-1
       TARGET_ENV: ${{ github.event.inputs.environment || 'dev' }}
+      # Outputs of XpertOne-<Dev|Prod>-Assets. That one stack carries every SPA
+      # in the account, so the Talk-prefixed pair is what keeps this deploy off
+      # the admin app's bucket — the shell sync below runs --delete.
+      BUCKET_OUTPUT_KEY: talkBucketName
+      DISTRIBUTION_OUTPUT_KEY: talkDistributionId
 
     steps:
       - uses: actions/checkout@v4
@@ -154,62 +154,43 @@ jobs:
       - name: Resolve bucket and distribution
         id: target
         env:
+          # Optional escape hatch; normally unset, see note 4 in the header.
           S3_BUCKET: ${{ vars.S3_BUCKET }}
           CLOUDFRONT_DISTRIBUTION_ID: ${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}
           CFN_STACK_NAME: ${{ vars.CFN_STACK_NAME }}
-          BUCKET_OUTPUT_KEY: ${{ vars.BUCKET_OUTPUT_KEY }}
-          DISTRIBUTION_OUTPUT_KEY: ${{ vars.DISTRIBUTION_OUTPUT_KEY }}
         run: |
           set -uo pipefail
           BUCKET="${S3_BUCKET}"
           DIST="${CLOUDFRONT_DISTRIBUTION_ID}"
           STACK="${CFN_STACK_NAME:-XpertOne-$([ "$TARGET_ENV" = prod ] && echo Prod || echo Dev)-Assets}"
-          BUCKET_KEY="${BUCKET_OUTPUT_KEY:-talkWebBucketName}"
-          DIST_KEY="${DISTRIBUTION_OUTPUT_KEY:-talkWebDistributionId}"
 
-          # Fall back to CloudFormation outputs when the ids were not given
-          # directly, so this file never hardcodes an account-specific value.
-          # `set -e` is off here on purpose: a missing stack or a key that is not
-          # an output must reach the diagnostics below, not abort the step with
-          # a bare aws traceback.
+          # `set -e` stays off through the lookup on purpose: a missing stack or
+          # a renamed output must reach the diagnostics below rather than abort
+          # the step with a bare aws traceback.
           if [ -z "$BUCKET" ] || [ -z "$DIST" ]; then
             get() {
               aws cloudformation describe-stacks --stack-name "$STACK" \
                 --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text 2>/dev/null
             }
-            [ -n "$BUCKET" ] || BUCKET="$(get "$BUCKET_KEY")"
-            [ -n "$DIST" ] || DIST="$(get "$DIST_KEY")"
+            [ -n "$BUCKET" ] || BUCKET="$(get "$BUCKET_OUTPUT_KEY")"
+            [ -n "$DIST" ] || DIST="$(get "$DISTRIBUTION_OUTPUT_KEY")"
           fi
 
-          # Print what this account/region actually offers, so the very next run
-          # can be configured from the log instead of another guess.
-          diagnose() {
-            echo "--- Looked in stack: $STACK (region $AWS_REGION)"
-            echo "--- Wanted outputs: $BUCKET_KEY / $DIST_KEY"
+          if [ -z "$BUCKET" ] || [ "$BUCKET" = "None" ] || [ -z "$DIST" ] || [ "$DIST" = "None" ]; then
+            # The deploy role is scoped to Talk, so it cannot list stacks,
+            # buckets or distributions — describe-stacks on this one stack is
+            # the only listing available, and it is the one that answers "what
+            # is the output called now?".
+            echo "--- Wanted $BUCKET_OUTPUT_KEY / $DISTRIBUTION_OUTPUT_KEY from $STACK (region $AWS_REGION)"
             echo "--- Outputs that stack DOES have:"
             aws cloudformation describe-stacks --stack-name "$STACK" \
               --query "Stacks[0].Outputs[].[OutputKey,OutputValue]" --output text 2>&1 \
               | sed 's/^/      /' || true
-            echo "--- Stacks in this account/region:"
-            aws cloudformation list-stacks \
-              --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE UPDATE_ROLLBACK_COMPLETE \
-              --query "StackSummaries[].StackName" --output text 2>&1 \
-              | tr '\t' '\n' | sed 's/^/      /' || true
-            echo "--- Buckets this role can list:"
-            aws s3api list-buckets --query "Buckets[].Name" --output text 2>&1 \
-              | tr '\t' '\n' | sed 's/^/      /' || true
-            echo "--- CloudFront distributions (id / aliases):"
-            aws cloudfront list-distributions \
-              --query "DistributionList.Items[].[Id,Aliases.Items[0]]" --output text 2>&1 \
-              | sed 's/^/      /' || true
-          }
-
-          if [ -z "$BUCKET" ] || [ "$BUCKET" = "None" ] || [ -z "$DIST" ] || [ "$DIST" = "None" ]; then
-            diagnose
-            echo "::error::Could not resolve the Talk deploy target. Pick the bucket and distribution from the listings above, then set S3_BUCKET + CLOUDFRONT_DISTRIBUTION_ID (or CFN_STACK_NAME + BUCKET_OUTPUT_KEY + DISTRIBUTION_OUTPUT_KEY) as variables in the '$TARGET_ENV' environment."
+            echo "::error::Could not resolve the Talk deploy target in '$TARGET_ENV'. If an output above was renamed, update BUCKET_OUTPUT_KEY / DISTRIBUTION_OUTPUT_KEY in this workflow's job env."
             exit 1
           fi
           set -e
+
           echo "bucket=$BUCKET" >> "$GITHUB_OUTPUT"
           echo "distribution=$DIST" >> "$GITHUB_OUTPUT"
           echo "Bucket: $BUCKET / Distribution: $DIST"
