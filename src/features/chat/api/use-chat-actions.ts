@@ -43,6 +43,7 @@ export function useChatActions() {
   const setPinnedLocal = useChatListStore((s) => s.setPinned)
   const removeChats = useChatListStore((s) => s.removeChats)
   const setSelfLeft = useChatListStore((s) => s.setSelfLeft)
+  const applyMemberDelta = useChatListStore((s) => s.applyMemberDelta)
   const applyChatUpdated = useChatListStore((s) => s.applyChatUpdated)
   const clearChatCache = useMessageCacheStore((s) => s.clearChat)
   const setActiveChat = useChatStore((s) => s.setActiveChat)
@@ -157,7 +158,6 @@ export function useChatActions() {
       setPinnedLocal(chatId, pinned)
       try {
         await chatApi.setChatPinned(chatId, pinned)
-        toastSuccess(pinned ? 'Conversation pinned' : 'Conversation unpinned')
         return true
       } catch (error) {
         setPinnedLocal(chatId, !pinned)
@@ -214,6 +214,9 @@ export function useChatActions() {
         // The history stays readable, so the row survives with the composer off
         // rather than vanishing — leaving is not the same as deleting.
         setSelfLeft(chatId)
+        // I am out of the count as of now. The echo of my own leave carries no
+        // delta, so this is applied once and only here.
+        applyMemberDelta(chatId, -1)
         leaveChatRoom(chatId)
         toastSuccess('You left the group')
         return true
@@ -224,7 +227,7 @@ export function useChatActions() {
         setPending(false)
       }
     },
-    [setSelfLeft],
+    [setSelfLeft, applyMemberDelta],
   )
 
   /** Disband for everyone. Owner only, and irreversible for every member. */

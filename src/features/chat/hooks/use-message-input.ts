@@ -62,9 +62,29 @@ export function useMessageInput(chat: Chat | null) {
     if (chatId != null) textareaRef.current?.focus()
   }, [chatId])
 
-  /** Replying or editing puts the caret where the user is about to type. */
+  /**
+   * Replying or editing puts the caret where the user is about to type.
+   *
+   * On the NEXT frame, not in this effect's own pass: both actions are started
+   * from a context menu, and Radix hands focus back to whatever opened it as it
+   * closes — after this runs. Focusing straight away meant the composer lit up
+   * and lost it again in the same tick. (The menu is also told not to restore
+   * focus; this is the half that survives a menu that does.)
+   *
+   * An edit prefills the box, so the caret goes to the END of it — the reason
+   * to reopen a sent message is usually to add to it, and selecting all of it
+   * invites wiping it with the next keystroke.
+   */
   useEffect(() => {
-    if (replyTo || editing) textareaRef.current?.focus()
+    if (!replyTo && !editing) return
+    const frame = requestAnimationFrame(() => {
+      const el = textareaRef.current
+      if (!el) return
+      el.focus()
+      const end = el.value.length
+      el.setSelectionRange(end, end)
+    })
+    return () => cancelAnimationFrame(frame)
   }, [replyTo, editing])
 
   /**

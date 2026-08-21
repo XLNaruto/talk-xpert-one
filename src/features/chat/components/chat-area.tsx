@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react'
-import { Forward, Loader2, MessagesSquare, Trash2, Upload, X } from 'lucide-react'
+import { EyeOff, Forward, Loader2, Trash2, Upload, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { EmptyState } from '@/components/common/empty-state'
+import { Tip } from '@/components/common/tip'
 import { useChatStore } from '@/stores/chat-store'
 import { keyOf } from '@/types/api'
 import { useSendMessage } from '../api/use-send-message'
@@ -11,7 +11,7 @@ import { useMessageJump } from '../hooks/use-message-jump'
 import { useMessageThread } from '../hooks/use-message-thread'
 import { useThreadSearch } from '../hooks/use-thread-search'
 import { composerBlockedReason } from '../lib/chat-labels'
-import { formatTypingLine } from '../lib/message-formatters'
+import { ChatEmpty } from './chat-empty'
 import { ChatHeader } from './chat-header'
 import { ChatDetailsSheet } from './chat-details-sheet'
 import { ForwardDialog } from './forward-dialog'
@@ -34,6 +34,7 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
     isLoadingMore,
     hasEarlier,
     loadEarlier,
+    loadEarlierNow,
     pinnedMessages,
     pinnedForEveryoneTotal,
     pinnedRows,
@@ -42,7 +43,6 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
     isLoadingMorePins,
     hasMorePins,
     loadMorePins,
-    typingNames,
     selfId,
     selectedIds,
     hasSelection,
@@ -57,9 +57,11 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
     forward,
   } = useMessageThread(chat)
 
+  // Both of these WALK history to reach a message, so they page without the
+  // scroll cooldown — a seek is a deliberate loop, not a flick at the top.
   const search = useThreadSearch({
     chatId: chat?.id ?? null,
-    loadEarlier,
+    loadEarlier: loadEarlierNow,
     hasEarlier,
   })
 
@@ -68,9 +70,27 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
   // when the target is older than the loaded window.
   const jump = useMessageJump({
     chatId: chat?.id ?? null,
-    loadEarlier,
+    loadEarlier: loadEarlierNow,
     hasEarlier,
+    // The thread is held off its own corrections for the WHOLE gesture, not just
+    // told about it at the start: the walk back through history is several
+    // requests long and the reader is still at the bottom for all of them, which
+    // every correction in `use-thread-scroll` reads as "they want the newest
+    // message". See `beginJump`.
+    onJumpStart: scroll.beginJump,
+    onJumpEnd: scroll.endJump,
   })
+
+  /**
+   * Every "put that message on screen" goes through here: the pinned bar, a row
+   * in the pinned sheet, a reply quote.
+   */
+  const jumpToMessage = useCallback(
+    (messageId: Id) => {
+      void jump.jumpTo(messageId)
+    },
+    [jump],
+  )
 
   const { retry } = useSendMessage()
 
@@ -114,18 +134,16 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
   const onRetryMessage = useCallback((message: ChatMessage) => void retry(message), [retry])
 
   if (!chat) {
-    return (
-      <EmptyState
-        icon={<MessagesSquare className="size-8" />}
-        title="Pick a conversation"
-        description="Choose someone from the list to read and reply."
-      />
-    )
+    return <ChatEmpty />
   }
 
   return (
     <section
-      className="relative flex h-full min-w-0 flex-1 flex-col bg-background"
+      // `thread-canvas` (globals.css) is the log's surface, not a flat fill: two
+      // faint brand washes and a dot grid, all far below the bubbles in
+      // contrast. The header and the composer paint their own `bg-card` over it,
+      // so the texture shows only where the messages are.
+      className="thread-canvas relative flex h-full min-w-0 flex-1 flex-col"
       {...dragHandlers}
     >
       <ChatHeader
@@ -157,7 +175,7 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
         messages={pinnedMessages}
         total={pinnedForEveryoneTotal}
         onOpenAll={() => setShowPins(true)}
-        onJump={(messageId) => void jump.jumpTo(messageId)}
+        onJump={jumpToMessage}
         onUnpin={(messageId) => void setPinned(messageId, false, true)}
       />
 
@@ -165,40 +183,69 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
           is mine — anyone may hide anything, but only the sender may withdraw. */}
       {hasSelection && (
         // Cancel leads, the way it does in every selection mode — the way out is
-        // the first thing found. The two deletes are grouped and tinted
-        // destructive, so the one that cannot be undone never sits a pixel from
+        // the first thing found. The band itself is NEUTRAL: three tinted
+        // buttons on a brand wash read as colour on colour, and the bar carried
+        // more weight than the destructive action sitting on it. The mode is
+        // said by the filled count chip. It wears the thread's muted surface
+        // rather than the sidebar's accent, so the two bars are not one bar
+        // wrapping a corner. Three actions, three weights: Forward is the
+        // ordinary one, "for me" is outlined destructive because it only hides
+        // MY copy, and the one that cannot be undone is the only filled button
+        // on the bar — so the irreversible action never sits a pixel from
         // Forward wearing the same clothes.
-        <div className="flex shrink-0 items-center gap-1 border-b border-border bg-secondary/70 px-2 py-1.5">
-          <Button variant="ghost" size="icon" onClick={clearSelection} aria-label="Cancel selection">
-            <X />
-          </Button>
-          <span className="flex-1 truncate text-sm font-medium">
-            {selectedIds.length} selected
+        <div className="flex shrink-0 items-center gap-1.5 border-b border-border bg-muted/60 px-2 py-2">
+          {/* The way OUT of the mode, so it reads differently from the actions
+              in it: a round target that lifts to card paint instead of the
+              ghost variant's grey tint, and the cross turns a quarter as it
+              does — the one bit of play on a bar of destructive buttons. */}
+          <Tip label="Cancel">
+            <Button
+              variant="ghost"
+              size="icon"
+              className={'size-8 rounded-full text-muted-foreground transition-colors hover:bg-card hover:text-foreground hover:shadow-xs [&_svg]:transition-transform [&_svg]:duration-200 hover:[&_svg]:rotate-90'}
+              onClick={clearSelection}
+              aria-label="Cancel selection"
+            >
+              <X />
+            </Button>
+          </Tip>
+          <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary-fill text-[10px] font-semibold text-primary-fill-foreground tabular-nums">
+            {selectedIds.length > 99 ? '99+' : selectedIds.length}
           </span>
+          <span className="min-w-0 flex-1 truncate text-xs font-medium">selected</span>
 
-          <Button variant="ghost" size="sm" onClick={() => setForwarding(selectedIds)}>
+          {/* Forward hovers BRAND, not the outline variant's neutral grey: the
+              two buttons beside it go red on hover, so a grey lift read as the
+              same family one shade weaker. Brand says "this one is not a
+              delete" before the label is read. */}
+          <Button
+            variant="outline"
+            size="sm"
+            className="bg-card hover:border-primary/40 hover:bg-primary/10 hover:text-primary"
+            onClick={() => setForwarding(selectedIds)}
+          >
             <Forward />
             Forward
           </Button>
 
-          <span className="mx-1 h-5 w-px shrink-0 bg-border" aria-hidden />
-
+          {/* "For me" is a HIDE, not a withdrawal — the eye says that where a
+              second bin beside the real delete would have said the opposite. */}
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
-            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+            className="border-destructive/35 bg-card text-destructive hover:bg-destructive/10 hover:text-destructive"
             onClick={() => void deleteSelected(false)}
           >
-            <Trash2 />
+            <EyeOff />
             Delete for me
           </Button>
           {canDeleteForEveryone && (
             <Button
-              variant="ghost"
+              variant="destructive"
               size="sm"
-              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
               onClick={() => void deleteSelected(true)}
             >
+              <Trash2 />
               Delete for everyone
             </Button>
           )}
@@ -242,16 +289,12 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
           searchHitIds={search.isOpen ? search.hitMessageIds : undefined}
           jumpTarget={jump.target}
           jumpHighlightId={jump.highlightedId}
-          onJumpToMessage={(messageId) => void jump.jumpTo(messageId)}
+          onJumpToMessage={jumpToMessage}
         />
       )}
 
-      {typingNames.length > 0 && (
-        <p className="shrink-0 px-4 pb-1 text-xs text-primary" aria-live="polite">
-          {formatTypingLine(typingNames)}
-        </p>
-      )}
-
+      {/* No typing line above the composer: the HEADER already carries it, and
+          two of them for one person read as two people. */}
       <MessageInput chat={chat} />
 
       {/* Covers the thread, the header and the composer alike, so the target is
@@ -287,7 +330,7 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
           onUnpin={(messageId, forEveryone) => void setPinned(messageId, false, forEveryone)}
           onJump={(messageId) => {
             setShowPins(false)
-            void jump.jumpTo(messageId)
+            jumpToMessage(messageId)
           }}
           onClose={() => setShowPins(false)}
         />

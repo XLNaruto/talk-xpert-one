@@ -3,13 +3,16 @@ import { CheckCheck, Search, Trash2, UserRoundPlus, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { BrandLogo } from '@/components/common/brand-logo'
-import { EmptyState } from '@/components/common/empty-state'
 import { Tip } from '@/components/common/tip'
 import { useAuthStore } from '@/stores/auth-store'
 import { cn } from '@/lib/utils'
 import { useChatList, type ChatFilter } from '../hooks/use-chat-list'
+import { formatBadge, tabUnreadCount } from '../lib/unread-badges'
+import type { Chat } from '../types'
 import { ChatListItem } from './chat-list-item'
+import { ChatSection } from './chat-section'
 import { ContactRow } from './contact-row'
+import { SidebarEmpty } from './sidebar-empty'
 import { SidebarSkeleton } from './sidebar-skeleton'
 import { CreateGroupDialog } from './create-group-dialog'
 import { SidebarAccountBar } from './sidebar-account-bar'
@@ -36,6 +39,7 @@ export function ChatSidebar() {
     closeSearch,
     filter,
     setFilter,
+    unreadSummary,
     activeChatId,
     selectChat,
     setChatPinned,
@@ -56,9 +60,36 @@ export function ChatSidebar() {
 
   const selfTalkUserId = useAuthStore((s) => s.identity?.talkUserId ?? null)
   const [isCreatingGroup, setCreatingGroup] = useState(false)
+  // Purely visual, and deliberately NOT persisted: a fold is a glance at a long
+  // list, not a preference to carry across reloads.
+  const [folded, setFolded] = useState({ pinned: false, recent: false })
+  const toggleFold = (key: 'pinned' | 'recent') =>
+    setFolded((prev) => ({ ...prev, [key]: !prev[key] }))
+
+  // Two runs, one boundary: kept conversations, then everything else. Only
+  // outside a search — see the note at the call site.
+  const pinnedChats = chats.filter((chat) => chat.self.isPinned)
+  const recentChats = chats.filter((chat) => !chat.self.isPinned)
+
+  const chatRow = (chat: Chat) => (
+    <ChatListItem
+      key={chat.id}
+      chat={chat}
+      isActive={chat.id === activeChatId}
+      selfTalkUserId={selfTalkUserId}
+      isSelected={hasSelection ? selectedIds.includes(chat.id) : null}
+      onSelect={selectChat}
+      onToggleSelected={toggleSelected}
+      onPin={setChatPinned}
+      onMarkRead={markChatRead}
+      onDelete={deleteChat}
+    />
+  )
 
   return (
-    <aside className="flex h-full w-full flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground md:w-80 md:border-r-0">
+    // `relative` so the account card can float over the list — see the note on
+    // its own wrapper.
+    <aside className="relative flex h-full w-full flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground md:w-80 md:border-r-0">
       <div className="shrink-0 space-y-3 p-3">
         <div className="flex items-center justify-between gap-2">
           <BrandLogo />
@@ -133,94 +164,163 @@ export function ChatSidebar() {
           </div>
         )}
 
-        <div className="flex gap-1" role="tablist" aria-label="Filter conversations">
-          {FILTERS.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              role="tab"
-              aria-selected={filter === option.value}
-              onClick={() => setFilter(option.value)}
-              className={cn(
-                'rounded-full px-2.5 py-1 text-xs transition-colors',
-                filter === option.value
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-secondary text-secondary-foreground hover:bg-accent',
-              )}
-            >
-              {option.label}
-            </button>
-          ))}
+        {/* The filled chip plus three flat grey ones read as one live button
+            beside three disabled ones — nothing said the grey three could be
+            pressed. The affordance now lives on each CHIP: a hairline and card
+            fill at rest, hover that moves toward the picked state, a press
+            scale. No rail around the group — the row sits on the sidebar's own
+            surface, so a second border and fill here would box in a control
+            that is already legible. */}
+        <div
+          className="flex items-center gap-1"
+          role="tablist"
+          aria-label="Filter conversations"
+        >
+          {FILTERS.map((option) => {
+            const isPicked = filter === option.value
+            // How many CONVERSATIONS in this band have something unread — the
+            // server's own count, not a sum over the rows we happen to hold. A
+            // real zero means NO PILL: nothing to read is not a number worth
+            // drawing, and an empty circle would read as "unknown".
+            const unread = tabUnreadCount(unreadSummary, option.value)
+            return (
+              <button
+                key={option.value}
+                type="button"
+                role="tab"
+                aria-selected={isPicked}
+                onClick={() => setFilter(option.value)}
+                className={cn(
+                  'flex flex-1 cursor-pointer items-center justify-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium transition-all duration-150',
+                  'active:scale-[0.97]',
+                  isPicked
+                    ? // The picked one is raised: brand fill and a shadow, so it
+                      // sits ON the rail while the others sit IN it.
+                      'bg-primary-fill text-primary-fill-foreground shadow-sm'
+                    : // At rest: a hairline and a card fill, which is what makes it
+                      // look pressable. Hover lifts it toward the picked state
+                      // instead of merely tinting, so the target is unmistakable.
+                      'border border-sidebar-border bg-card text-muted-foreground hover:border-primary/40 hover:bg-primary/10 hover:text-foreground hover:shadow-xs',
+                )}
+              >
+                <span className="truncate">{option.label}</span>
+                {unread > 0 && (
+                  // On the picked chip the pill has to read against brand fill,
+                  // so it inverts to the chip's own foreground rather than
+                  // stacking a second saturated colour on the first.
+                  <span
+                    aria-label={`${unread} unread conversations`}
+                    className={cn(
+                      'shrink-0 rounded-full px-1 text-[10px] leading-4 font-semibold tabular-nums',
+                      isPicked
+                        ? 'bg-primary-fill-foreground/20 text-primary-fill-foreground'
+                        : 'bg-primary/15 text-primary',
+                    )}
+                  >
+                    {formatBadge(unread)}
+                  </span>
+                )}
+              </button>
+            )
+          })}
         </div>
       </div>
 
       {/* The selection bar replaces the header actions rather than sitting beside
           them, so it is obvious the list is in a different mode. */}
       {hasSelection && (
-        <div className="flex shrink-0 items-center gap-2 border-y border-sidebar-border px-3 py-2">
-          <span className="flex-1 text-xs">{selectedIds.length} selected</span>
+        // A NEUTRAL surface, not brand paint: a full-width wash of the theme
+        // colour sat under buttons that are themselves tinted, and the bar came
+        // out heavier than anything it contained. The mode is carried by the
+        // filled count chip and the rules above and below instead — one small
+        // saturated thing on a quiet band, rather than two competing washes.
+        // The sidebar's own accent, so the bar belongs to the list it acts on.
+        <div className="flex shrink-0 items-center gap-2 border-y border-sidebar-border bg-sidebar-accent/60 px-3 py-2">
+          <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary-fill text-[10px] font-semibold text-primary-fill-foreground tabular-nums">
+            {selectedIds.length > 99 ? '99+' : selectedIds.length}
+          </span>
+          {/* Groups can't be hidden this way — you leave them — so when the
+              selection holds nothing removable the line says WHY the action is
+              dimmed. A disabled button takes no pointer events, so a tooltip
+              would never be read here. */}
+          <span className="min-w-0 flex-1 truncate text-xs font-medium">
+            {selectedDirectIds.length === 0
+              ? 'Groups are left, not removed'
+              : `selected of ${chats.length}`}
+          </span>
           <Button
             variant="ghost"
             size="sm"
             onClick={() => void deleteSelected()}
-            // Groups can't be hidden this way — leave the group instead — so the
-            // action is offered only when the selection contains something valid.
             disabled={selectedDirectIds.length === 0}
-            aria-label="Remove selected conversations"
+            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+            aria-label={`Remove ${selectedDirectIds.length} selected conversations`}
           >
             <Trash2 />
             Remove
           </Button>
-          <Button variant="ghost" size="icon" onClick={clearSelection} aria-label="Cancel">
-            <X />
-          </Button>
+          <Tip label="Cancel">
+            {/* Same treatment as the thread's selection bar — one gesture for
+                "leave this mode", wherever the mode is running. */}
+            <Button
+              variant="ghost"
+              size="icon"
+              className={'size-8 rounded-full text-muted-foreground transition-colors hover:bg-card hover:text-foreground hover:shadow-xs [&_svg]:transition-transform [&_svg]:duration-200 hover:[&_svg]:rotate-90'}
+              onClick={clearSelection}
+              aria-label="Cancel selection"
+            >
+              <X />
+            </Button>
+          </Tip>
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+      {/* The bottom padding is the account card's height plus its inset: the
+          card sits ON this list, so without it the last row can never be
+          scrolled out from under the glass. */}
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 pt-2 pb-20">
         {isLoading ? (
           <SidebarSkeleton />
         ) : chats.length === 0 && contacts.length === 0 && !isDirectoryLoading ? (
-          <EmptyState
-            title={search ? 'No matches' : filter === 'unread' ? 'Nothing unread' : 'No conversations yet'}
-            description={
-              search
-                ? 'Try a different name, or ask an administrator for access to more people.'
-                : filter === 'unread'
-                  ? 'You are caught up.'
-                  : 'Start a group to get talking.'
-            }
-            action={
-              !search && filter === 'all' ? (
-                <Button size="sm" onClick={() => setCreatingGroup(true)}>
-                  <UserRoundPlus />
-                  New group
-                </Button>
-              ) : undefined
-            }
+          <SidebarEmpty
+            search={search}
+            filter={filter}
+            onNewGroup={() => setCreatingGroup(true)}
           />
         ) : (
-          <div className="space-y-1.5">
+          <div className="space-y-1">
             {/* While searching, the two sources are labelled: the rows above are
                 conversations that exist, the rows below are people who would be
                 a new one. Unlabelled they read as one list and clicking the
                 wrong half is a surprise. */}
             {search && chats.length > 0 && <SectionLabel>Conversations</SectionLabel>}
 
-            {chats.map((chat) => (
-              <ChatListItem
-                key={chat.id}
-                chat={chat}
-                isActive={chat.id === activeChatId}
-                selfTalkUserId={selfTalkUserId}
-                isSelected={hasSelection ? selectedIds.includes(chat.id) : null}
-                onSelect={selectChat}
-                onToggleSelected={toggleSelected}
-                onPin={setChatPinned}
-                onMarkRead={markChatRead}
-                onDelete={deleteChat}
-              />
-            ))}
+            {/* Pinned chats already sort to the top; the header is what SAYS so,
+                and it folds. While searching the split is dropped — hits are
+                ranked by the term, and cutting them in two by pin state buries
+                the one you were looking for under a header. */}
+            {!search && pinnedChats.length > 0 ? (
+              <>
+                <ChatSection
+                  label="Pinned"
+                  chats={pinnedChats}
+                  collapsed={folded.pinned}
+                  onToggle={() => toggleFold('pinned')}
+                >
+                  {pinnedChats.map(chatRow)}
+                </ChatSection>
+                <ChatSection
+                  label="Recent"
+                  chats={recentChats}
+                  collapsed={folded.recent}
+                  onToggle={() => toggleFold('recent')}
+                >
+                  {recentChats.map(chatRow)}
+                </ChatSection>
+              </>
+            ) : (
+              chats.map(chatRow)
+            )}
 
             {/* The directory — everyone you MAY start a chat with, matched
                 server-side on the name and the Talk login. Only while a term is

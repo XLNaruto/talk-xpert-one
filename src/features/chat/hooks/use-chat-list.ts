@@ -4,15 +4,15 @@ import { useChatListStore } from '@/stores/chat-list-store'
 import { useChatStore } from '@/stores/chat-store'
 import { useUiStore } from '@/stores/ui-store'
 import type { Id } from '@/types/api'
+import { deriveUnreadSummary } from '../lib/unread-badges'
 import { useChats } from '../api/use-chats'
 import { useContacts } from '../api/use-contacts'
 import { useChatActions } from '../api/use-chat-actions'
 import { useMessageActions } from '../api/use-message-actions'
 import { usePresence, useBlockList } from '../api/use-presence'
-import type { ChatType, Contact } from '../types'
+import type { ChatFilter, ChatType, Contact } from '../types'
 
-/** Which band of the list the sidebar is showing. */
-export type ChatFilter = 'all' | 'direct' | 'group' | 'unread'
+export type { ChatFilter }
 
 /**
  * Conversation-list screen logic: search, filtering, selection, pinning, bulk
@@ -69,7 +69,17 @@ export function useChatList() {
   const activeChatId = useChatStore((s) => s.activeChatId)
   const setActiveChat = useChatStore((s) => s.setActiveChat)
   const clearTyping = useChatStore((s) => s.clearTyping)
-  const totalUnread = useChatListStore((s) => s.totalUnread)
+  /**
+   * The tab pills, counted from the rows themselves.
+   *
+   * The store's WHOLE inventory, not the visible listing: with the Direct tab
+   * picked the listing holds direct chats only, and the Groups pill derived from
+   * that would read zero while groups sat unread behind it. Every row's
+   * `unread_count` is kept live by the socket, so the pills move with the
+   * conversation without a second number to fetch or reconcile.
+   */
+  const knownChats = useChatListStore((s) => s.chats)
+  const unreadSummary = useMemo(() => deriveUnreadSummary(knownChats), [knownChats])
   const setSidebarOpen = useUiStore((s) => s.setSidebarOpen)
   const { setChatPinned, deleteForMe, openDirect, isPending: isOpeningContact } = useChatActions()
   const { markRead } = useMessageActions()
@@ -81,10 +91,14 @@ export function useChatList() {
       setSidebarOpen(false)
       // Whoever was typing in the last thread is not typing in this one.
       clearTyping()
-      // Opening a thread clears its badge and turns the sender's ticks blue.
-      markRead([chatId])
+      // OPENING is not reading. Marking the whole chat read here cleared the
+      // badge before the thread had even mounted — so `use-thread-scroll` found
+      // no unread count to anchor on, skipped the divider, dropped the reader at
+      // the newest message and reported fifty-two messages read that nobody had
+      // seen. The thread marks what reaches the VIEWPORT, one screenful at a
+      // time; the badge walks down with the reader instead of vanishing.
     },
-    [setActiveChat, setSidebarOpen, clearTyping, markRead],
+    [setActiveChat, setSidebarOpen, clearTyping],
   )
 
   const toggleSelected = useCallback((chatId: Id) => {
@@ -188,7 +202,9 @@ export function useChatList() {
     closeSearch,
     filter,
     setFilter,
-    totalUnread,
+    unreadSummary,
+    /** The tab-title badge: unread MESSAGES, where a pill counts chats. */
+    totalUnread: unreadSummary.totalUnread,
     activeChatId,
     selectChat,
     setChatPinned,

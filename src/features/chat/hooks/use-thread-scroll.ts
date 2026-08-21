@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { VirtuosoHandle } from 'react-virtuoso'
 import { isPageActive, subscribePageActive } from '@/hooks/use-page-active'
+import { useChatStore } from '@/stores/chat-store'
 import type { Id } from '@/types/api'
 import {
   THREAD_AT_END_TOLERANCE_PX,
@@ -28,8 +29,12 @@ interface ThreadScrollOptions {
   unreadCount: number
   /** My read frontier from `chat.self`. Null when I have never read here. */
   lastReadMessageId: Id | null
-  /** Sends the receipt, up to and including this message. */
-  onRead: (uptoMessageId: Id) => void
+  /**
+   * Sends the receipt, up to and including this message. `remainingUnread` is
+   * what is still unread BELOW it, so the sidebar row can hold the rest rather
+   * than being blanked by a read that stopped partway up a backlog.
+   */
+  onRead: (uptoMessageId: Id, remainingUnread: number) => void
 }
 
 /**
@@ -64,7 +69,15 @@ export function useThreadScroll({
    * a correction that cannot tell it has arrived has to keep firing blind.
    */
   const scrollerRef = useRef<HTMLElement | Window | null>(null)
+  /** Watches the scroller's own box — see `onScrollerResize`. */
+  const resizeObserverRef = useRef<ResizeObserver | null>(null)
   const [isAtBottom, setAtBottom] = useState(true)
+  /**
+   * The same value in a ref, for the arrival effect below: it must decide with
+   * what was true when the message landed, and a state read there would be a
+   * render behind.
+   */
+  const atBottomRef = useRef(true)
   const [unreadBelow, setUnreadBelow] = useState(0)
   /**
    * The badge's number, mirrored in a ref.
@@ -94,6 +107,22 @@ export function useThreadScroll({
   const sentUptoRef = useRef<Id | null>(null)
   /** True while the view is parked at the divider — auto-follow stays off. */
   const parkedRef = useRef(false)
+  /**
+   * True from the moment a jump is ASKED FOR until its scroll has landed.
+   *
+   * Distinct from `parked`, and the distinction is the whole bug: a jump to a
+   * message outside the loaded window has to WALK history back to it first,
+   * which is several requests and several prepends long. The reader is still
+   * sitting at the bottom for all of it, so Virtuoso goes on reporting
+   * `atBottom: true` — and `onAtBottomChange` reads that as "the reader is
+   * caught up", clears the park, and hands `followOutput` permission to pin the
+   * view to the end again. The jump then landed and was immediately hauled back,
+   * twice, once per page that arrived: the flicker.
+   *
+   * So while this is set, being at the bottom is NOT taken as consent to follow.
+   * It is cleared by `endJump` once the scroll has had its window.
+   */
+  const jumpingRef = useRef(false)
   /** False until the list has settled; gates read receipts. */
   const readyRef = useRef(false)
   const lastRangeRef = useRef<VisibleRange | null>(null)
@@ -128,6 +157,7 @@ export function useThreadScroll({
     readFrontierRef.current = lastReadMessageId
     sentUptoRef.current = lastReadMessageId
     parkedRef.current = false
+    jumpingRef.current = false
     readyRef.current = false
     lastRangeRef.current = null
     mountedRef.current = false
@@ -151,12 +181,43 @@ export function useThreadScroll({
   }
 
   if (!anchorRef.current.taken && rows.length > 0) {
+    // Two ways to find where reading stopped, and the SECOND is what makes this
+    // survive a frontier that has run ahead of the badge.
+    //
+    // The frontier is the honest answer: the first row newer than the last id
+    // the server recorded as read. But `last_read_message_id` can already name
+    // the newest message while the row still counts unread — a receipt sent by
+    // a copy of the app nobody was looking at, a mark-read that covered the
+    // whole chat — and then no row qualifies, the divider never appears and the
+    // reader is dropped at the bottom on top of sixty-three messages they have
+    // not seen. So when the row says there is unread and the frontier disagrees,
+    // the ROW is believed: count that many incoming messages back from the end.
+    let anchorIndex = rows.findIndex((row) => isUnread(row, lastReadMessageId))
+    if (unreadCount > 0 && anchorIndex < 0) {
+      let counted = 0
+      for (let i = rows.length - 1; i >= 0; i -= 1) {
+        // Only somebody else's saved messages can be unread — the same rule the
+        // frontier test uses, so the two agree on WHAT is being counted.
+        if (rows[i].isMine || rows[i].message.id < 0) continue
+        if (rows[i].message.type === 'system') continue
+        anchorIndex = i
+        counted += 1
+        if (counted === unreadCount) break
+      }
+      // The frontier is pulled back with it, or the badge would read zero while
+      // the divider says otherwise — and `sentUpto` with it, or the receipts for
+      // this run would be refused as already sent and the count would never
+      // come down as the reader works through it.
+      if (anchorIndex >= 0) {
+        const previous = rows[anchorIndex - 1]?.message.id ?? null
+        readFrontierRef.current = previous
+        sentUptoRef.current = previous
+      }
+    }
+
     anchorRef.current = {
       chatId,
-      messageId:
-        unreadCount > 0
-          ? rows.find((row) => isUnread(row, lastReadMessageId))?.message.id ?? null
-          : null,
+      messageId: unreadCount > 0 && anchorIndex >= 0 ? rows[anchorIndex].message.id : null,
       taken: true,
     }
     // Park only when there is something to park at. A read chat opens at the
@@ -266,6 +327,42 @@ export function useThreadScroll({
   const scrollToBottom = useCallback(() => jumpToBottom('auto'), [jumpToBottom])
 
   /**
+   * A jump to a specific message is starting — stop everything that pulls the
+   * view back to the end.
+   *
+   * The corrections in this hook all assume the reader wants the newest message:
+   * the open settle re-asserts the bottom on a ticker, a resize of the scroller
+   * (the pinned bar appearing is one) does the same, and an arrival follows. A
+   * jump means the opposite, and a smooth scroll gives all three a window to
+   * fire in — which is how clicking the pinned bar ended up at the bottom
+   * instead of at the pinned message. Parking is exactly the state for "the
+   * reader is somewhere else on purpose", and reaching the end clears it.
+   */
+  const beginJump = useCallback(() => {
+    parkedRef.current = true
+    jumpingRef.current = true
+    openSettleUntilRef.current = 0
+    for (const timer of settleTimersRef.current) clearTimeout(timer)
+    settleTimersRef.current = []
+  }, [])
+
+  /**
+   * The jump is over — it landed, or it never found its message.
+   *
+   * Only the in-flight hold is released. The PARK is re-derived from where the
+   * view actually ended up, which is the honest answer for both endings: a jump
+   * that landed three screens up stays parked, because the reader is deliberately
+   * elsewhere; a jump that failed moved nothing, so a reader still sitting at the
+   * end goes back to following arrivals. Without that second half a failed jump
+   * left the thread parked for good — silently, since nothing had moved to
+   * explain why new messages had stopped scrolling into view.
+   */
+  const endJump = useCallback(() => {
+    jumpingRef.current = false
+    if (isAtEnd()) parkedRef.current = false
+  }, [isAtEnd])
+
+  /**
    * The reader has taken over — stop correcting the scroll.
    *
    * Bound to the input gestures rather than inferred from the list leaving the
@@ -280,6 +377,47 @@ export function useThreadScroll({
     openSettleUntilRef.current = 0
   }, [])
 
+  /**
+   * Dragging the SCROLLBAR is the fourth way to scroll, and it announces itself
+   * as none of the three above — no wheel, no touch, no key, just a pointer on
+   * the gutter and a stream of `scroll` events indistinguishable from our own
+   * corrections. Left unhandled, the ticker fought the drag for the whole settle
+   * window: the view was dragged up and hauled back down ten times a second.
+   *
+   * A press on the gutter lands on the scroller itself, past its content box —
+   * `clientWidth` excludes the scrollbar, so an x beyond it is the gutter and
+   * nothing else. Narrowed to that on purpose: a plain click on a bubble while
+   * the thread is still opening must NOT abandon the correction, or the thread
+   * parks a bubble short of the newest message, which is what the settle exists
+   * to prevent.
+   */
+  const onPointerDown = useCallback(
+    (event: Event) => {
+      const element = scrollerRef.current
+      if (!element || element instanceof Window) return
+      const pointer = event as PointerEvent
+      if (pointer.target !== element) return
+      const x = pointer.clientX - element.getBoundingClientRect().left
+      if (x >= element.clientWidth) abandonSettle()
+    },
+    [abandonSettle],
+  )
+
+  /**
+   * The list got shorter or taller — hold the end if that is where we were.
+   *
+   * The thread is not the only thing in the pane: the pinned bar appears above
+   * it the moment a message is pinned for everyone, the find bar opens, the
+   * composer grows a line. Each takes height from the scroller, which keeps its
+   * offset, so the conversation slides up under the reader. Re-asserting the end
+   * is what makes the bar push the thread rather than scroll it.
+   */
+  const onScrollerResize = useCallback(() => {
+    if (parkedRef.current) return
+    if (!atBottomRef.current) return
+    scrollToEnd('auto')
+  }, [scrollToEnd])
+
   const onScrollerRef = useCallback(
     (element: HTMLElement | Window | null) => {
       const previous = scrollerRef.current
@@ -287,23 +425,40 @@ export function useThreadScroll({
         previous.removeEventListener('wheel', abandonSettle)
         previous.removeEventListener('touchstart', abandonSettle)
         previous.removeEventListener('keydown', abandonSettle)
+        previous.removeEventListener('pointerdown', onPointerDown)
       }
+      resizeObserverRef.current?.disconnect()
+      resizeObserverRef.current = null
+
       scrollerRef.current = element
       if (element && !(element instanceof Window)) {
+        if (typeof ResizeObserver !== 'undefined') {
+          const observer = new ResizeObserver(onScrollerResize)
+          observer.observe(element)
+          resizeObserverRef.current = observer
+        }
         element.addEventListener('wheel', abandonSettle, { passive: true })
         element.addEventListener('touchstart', abandonSettle, { passive: true })
         element.addEventListener('keydown', abandonSettle)
+        element.addEventListener('pointerdown', onPointerDown, { passive: true })
       }
     },
-    [abandonSettle],
+    [abandonSettle, onPointerDown, onScrollerResize],
   )
+
+  // The scroller can go away without Virtuoso handing back a null ref — an
+  // unmount takes the whole tree with it — so the observer is disconnected here
+  // as well as in the ref callback.
+  useEffect(() => () => resizeObserverRef.current?.disconnect(), [])
 
   /** Count what is unread BELOW the last rendered row — the badge's number. */
   const countUnreadBelow = useCallback(
     (range: VisibleRange | null) => {
       if (!range) return 0
       let count = 0
-      for (let i = range.endIndex + 1; i < rows.length; i++) {
+      // Clamped: a range that came back negative would otherwise walk the whole
+      // array from below zero — a million dead iterations for a badge count.
+      for (let i = Math.max(range.endIndex + 1, 0); i < rows.length; i++) {
         if (isUnread(rows[i], readFrontierRef.current)) count++
       }
       return count
@@ -323,6 +478,39 @@ export function useThreadScroll({
     setUnreadBelow(count)
   }, [])
 
+  /**
+   * The rows, for the imperative paths — `readUpTo` runs from a scroll handler
+   * and from a focus listener, neither of which may close over a stale array.
+   */
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
+
+  /**
+   * The array index of the last row whose element is inside the scroller.
+   *
+   * Virtuoso stamps `data-item-index` on every rendered row, in its OFFSET
+   * space, so this is the one place that can answer "what does the reader
+   * actually have on screen" — the rendered range cannot, and neither can a
+   * scroll offset once rows have different heights. Null when nothing is
+   * mounted yet, which reads as "trust the range".
+   */
+  const newestVisibleIndex = useCallback((): number | null => {
+    const element = scrollerRef.current
+    if (!element || element instanceof Window) return null
+    const bottom = element.getBoundingClientRect().bottom
+    const items = element.querySelectorAll<HTMLElement>('[data-item-index]')
+    let newest: number | null = null
+    for (const item of items) {
+      // Its TOP being above the fold is enough: a half-visible bubble at the
+      // bottom edge has been seen, and demanding the whole row would leave the
+      // last message unread whenever it is taller than the gap.
+      if (item.getBoundingClientRect().top >= bottom) break
+      const index = Number(item.dataset.itemIndex)
+      if (Number.isFinite(index)) newest = index - firstItemIndexRef.current
+    }
+    return newest
+  }, [])
+
   const readUpTo = useCallback(
     (messageId: Id) => {
       if (sentUptoRef.current !== null && messageId <= sentUptoRef.current) return
@@ -334,21 +522,32 @@ export function useThreadScroll({
       if (!isPageActive()) return
       sentUptoRef.current = messageId
       readFrontierRef.current = messageId
-      onRead(messageId)
+      // Everything newer than the receipt is still unread. Nothing older can
+      // be: the server marks read UP TO the id, and the newest page is the one
+      // we hold, so this is the whole remainder and not a sample of it.
+      let remaining = 0
+      for (let i = rowsRef.current.length - 1; i >= 0; i -= 1) {
+        const row = rowsRef.current[i]
+        if (row.message.id <= messageId) break
+        if (isUnread(row, messageId)) remaining += 1
+      }
+      onRead(messageId, remaining)
     },
     [onRead],
   )
 
-  const onRangeChanged = useCallback(
-    (range: VisibleRange) => {
-      // Virtuoso reports the OFFSET index — `rows` position plus
-      // `firstItemIndex` — so it has to come back down to an array index before
-      // anything here indexes `rows` with it.
-      const offset = firstItemIndexRef.current
-      const visible: VisibleRange = {
-        startIndex: range.startIndex - offset,
-        endIndex: range.endIndex - offset,
-      }
+  /**
+   * Act on a range that is ALREADY in array space — send the receipt for the
+   * newest unread row on screen and recount the badge.
+   *
+   * Split out from `onRangeChanged` because the focus listener and the settle
+   * timer replay `lastRangeRef`, which is stored in array space. Feeding that
+   * back through the offset subtraction below took the indices a million
+   * negative, which silently emptied the receipt loop and made the badge count
+   * walk the entire index space — the 1.3 s `focus` handler.
+   */
+  const applyVisibleRange = useCallback(
+    (visible: VisibleRange) => {
       lastRangeRef.current = visible
 
       if (readyRef.current) {
@@ -365,18 +564,49 @@ export function useThreadScroll({
     [rows, readUpTo, countUnreadBelow, showUnreadBelow],
   )
 
+  const onRangeChanged = useCallback(
+    (range: VisibleRange) => {
+      // Virtuoso reports the OFFSET index — `rows` position plus
+      // `firstItemIndex` — so it has to come back down to an array index before
+      // anything here indexes `rows` with it.
+      const offset = firstItemIndexRef.current
+      // ...and it reports the RENDERED range, which runs a screenful past the
+      // viewport in both directions (`increaseViewportBy`). Rendered is not
+      // seen: taking it at face value sent receipts for messages 600px below
+      // the fold and left the badge with nothing to count. The last row that is
+      // genuinely on screen is measured instead, and the range is clipped to it.
+      const seenEnd = newestVisibleIndex()
+      const rangeEnd = range.endIndex - offset
+      applyVisibleRange({
+        startIndex: range.startIndex - offset,
+        endIndex: seenEnd === null ? rangeEnd : Math.min(rangeEnd, seenEnd),
+      })
+    },
+    [applyVisibleRange, newestVisibleIndex],
+  )
+
   // Keep a live handle on the latest version so the settle timer below can run
   // the range it captured before receipts were allowed.
-  const onRangeChangedRef = useRef(onRangeChanged)
-  onRangeChangedRef.current = onRangeChanged
+  const applyVisibleRangeRef = useRef(applyVisibleRange)
+  applyVisibleRangeRef.current = applyVisibleRange
 
   const onAtBottomChange = useCallback(
     (atBottom: boolean) => {
       setAtBottom(atBottom)
+      atBottomRef.current = atBottom
+      // The socket handler needs this to decide whether an arriving message
+      // lands in the reader's viewport — which is the whole test for whether it
+      // counts as read.
+      useChatStore.getState().setThreadAtBottom(atBottom)
       if (!atBottom) return
       // Reaching the bottom is the reader saying they are caught up — the park
       // ends and the whole thread counts as read.
-      parkedRef.current = false
+      //
+      // Unless a jump is on its way somewhere else: then the bottom is not where
+      // the reader asked to be, it is only where they still are while the pages
+      // between here and their target are fetched. Un-parking on it is what let
+      // `followOutput` pin the view back to the end mid-jump.
+      if (!jumpingRef.current) parkedRef.current = false
       showUnreadBelow(0)
       const newest = rows[rows.length - 1]
       if (readyRef.current && newest && newest.message.id > 0) readUpTo(newest.message.id)
@@ -392,11 +622,32 @@ export function useThreadScroll({
    */
   const followOutput = useCallback((atBottom: boolean) => {
     if (parkedRef.current) return false
+    // Belt and braces: a jump in flight never follows, whatever else has
+    // happened to the park in the meantime.
+    if (jumpingRef.current) return false
     // `true` is Virtuoso's instant follow. Deliberately NOT 'smooth': an arrival
     // while you sit at the bottom is a one-row nudge, and animating it competes
     // with the instant jump the send below has already started.
+    // Virtuoso's own answer, and ONLY that. Measuring the scroller here as a
+    // second opinion made every misread — and there is no shortage of moments
+    // when `scrollHeight` is mid-correction — say "you are at the bottom", which
+    // turns every list change into a scroll to the end: pinning a message, or
+    // landing a jump three screens up.
     return atBottom
   }, [])
+
+  /**
+   * Opening a chat sets the flag from the anchor: a thread parked at an unread
+   * divider is not showing its newest message, so an arrival there is unread
+   * like any other. Cleared on unmount — a thread nobody has open is nobody's
+   * viewport.
+   */
+  useEffect(() => {
+    const atBottom = unreadAnchorId === null
+    atBottomRef.current = atBottom
+    useChatStore.getState().setThreadAtBottom(atBottom)
+    return () => useChatStore.getState().setThreadAtBottom(false)
+  }, [chatId, unreadAnchorId])
 
   // Pay what was owed the moment the window is looked at again: the range the
   // list last reported is re-run, which sends one receipt for whatever is on
@@ -406,7 +657,7 @@ export function useThreadScroll({
       subscribePageActive(() => {
         if (!isPageActive()) return
         if (!readyRef.current) return
-        if (lastRangeRef.current) onRangeChangedRef.current(lastRangeRef.current)
+        if (lastRangeRef.current) applyVisibleRangeRef.current(lastRangeRef.current)
       }),
     [],
   )
@@ -417,7 +668,7 @@ export function useThreadScroll({
     readyRef.current = false
     const timer = setTimeout(() => {
       readyRef.current = true
-      if (lastRangeRef.current) onRangeChangedRef.current(lastRangeRef.current)
+      if (lastRangeRef.current) applyVisibleRangeRef.current(lastRangeRef.current)
     }, THREAD_READ_SETTLE_MS)
     return () => clearTimeout(timer)
   }, [chatId])
@@ -433,17 +684,41 @@ export function useThreadScroll({
   const newestKey = newest
     ? `${newest.message.clientMessageId ?? ''}:${newest.message.id}`
     : ''
+  const newestIsMine = Boolean(newest?.isMine)
+  const newestId = newest?.message.id ?? -1
   useEffect(() => {
     if (!mountedRef.current) {
       mountedRef.current = true
       return
     }
-    if (!newest?.isMine) return
+    if (newestIsMine) {
+      showUnreadBelow(0)
+      jumpToBottom('auto')
+      return
+    }
+
+    // SOMEBODY ELSE's message, and the reader is watching the end: follow it
+    // here rather than leaving it to Virtuoso's `followOutput`.
+    //
+    // `followOutput` is consulted while the list is being told about the new
+    // row, and what it can measure at that moment is not always what the reader
+    // sees — which is how an arrival ended up behind the scroll-to-bottom badge
+    // for someone sitting at the bottom. This runs AFTER the row is in, asks the
+    // same question, and uses the same corrective jump the send does, so the
+    // answer does not depend on when it was asked.
+    if (parkedRef.current) return
+    if (!atBottomRef.current) return
     showUnreadBelow(0)
     jumpToBottom('auto')
+    // Watched go past IS read, so the frontier moves with the view rather than
+    // waiting for the next `rangeChanged` to notice. Without it the reader could
+    // scroll up afterwards and be told those same messages were unread — which
+    // is the count the badge was showing. `readUpTo` still refuses when the
+    // window is not the one being looked at.
+    if (readyRef.current && newestId > 0) readUpTo(newestId)
     // `newest` is intentionally absent — the key is what identifies a new row.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [newestKey, jumpToBottom])
+  }, [newestKey, newestIsMine, newestId, jumpToBottom, readUpTo, showUnreadBelow])
 
   /**
    * Hold a caught-up chat at the true bottom while it opens.
@@ -504,6 +779,8 @@ export function useThreadScroll({
     isAtBottom,
     unreadBelow,
     scrollToBottom,
+    beginJump,
+    endJump,
     followOutput,
     onAtBottomChange,
     onRangeChanged,

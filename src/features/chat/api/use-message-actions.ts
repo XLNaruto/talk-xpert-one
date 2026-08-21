@@ -3,6 +3,7 @@ import { toastApiError, toastSuccess } from '@/lib/api-toast'
 import { useChatListStore } from '@/stores/chat-list-store'
 import { useMessageCacheStore } from '@/stores/message-cache-store'
 import type { Id } from '@/types/api'
+import { resyncPreview } from '../hooks/use-message-stream'
 import * as chatApi from './chat-api'
 
 /**
@@ -18,14 +19,19 @@ export function useMessageActions() {
   const removeMany = useMessageCacheStore((s) => s.removeMany)
   const applyPinned = useMessageCacheStore((s) => s.applyPinned)
   const clearUnread = useChatListStore((s) => s.clearUnread)
+  const setUnreadCount = useChatListStore((s) => s.setUnread)
 
   /** Sender only. On a media message this edits the caption. */
   const edit = useCallback(
     async (chatId: Id, messageId: Id, body: string): Promise<boolean> => {
       try {
         const saved = await chatApi.editMessage(chatId, messageId, body)
+        // No success toast: the bubble redraws with its new text and an
+        // "edited" marker, which says it better than a notification would.
         applyEdit(chatId, saved.messageId, saved.body, saved.editedAt)
-        toastSuccess('Message edited')
+        // The sidebar quotes the newest message, so an edit to it changes the
+        // preview. No echo comes back for my own write.
+        resyncPreview(chatId)
         return true
       } catch (error) {
         toastApiError(error, 'That edit did not save')
@@ -44,9 +50,9 @@ export function useMessageActions() {
       try {
         await chatApi.deleteMessages(chatId, messageIds, false)
         removeMany(chatId, messageIds)
-        toastSuccess(
-          messageIds.length === 1 ? 'Message removed' : `${messageIds.length} messages removed`,
-        )
+        // Deleting FOR ME drops the row, so the message BEFORE it becomes the
+        // sidebar's preview. Nothing is broadcast for this one, by design.
+        resyncPreview(chatId)
         return true
       } catch (error) {
         toastApiError(error, 'Those messages were not removed')
@@ -62,11 +68,9 @@ export function useMessageActions() {
       try {
         await chatApi.deleteMessages(chatId, messageIds, true)
         applyDeleteForEveryone(chatId, messageIds)
-        toastSuccess(
-          messageIds.length === 1
-            ? 'Message deleted for everyone'
-            : `${messageIds.length} messages deleted for everyone`,
-        )
+        // The tombstone stays the newest row, so the preview becomes "This
+        // message was deleted" rather than the blank that read as "Attachment".
+        resyncPreview(chatId)
         return true
       } catch (error) {
         toastApiError(error, 'Those messages were not deleted')
@@ -80,8 +84,8 @@ export function useMessageActions() {
    * Pin, either way round and for either audience.
    *
    * `forEveryone` is the whole difference between an announcement and a
-   * bookmark, so it is named in the toast too: a user who meant to save a
-   * message for themselves must never be left wondering whether the chat saw it.
+   * bookmark: one changes the chat's announcement bar, the other is a private
+   * bookmark nobody else sees. A pin confirms itself on screen, so it is silent.
    */
   const setPinned = useCallback(
     async (
@@ -93,7 +97,6 @@ export function useMessageActions() {
       applyPinned(chatId, messageId, pinned, forEveryone)
       try {
         await chatApi.setMessagePinned(chatId, messageId, pinned, { forEveryone })
-        toastSuccess(pinTitle(pinned, forEveryone))
         return true
       } catch (error) {
         applyPinned(chatId, messageId, !pinned, forEveryone)
@@ -131,19 +134,20 @@ export function useMessageActions() {
    * message re-sends it anyway.
    */
   const markRead = useCallback(
-    (chatIds: Id[], uptoMessageId?: Id) => {
+    (chatIds: Id[], uptoMessageId?: Id, remainingUnread = 0) => {
       if (chatIds.length === 0) return
-      for (const chatId of chatIds) clearUnread(chatId)
+      // A receipt that stopped partway leaves the rest unread, and the row has
+      // to say so — the thread counts what is still below the reader and passes
+      // it here. Only meaningful for ONE chat; a bulk mark-read clears them all.
+      if (chatIds.length === 1 && remainingUnread > 0) {
+        setUnreadCount(chatIds[0], remainingUnread)
+      } else {
+        for (const chatId of chatIds) clearUnread(chatId)
+      }
       void chatApi.markChatsRead(chatIds, uptoMessageId).catch(() => undefined)
     },
-    [clearUnread],
+    [clearUnread, setUnreadCount],
   )
 
   return { edit, deleteForMe, deleteForEveryone, setPinned, forward, markRead }
-}
-
-/** What a pin toast says — the audience is the part worth confirming. */
-function pinTitle(pinned: boolean, forEveryone: boolean): string {
-  if (forEveryone) return pinned ? 'Pinned for everyone' : 'Pin removed for everyone'
-  return pinned ? 'Pinned for me' : 'Unpinned for me'
 }

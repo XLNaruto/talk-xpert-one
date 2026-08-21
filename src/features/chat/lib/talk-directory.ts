@@ -138,6 +138,14 @@ export function peopleInChat(chat: Chat): (TalkPerson | null)[] {
       chat.lastMessageSenderName,
       chat.lastMessageSenderPhoto,
     ),
+    // A system last message names its actor and nobody else does.
+    chat.lastMessageActor
+      ? person(
+          chat.lastMessageActor.talkUserId,
+          chat.lastMessageActor.name,
+          chat.lastMessageActor.photo,
+        )
+      : null,
   ]
 }
 

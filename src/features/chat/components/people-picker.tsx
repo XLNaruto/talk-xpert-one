@@ -29,6 +29,13 @@ interface PeoplePickerProps {
   /** `add` only: whoever is mid-flight, so their row shows a spinner. */
   pendingIds?: Id[]
   searchPlaceholder?: string
+  /**
+   * Cap for the RESULT LIST only — the search box stays put above it. Pass a
+   * `max-h-*` here where the picker sits inside a taller scroll area (the
+   * details sheet), so a long directory scrolls in place instead of pushing
+   * everything below it off the screen.
+   */
+  listClassName?: string
   className?: string
 }
 
@@ -46,11 +53,13 @@ export function PeoplePicker({
   onAdd,
   pendingIds = [],
   searchPlaceholder,
+  listClassName,
   className,
 }: PeoplePickerProps) {
   const {
     candidates,
     toggle,
+    total,
     isLoading,
     isSearching,
     isLoadingMore,
@@ -85,13 +94,26 @@ export function PeoplePicker({
           Looking for people…
         </p>
       ) : candidates.length === 0 ? (
-        <p className="px-1 py-6 text-center text-xs text-muted-foreground">
+        // Three DIFFERENT reasons for an empty list, and only one of them is
+        // about grants. `total` is what the directory answered before the
+        // group's own members were filtered out, so a positive total with no
+        // rows left means everyone reachable is already here — telling that
+        // reader to ask an administrator for access sends them to fix a
+        // permission that is not the problem.
+        <p className="px-1 py-5 text-center text-xs text-muted-foreground">
           {search
             ? 'Nobody by that name or login. Try fewer letters.'
-            : 'No one to show. Ask an administrator for access to a company or department.'}
+            : total > 0
+              ? variant === 'add'
+                ? 'Everyone you can reach is already in this group.'
+                : 'Everyone you can reach is already picked.'
+              : 'Nobody to show yet. An administrator grants access to a company or department.'}
         </p>
       ) : (
-        <>
+        // "Show more" lives INSIDE the capped box, not under it: paging is part
+        // of the list, and pinned outside it the button would sit a fixed
+        // distance from rows the reader has scrolled away from.
+        <div className={cn('grid gap-1 overscroll-contain', listClassName)}>
           <ul className="grid gap-0.5">
             {candidates.map((candidate) => (
               <PersonRow
@@ -117,7 +139,7 @@ export function PeoplePicker({
               Show more people
             </Button>
           )}
-        </>
+        </div>
       )}
     </div>
   )
@@ -178,7 +200,7 @@ function PersonRow({
             className={cn(
               'flex size-5 shrink-0 items-center justify-center rounded-full border transition-colors',
               candidate.isSelected
-                ? 'border-primary bg-primary text-primary-foreground'
+                ? 'border-primary-fill bg-primary-fill text-primary-fill-foreground'
                 : 'border-input',
             )}
           >

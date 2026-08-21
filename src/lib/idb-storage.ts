@@ -11,7 +11,7 @@ import { logger } from './logger'
  * every store built on this sets `skipHydration: true` and is rehydrated in
  * `main.tsx` before the app mounts.
  *
- * The database name carries the app namespace, so One Talk and the admin app
+ * The database name carries the app namespace, so XpertOne Talk and the admin app
  * never share a store even on the same origin.
  */
 const store = createStore(`${env.VITE_APP_COOKIE_PREFIX}-store`, 'keyval')

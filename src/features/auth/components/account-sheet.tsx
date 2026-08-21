@@ -63,7 +63,7 @@ export function AccountSheet({ onClose }: { onClose: () => void }) {
             />
           ) : (
             <span
-              className="flex size-12 shrink-0 items-center justify-center rounded-full bg-primary text-base font-semibold text-primary-foreground select-none"
+              className="flex size-12 shrink-0 items-center justify-center rounded-full bg-primary-fill text-base font-semibold text-primary-fill-foreground select-none"
               aria-hidden
             >
               {emailInitials(identity?.email)}

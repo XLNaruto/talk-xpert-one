@@ -18,6 +18,7 @@ import {
   toChatMember,
   toChatMessage,
   toContact,
+  toMemberRole,
   toMessageMedia,
   toMessageReceipt,
   toMessageSearchHit,
@@ -55,6 +56,7 @@ import type {
   ContactQuery,
   CreateGroupInput,
   MediaKind,
+  MemberRole,
   MessageMedia,
   MessageReceipt,
   MessageSearchHit,
@@ -205,11 +207,6 @@ export async function joinAndReadChat(chatId: Id): Promise<Chat | null> {
   return mapped
 }
 
-export async function fetchUnreadSummary(): Promise<number> {
-  const res = await apiClient.get<{ total_unread?: number }>(ENDPOINTS.chats.unreadSummary)
-  return res.data.total_unread ?? 0
-}
-
 /**
  * Idempotent — answers the existing chat when there already is one, which is
  * why tapping a contact never has to know whether it is the first time.
@@ -342,7 +339,7 @@ export async function fetchMembers(chatId: Id): Promise<ChatMember[]> {
   return items
 }
 
-/** Owner only. Ids that aren't Talk identities of this account are dropped. */
+/** Owner or admin. Ids that aren't Talk identities of this account are dropped. */
 export async function addMembers(chatId: Id, talkUserIds: Id[]): Promise<void> {
   await write<unknown, void>(
     SOCKET_ACTIONS.memberAdd,
@@ -354,7 +351,14 @@ export async function addMembers(chatId: Id, talkUserIds: Id[]): Promise<void> {
   )
 }
 
-/** Anyone may leave — except the owner, who disbands instead. */
+/**
+ * Anyone may leave, the OWNER included.
+ *
+ * The owner's leave hands the group on in the same operation — the longest
+ * standing admin, else the longest-standing member — and the thread gets two
+ * lines: `member_left`, then `owner_transferred`. The last member out leaves the
+ * group owner-less, which is allowed and is not an error.
+ */
 export async function leaveChat(chatId: Id): Promise<void> {
   await write<unknown, void>(
     SOCKET_ACTIONS.memberLeave,
@@ -378,8 +382,8 @@ export async function removeMember(chatId: Id, talkUserId: Id): Promise<void> {
 }
 
 /**
- * The group owner's block: the member stays and keeps reading, and loses only
- * the ability to post. Deliberately not a removal — their app shows the chat.
+ * The group's block: the member stays and keeps reading, and loses only the
+ * ability to post. Deliberately not a removal — their app shows the chat.
  */
 export async function setMemberBlocked(
   chatId: Id,
@@ -392,6 +396,36 @@ export async function setMemberBlocked(
     () => undefined,
     async () => {
       await apiClient.put(ENDPOINTS.members.block(chatId, talkUserId), { blocked })
+    },
+  )
+}
+
+/**
+ * Promote a member to `admin`, or demote an admin back to `member`.
+ *
+ * `owner` is not a value this can send — the role moves by succession only, when
+ * the owner leaves. Refused against the owner's row and against your own, which
+ * is why every caller gates the control rather than reporting the toast.
+ *
+ * IDEMPOTENT server-side: setting the role somebody already holds answers 200,
+ * writes nothing and announces nothing. So the button is never disabled on the
+ * assumption a second tap is harmful.
+ */
+export async function setMemberRole(
+  chatId: Id,
+  talkUserId: Id,
+  memberRole: Extract<MemberRole, 'admin' | 'member'>,
+): Promise<MemberRole> {
+  return write<{ member_role?: string }, MemberRole>(
+    SOCKET_ACTIONS.memberRole,
+    { chat_id: chatId, talk_user_id: talkUserId, member_role: memberRole },
+    (data) => toMemberRole(data?.member_role, memberRole),
+    async () => {
+      const res = await apiClient.put<{ member_role?: string }>(
+        ENDPOINTS.members.role(chatId, talkUserId),
+        { member_role: memberRole },
+      )
+      return toMemberRole(res.data?.member_role, memberRole)
     },
   )
 }
@@ -426,7 +460,11 @@ export async function fetchMessages(
     oldestId: items[0]?.id ?? null,
     newestId: items[items.length - 1]?.id ?? null,
     // A short page proves we reached the end; a full one only suggests more.
-    hasMore: newestFirst.length >= limit,
+    //
+    // The OPENING read (`limit: -1`) has no page size to compare against — the
+    // server decides how much to send — so it can only say whether there is
+    // anything at all. The first "load earlier" settles it either way.
+    hasMore: limit < 0 ? items.length > 0 : newestFirst.length >= limit,
   }
 }
 

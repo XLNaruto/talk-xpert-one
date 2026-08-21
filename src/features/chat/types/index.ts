@@ -3,7 +3,20 @@ import type { Id } from '@/types/api'
 
 export type ChatType = 'direct' | 'group'
 
-/** `owner` may rename, add, remove and block; `admin` assists; `member` reads. */
+/**
+ * `owner` and `admin` hold exactly the SAME powers over the membership — add,
+ * remove, mute, and appoint further admins. The one difference is the TARGET:
+ * the `owner` row is untouchable, so no admin (and no owner, on their own row)
+ * can remove, mute or demote the group's creator. That is what makes appointing
+ * an admin a delegation rather than a gamble.
+ *
+ * Two powers stay owner-only: renaming/editing the group and disbanding it.
+ *
+ * `owner` is exactly one live member at a time and is NEVER granted by request —
+ * the role endpoint refuses the value. It moves only by succession, when the
+ * owner leaves. A group everybody has left has NO owner at all, which is a valid
+ * state: nothing can rename or disband it, and the history stays readable.
+ */
 export type MemberRole = 'owner' | 'admin' | 'member'
 
 /** Derived server-side from what a message carries — never a request field. */
@@ -21,6 +34,13 @@ export type SystemEvent =
   | 'member_added'
   | 'member_removed'
   | 'member_left'
+  | 'member_promoted'
+  | 'member_demoted'
+  /**
+   * Succession: the owner LEFT and the role was handed on. `by_*` is the person
+   * who left — nobody promoted anyone — and `members[0]` is the heir.
+   */
+  | 'owner_transferred'
 
 /**
  * One person named INSIDE a system message's operands. The name and photo are
@@ -85,9 +105,22 @@ export interface MessageQuote {
   /** Avatar storage KEY — read it through `useMediaUrl()`. */
   senderPhoto: string | null
   type: MessageType
-  /** Null once the quoted message was deleted for everyone. */
+  /**
+   * Null once the quoted message was deleted for everyone — and on a group
+   * message written before I joined, which the server does not serve me.
+   */
   body: string | null
   isDeleted: boolean
+  /**
+   * What the quoted message ATTACHED, when it attached anything — so the quote
+   * can draw the picture instead of only naming it. Independent of `type`: the
+   * server's quote may carry no media at all (it is a summary, not the message),
+   * in which case this is filled from the thread's own copy where we hold one and
+   * stays null where we do not.
+   */
+  mediaKind: MediaKind | null
+  /** Preview image for that attachment — a storage KEY, via `useMediaUrl()`. */
+  mediaThumbnail: string | null
 }
 
 /**
@@ -164,6 +197,15 @@ export interface ChatMessage {
    * states the reason instead of offering a retry that cannot work.
    */
   canRetry?: boolean
+  /**
+   * Who has read this message, as `talk.message.read` reported them.
+   *
+   * The event carries the READER's own receipts and nobody else's, so a group
+   * message collects them one reader at a time — which is the only way the
+   * client can tell "one person read it" from "everyone did" without a round
+   * trip. Deduplicated: the same reader may be reported twice.
+   */
+  readerIds?: Id[]
 }
 
 /** What I am, in one chat. Drives the composer's enabled state. */
@@ -225,6 +267,43 @@ export interface Chat {
   /** Who sent the preview — the "Asha: see you at 4" prefix a group row draws. */
   lastMessageSenderName: string | null
   lastMessageSenderPhoto: string | null
+  /**
+   * What KIND the previewed message is — `last_message_type` on the row.
+   *
+   * A file has no preview text, so without this every attachment read as the
+   * word "Attachment"; with it the row can say Photo, Video, Voice message or
+   * name the document, the way the thread does.
+   */
+  lastMessageType: MessageType
+  /** True when the last message is a tombstone — it has no preview of its own. */
+  lastMessageDeletedForEveryone: boolean
+  /**
+   * True when the previewed message carries an edit, so the row says "edited"
+   * where the bubble does. `last_message_is_edited` when the server sends it;
+   * otherwise taken from the cached message the row is quoting, which is what
+   * keeps it live when an edit lands while the list is on screen.
+   */
+  lastMessageEdited: boolean
+  /**
+   * Whether MY last message has been read by everyone — the sidebar's blue
+   * double tick.
+   *
+   * `last_message_is_read_by_all` on the row, computed the way the bubble's
+   * `is_read_by_all` is, so the inbox and the thread cannot disagree. Always
+   * false when the preview is somebody else's message: read state is the
+   * SENDER's information. Between list reads it is kept live off
+   * `talk.message.read`, through the cached message the row is quoting.
+   */
+  lastMessageReadByAll: boolean
+  /**
+   * Who ACTED, when the preview is a system event ("Minato added Goku").
+   *
+   * A system message has no sender, so the three fields above are all null and
+   * the group row would have nobody to draw in its corner. It comes off
+   * `last_message_system_data` on a read and off `system_data` on the live
+   * event, so the corner is the same either way. Null on an ordinary message.
+   */
+  lastMessageActor: { talkUserId: Id; name: string | null; photo: string | null } | null
   self: ChatSelf
   createdAt: string
 }
@@ -280,6 +359,13 @@ export interface Presence {
 }
 
 export interface MessageReceipt {
+  /**
+   * Which message this receipt is for. Null from
+   * `GET /talk/chats/{id}/messages/{id}/receipts`, which answers about ONE
+   * message and so carries no id; set on the rows `talk.message.read` sends,
+   * which cover a run of them.
+   */
+  messageId: Id | null
   talkUserId: Id
   name: string | null
   photo: string | null
@@ -381,6 +467,48 @@ export interface SendMessageInput {
    * flaky connection answers the SAME message rather than a second bubble.
    */
   clientMessageId: string
+}
+
+/**
+ * Which band of the conversation list the sidebar is showing.
+ *
+ * `group` is the CHAT's own kind, which is why the unread roll-up's matching
+ * bucket is spelled `groups` — see `lib/unread-badges.ts`.
+ */
+export type ChatFilter = 'all' | 'direct' | 'group' | 'unread'
+
+/**
+ * One bucket of the unread roll-up the sidebar draws its pills from.
+ *
+ * TWO counts, answering different questions and neither derivable from the
+ * other: `chats` is how many CONVERSATIONS hold something unread — the number a
+ * filter tab wears — and `messages` is how many unread messages they hold
+ * between them, which is the tab-title badge's number.
+ */
+export interface UnreadBucket {
+  /** Rows that have a badge. A chat with 0 unread is in neither count. */
+  chats: number
+  messages: number
+}
+
+/**
+ * The unread roll-up, COUNTED ON THE CLIENT from the chat rows we hold — see
+ * `lib/unread-badges.ts`. There is no summary endpoint and no pushed total: each
+ * row carries its own `unread_count`, the socket keeps it live, and a second
+ * copy of the same number could only ever disagree with the rows it sits above.
+ *
+ * `unread` repeats `all` on purpose: the Unread tab filters to exactly the chats
+ * that have unread, so it cannot be a different number, and the repetition is
+ * what lets a tab map to a key with no special case. Note the key is `groups`
+ * (plural, matching the TAB) while a chat's own kind is `group`.
+ */
+export interface UnreadSummary {
+  all: UnreadBucket
+  unread: UnreadBucket
+  direct: UnreadBucket
+  groups: UnreadBucket
+  /** Unread MESSAGES across every bucket — identical to `all.messages`. */
+  totalUnread: number
 }
 
 export interface ChatListQuery {

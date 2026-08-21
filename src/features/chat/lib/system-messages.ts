@@ -54,9 +54,52 @@ export function systemMessageText(message: ChatMessage, selfTalkUserId: Id | nul
       const actor = actorName(data.by ?? data.subject ?? data.members[0] ?? null, selfTalkUserId)
       return `${actor} left the group`
     }
+    case 'member_promoted': {
+      const actor = actorName(data.by, selfTalkUserId)
+      const people = listNames(subjects(data), selfTalkUserId)
+      return people ? `${actor} made ${people} an admin` : `${actor} appointed an admin`
+    }
+    case 'member_demoted': {
+      const actor = actorName(data.by, selfTalkUserId)
+      const people = listNames(subjects(data), selfTalkUserId)
+      return people ? `${actor} removed ${people} as an admin` : `${actor} removed an admin`
+    }
+    case 'owner_transferred': {
+      // Nobody promoted anybody here: the owner LEFT and the group was handed
+      // on, so `by` is the LEAVER and the subject is the heir. Written from the
+      // heir's side, because who holds the group now is the fact that matters —
+      // the `member_left` line above it already said who went.
+      const heir = subjects(data)[0] ?? null
+      const heirName =
+        heir && heir.talkUserId === selfTalkUserId
+          ? 'You are'
+          : `${actorName(heir, selfTalkUserId)} is`
+      const leaver = data.by
+      if (!leaver) return `${heirName} now the group admin`
+      const leaverName =
+        leaver.talkUserId === selfTalkUserId
+          ? 'you'
+          : resolveTalkUser(leaver.talkUserId, leaver.name).name
+      return `${heirName} now the group admin after ${leaverName} left`
+    }
     default:
       return fallback
   }
+}
+
+/**
+ * WHO a system event was done by — `system_data.by`, falling back to the flat
+ * `subject` and then to the first named member, exactly as the sentences above
+ * pick their actor.
+ *
+ * A system row has `sender_talk_user_id: null`, so this is the only person a
+ * chat row can put in its corner for "Minato added Goku". Null when the operands
+ * are missing and only the server's sentence survives.
+ */
+export function systemActor(message: ChatMessage): SystemParticipant | null {
+  const data = message.systemData
+  if (!data) return null
+  return data.by ?? data.subject ?? data.members[0] ?? null
 }
 
 /**

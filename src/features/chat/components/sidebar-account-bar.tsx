@@ -62,12 +62,22 @@ export function SidebarAccountBar() {
   )
 
   return (
-    <div ref={bar} className="relative shrink-0 border-t border-sidebar-border p-2">
+    // A glass CARD floating over the list rather than a bar the list stops
+    // above: it is positioned out of flow, so rows scroll on underneath and
+    // blur through it. `bg-sidebar/60` needs the blur to be legible, so the
+    // fallback for a browser without `backdrop-filter` is the opaque fill —
+    // never the translucent one, which would leave text over moving rows.
+    // The list carries the matching bottom padding (`chat-sidebar.tsx`) so its
+    // last row can still be scrolled clear of the glass.
+    <div
+      ref={bar}
+      className="absolute inset-x-2 bottom-2 z-20 rounded-full border border-sidebar-border/70 bg-sidebar/90 px-2 py-1 shadow-lg supports-[backdrop-filter]:bg-sidebar/60 supports-[backdrop-filter]:backdrop-blur-xl"
+    >
       <div className="flex items-center gap-2">
         <button
           type="button"
           onClick={() => setShowAccount(true)}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1 py-1 text-left"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-full py-0.5 pr-1 text-left"
           aria-label="Your account"
         >
           <span className="relative shrink-0">
@@ -93,6 +103,7 @@ export function SidebarAccountBar() {
           <Button
             variant="ghost"
             size="icon"
+            className="rounded-full"
             onClick={() => setMenuOpen((open) => !open)}
             aria-label="Settings"
             aria-haspopup="menu"
@@ -122,7 +133,7 @@ export function SidebarAccountBar() {
               aria-hidden
               className={cn(
                 'flex h-5 w-9 shrink-0 items-center rounded-full p-0.5 transition-colors',
-                theme === 'dark' ? 'bg-primary' : 'bg-muted-foreground/40',
+                theme === 'dark' ? 'bg-primary-fill' : 'bg-muted-foreground/40',
               )}
             >
               <span
@@ -145,7 +156,7 @@ export function SidebarAccountBar() {
           >
             <Palette className="size-4 text-muted-foreground" aria-hidden />
             <span className="flex-1 text-left">Colour theme</span>
-            <span className="size-4 shrink-0 rounded-full bg-primary" aria-hidden />
+            <span className="size-4 shrink-0 rounded-full bg-primary-fill" aria-hidden />
           </button>
 
           <button

@@ -1,6 +1,12 @@
 import { useEffect } from 'react'
 import { Outlet } from 'react-router-dom'
-import { ChatSidebar, MediaLightbox, useActiveChatRoute, useMessageStream } from '@/features/chat'
+import {
+  ChatSidebar,
+  MediaLightbox,
+  useActiveChatRoute,
+  useMessageStream,
+  useUnreadTitle,
+} from '@/features/chat'
 import { useRefreshIdentity } from '@/features/auth'
 import { useUiStore } from '@/stores/ui-store'
 import { cn } from '@/lib/utils'
@@ -23,6 +29,10 @@ export function ChatLayout() {
   // Binds the open chat to the `?data=` token: restores it on a refresh, opens
   // the newest conversation when there is nothing to restore.
   useActiveChatRoute()
+  // The tab title's "(12)" — unread MESSAGES, where the sidebar's filter pills
+  // count conversations. Mounted here so it follows the signed-in app rather
+  // than whichever thread is open.
+  useUnreadTitle()
 
   // Confirm the restored `talk_user_id` once per launch: every "is this mine?"
   // comparison depends on it, and a stale one would misalign every bubble.

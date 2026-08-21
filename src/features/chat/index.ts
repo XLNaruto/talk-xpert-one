@@ -8,8 +8,10 @@ export { MediaLightbox } from './components/media-lightbox'
 export { useChatList } from './hooks/use-chat-list'
 export { useActiveChatRoute } from './hooks/use-active-chat-route'
 export { useMessageStream } from './hooks/use-message-stream'
+export { useUnreadTitle } from './hooks/use-unread-title'
 export type {
   Chat,
+  ChatFilter,
   ChatMember,
   ChatMessage,
   ChatSelf,
@@ -26,4 +28,6 @@ export type {
   Presence,
   SendMessageInput,
   SystemEvent,
+  UnreadBucket,
+  UnreadSummary,
 } from './types'

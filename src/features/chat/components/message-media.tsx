@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Download, FileText, ImageOff, Music, Play } from 'lucide-react'
 import { useMediaUrl } from '@/hooks/use-app-config'
 import { cn } from '@/lib/utils'
@@ -58,8 +58,13 @@ export function MessageMediaGrid({
         </div>
       )}
 
-      {rows.map((item) => (
-        <MediaItem key={`${item.id}-${item.position}`} media={item} isMine={isMine} />
+      {/* Keyed on POSITION, never on the id. An attachment's id changes when the
+          optimistic row is reconciled — the local preview's is a negative
+          counter, the stored one's is the server's — and a changed key remounts
+          the tile, which throws away the picture it was showing and refetches
+          the replacement from nothing. Position is the same before and after. */}
+      {rows.map((item, index) => (
+        <MediaItem key={item.position ?? index} media={item} isMine={isMine} />
       ))}
 
       {/* A document or a voice note has no tile to draw on, so it keeps a bar. */}
@@ -122,6 +127,26 @@ function UploadRing({ percent }: { percent: number }) {
 /** At most four tiles are drawn; the fourth carries a `+N` for the rest. */
 const ALBUM_TILES = 4
 
+/** Natural pixel size of a photo or a video frame, or null before it is known. */
+type MediaSize = { w: number; h: number } | null
+
+const isLandscape = (size: MediaSize) => !!size && size.w > size.h
+
+/**
+ * A LONE attachment is sized by its OWN orientation — one frame in a bubble has
+ * nothing to line up with, so cropping it to a shape is pure loss.
+ *
+ * Landscape keeps its natural proportions out to the bubble's cap. Portrait and
+ * square go in ONE fixed 4:5 box, fitted WHOLE: a box matched to each photo's
+ * exact ratio makes every bubble a different width, and filling it cuts the
+ * edges off the frame. Whatever is left over shows the bubble behind it, and an
+ * unknown size falls to the box, being the shape that cannot overflow.
+ *
+ * An album keeps its squares — a grid wants them.
+ */
+const SOLO_LANDSCAPE = 'w-full max-w-[360px]'
+const SOLO_PORTRAIT = 'aspect-[4/5] w-60'
+
 /**
  * The album.
  *
@@ -141,22 +166,25 @@ function MediaAlbum({
   const visible = tiles.slice(0, ALBUM_TILES)
   const extra = tiles.length - visible.length
   const count = visible.length
+  // A single tile sets the bubble's width from its own frame, so the grid
+  // shrinks to it (`w-fit`) instead of stretching it to the column.
+  const solo = count === 1
 
   return (
     <div
       className={cn(
         'grid gap-0.5 overflow-hidden rounded-lg',
-        count === 1 ? 'grid-cols-1' : 'w-64 max-w-full grid-cols-2',
+        solo ? 'w-fit max-w-full grid-cols-1' : 'w-64 max-w-full grid-cols-2',
       )}
     >
       {visible.map((item, index) => (
         <AlbumTile
-          key={`${item.id}-${item.position}`}
+          key={item.position ?? index}
           media={item}
           siblings={siblings}
+          solo={solo}
           extraCount={index === visible.length - 1 ? extra : 0}
           className={cn(
-            count === 1 && 'max-h-64',
             count > 1 && 'aspect-square',
             count === 3 && index === 0 && 'col-span-2 aspect-[2/1]',
           )}
@@ -169,11 +197,13 @@ function MediaAlbum({
 function AlbumTile({
   media,
   siblings,
+  solo,
   extraCount,
   className,
 }: {
   media: MessageMedia
   siblings: MessageMedia[]
+  solo: boolean
   extraCount: number
   className?: string
 }) {
@@ -184,6 +214,24 @@ function AlbumTile({
   const label = mediaLabel(media)
   const isVideo = media.kind === 'video'
 
+  /**
+   * Seeded from the payload when the API named the dimensions — which is the
+   * common case and means the right box is picked on the FIRST paint, with no
+   * reflow once the bytes decode. An optimistic row from a local file has
+   * neither, so the element measures itself on load as the fallback.
+   */
+  const [size, setSize] = useState<MediaSize>(
+    media.width && media.height ? { w: media.width, h: media.height } : null,
+  )
+  const wide = solo && isLandscape(size)
+  // A landscape frame drives its own height, so it is a full-width block with
+  // an auto height rather than a picture fitted into a box.
+  const fitClass = solo
+    ? wide
+      ? 'h-auto w-full'
+      : 'size-full object-contain'
+    : 'size-full object-cover'
+
   return (
     <button
       type="button"
@@ -192,21 +240,37 @@ function AlbumTile({
         extraCount > 0 ? `Open ${label} and ${extraCount} more` : `Open ${label}`
       }
       className={cn(
-        'relative block cursor-zoom-in overflow-hidden bg-black/15',
+        'relative block cursor-zoom-in overflow-hidden',
+        // A grid tile fills its square, so its backdrop only ever shows while
+        // the picture loads — black is fine there. A fitted solo frame does NOT
+        // fill its box, so that backdrop is permanently on screen beside the
+        // photo: black made it read as a void the picture had been sunk into.
+        // A `--foreground` tint is a light plate on the dark bubble and a soft
+        // grey one on the light bubble, without naming either theme's colour.
+        solo
+          ? cn(wide ? SOLO_LANDSCAPE : SOLO_PORTRAIT, 'bg-foreground/10')
+          : 'bg-black/15',
         className,
       )}
     >
       {isVideo ? (
         // A frame, not a player: playback happens in the viewer. `preload` is
         // metadata so this shows the first frame when the API gave no thumbnail,
-        // without pulling the whole file into a virtualised list.
+        // without pulling the whole file into a virtualised list — and it is
+        // also what reports the frame's size when the payload didn't.
         <video
           preload="metadata"
           muted
           playsInline
           poster={poster || undefined}
-          className="size-full object-cover"
+          className={fitClass}
           tabIndex={-1}
+          onLoadedMetadata={(event) => {
+            const element = event.currentTarget
+            if (element.videoWidth && element.videoHeight) {
+              setSize({ w: element.videoWidth, h: element.videoHeight })
+            }
+          }}
         >
           <source src={src} type={media.mimeType ?? undefined} />
         </video>
@@ -216,6 +280,8 @@ function AlbumTile({
           alt={label}
           width={media.width}
           height={media.height}
+          imgClassName={fitClass}
+          onNaturalSize={setSize}
         />
       )}
 
@@ -255,17 +321,61 @@ function TileImage({
   alt,
   width,
   height,
+  imgClassName,
+  onNaturalSize,
 }: {
   src: string
   alt: string
   width: number | null
   height: number | null
+  imgClassName?: string
+  /** Reports the decoded frame's size, for the tiles the payload left unmeasured. */
+  onNaturalSize?: (size: MediaSize) => void
 }) {
   const [state, setState] = useState<'loading' | 'ready' | 'failed'>('loading')
+  /**
+   * The src on SCREEN, which lags the src in props by however long the new one
+   * takes to decode.
+   *
+   * A sent photo changes src exactly once — the local blob is replaced by the
+   * stored copy the moment the server's row lands — and pointing the element at
+   * a URL the browser has not fetched blanks the tile until it arrives. That is
+   * the flash you get after sending an image: photo, nothing, photo. So the
+   * replacement is loaded off-screen first and only swapped in when it can be
+   * drawn, which makes the change invisible.
+   */
+  const [shown, setShown] = useState(src)
 
-  if (!src || state === 'failed') {
+  useEffect(() => {
+    if (src === shown) return
+    // Nothing worth holding on to — show the new one and let the tile's own
+    // loading state cover it.
+    if (!shown || state !== 'ready') {
+      setShown(src)
+      setState(src ? 'loading' : 'failed')
+      return
+    }
+
+    let cancelled = false
+    const image = new Image()
+    const swap = (next: 'ready' | 'failed') => {
+      if (cancelled) return
+      setShown(src)
+      setState(next)
+    }
+    image.onload = () => swap('ready')
+    image.onerror = () => swap('failed')
+    image.src = src
+    return () => {
+      cancelled = true
+    }
+  }, [src, shown, state])
+
+  if (!src || (state === 'failed' && shown === src)) {
+    // `min-h` because a landscape tile has no height of its own — it borrows the
+    // picture's, and there is no picture here.
     return (
-      <span className="flex size-full items-center justify-center bg-black/10">
+      <span className="flex size-full min-h-24 items-center justify-center bg-black/10">
         {src ? (
           <ImageOff className="size-5 opacity-60" aria-label={alt} />
         ) : (
@@ -281,13 +391,20 @@ function TileImage({
         <span className="absolute inset-0 animate-pulse bg-black/10" aria-hidden />
       )}
       <img
-        src={src}
+        src={shown}
         alt={alt}
         loading="lazy"
-        onLoad={() => setState('ready')}
+        onLoad={(event) => {
+          setState('ready')
+          const element = event.currentTarget
+          if (element.naturalWidth && element.naturalHeight) {
+            onNaturalSize?.({ w: element.naturalWidth, h: element.naturalHeight })
+          }
+        }}
         onError={() => setState('failed')}
         className={cn(
-          'size-full object-cover transition-opacity duration-200',
+          'transition-opacity duration-200',
+          imgClassName ?? 'size-full object-cover',
           state === 'ready' ? 'opacity-100' : 'opacity-0',
         )}
         // An intrinsic size stops the thread jumping as each image decodes.

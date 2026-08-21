@@ -1,10 +1,16 @@
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { Loader2 } from 'lucide-react'
 import { Virtuoso } from 'react-virtuoso'
 import { EmptyState } from '@/components/common/empty-state'
 import { cn } from '@/lib/utils'
 import type { Id } from '@/types/api'
-import { THREAD_AT_BOTTOM_THRESHOLD_PX, THREAD_OVERSCAN_PX } from '../constants'
+import {
+  THREAD_AT_BOTTOM_THRESHOLD_PX,
+  THREAD_JUMP_CENTRE_WINDOW_MS,
+  THREAD_JUMP_RETRY_MS,
+  THREAD_JUMP_WAIT_CAP_MS,
+  THREAD_OVERSCAN_PX,
+} from '../constants'
 import { formatDayDivider } from '../lib/message-formatters'
 import type { ThreadRow } from '../hooks/use-message-thread'
 import type { JumpTarget } from '../hooks/use-message-jump'
@@ -94,49 +100,144 @@ export function MessageList({
   } = scroll
 
   /**
-   * Scroll the stepped-to search hit into view.
+   * The rows and the index base, for the ticker below.
    *
-   * Imperative because the list is virtualised: the target row may not be
-   * mounted, so there is no element to call `scrollIntoView` on — only Virtuoso
-   * can put an index on screen. It runs when the id changes AND when the rows
-   * change, because a hit deep in history only gets an index once the page that
-   * holds it has landed.
+   * Held in refs rather than closed over, which is the whole point: the ticker
+   * has to see the page that lands AFTER it started, and a callback that changed
+   * identity every time `rows` did made the effects using it re-fire on every
+   * cache write — restarting the scroll from scratch each time, and going on
+   * doing it long after the jump had landed.
+   */
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
+  const firstItemIndexRef = useRef(firstItemIndex)
+  firstItemIndexRef.current = firstItemIndex
+
+  /**
+   * Put one row in the middle of the viewport, and KEEP it there for a moment.
+   *
+   * Imperative because the list is virtualised: the target may not be mounted,
+   * so there is nothing to call `scrollIntoView` on — only Virtuoso can put an
+   * index on screen.
+   *
+   * Three things it has learnt the hard way.
+   *
+   * It scrolls INSTANTLY: a smooth scroll to a row several screens away is a
+   * long animation that anything touching the scroller cancels, and a cancelled
+   * one leaves the reader wherever they were — at the bottom, most of the time,
+   * which looked like the jump doing nothing.
+   *
+   * It re-asserts on a ticker, because the rows between here and there are
+   * measured for the first time as they mount: every correction moves the
+   * target, and the first landing is an estimate. It stops as soon as the row is
+   * actually on screen.
+   *
+   * And it WAITS for a row that isn't drawn yet instead of returning. This
+   * function is called once per jump now, so a bare `return` on a missing index
+   * meant a target whose page landed one render later was never scrolled to at
+   * all. The ticker only starts spending its window once the row exists.
+   */
+  const scrollRowIntoView = useCallback(
+    (messageId: Id) => {
+      let ticker: ReturnType<typeof setInterval> | null = null
+      /** When the row first became drawable — the centring window starts here. */
+      let foundAt: number | null = null
+      const waitUntil = Date.now() + THREAD_JUMP_WAIT_CAP_MS
+
+      /** One correction. True once the row is genuinely in the middle band. */
+      const attempt = (): boolean => {
+        const index = rowsRef.current.findIndex((row) => row.message.id === messageId)
+        if (index < 0) return false
+        if (foundAt === null) foundAt = Date.now()
+
+        /**
+         * TWO index spaces, and they are not interchangeable.
+         *
+         * `scrollToIndex` takes the position in `data` — it CLAMPS what it is
+         * given to `0..totalCount - 1`. `firstItemIndex` is a large base (a
+         * million here) that Virtuoso adds when it STAMPS a row, so
+         * `data-item-index`, `rangeChanged` and `initialTopMostItemIndex`
+         * callbacks speak the offset space while the scroll method speaks the
+         * array's.
+         *
+         * Handing the offset index to `scrollToIndex` therefore clamped every
+         * jump to the last row — which is why a pin, a reply quote and a search
+         * hit all scrolled to the BOTTOM instead of to the message. It is also
+         * why the base is re-read every pass: a page prepending mid-jump moves
+         * it, and a stamped index from before the prepend points at a row that
+         * has since slid down the list.
+         */
+        const stamped = firstItemIndexRef.current + index
+        if (isRowCentred(stamped)) return true
+
+        /**
+         * Virtuoso puts the row in play; the ELEMENT then puts itself in the
+         * middle. `scrollToIndex` works off estimated heights and lands
+         * approximately, and every correction after it moves the row again — so
+         * the last word belongs to the row's own rectangle, which cannot be
+         * approximate.
+         */
+        const element = rowElement(stamped)
+        if (element) element.scrollIntoView({ block: 'center' })
+        else virtuosoRef.current?.scrollToIndex({ index, align: 'center' })
+        return false
+      }
+
+      const stop = () => {
+        if (ticker) clearInterval(ticker)
+        ticker = null
+      }
+
+      if (attempt()) return undefined
+
+      ticker = setInterval(() => {
+        if (attempt()) {
+          stop()
+          return
+        }
+        // Two ways to run out: the row never turned up, or it turned up and we
+        // have spent long enough failing to centre it. Either way, stop — a
+        // ticker that keeps scrolling is indistinguishable from the flicker it
+        // was added to fix.
+        const spent =
+          foundAt === null
+            ? Date.now() > waitUntil
+            : Date.now() - foundAt > THREAD_JUMP_CENTRE_WINDOW_MS
+        if (spent) stop()
+      }, THREAD_JUMP_RETRY_MS)
+
+      return stop
+    },
+    [virtuosoRef],
+  )
+
+  /**
+   * The stepped-to search hit. Keyed on the id alone — the wait for a hit deep
+   * in history is the ticker's job now, not a re-run's.
    */
   useEffect(() => {
     if (activeSearchMessageId === null) return
-    const index = rows.findIndex((row) => row.message.id === activeSearchMessageId)
-    if (index < 0) return
-    // `firstItemIndex` puts Virtuoso's indices in a different space from the
-    // array's: `rows[0]` is index `firstItemIndex`, not 0. Every imperative
-    // scroll has to be translated, or it lands a page's worth away.
-    virtuosoRef.current?.scrollToIndex({
-      index: firstItemIndex + index,
-      align: 'center',
-      behavior: 'smooth',
-    })
-  }, [activeSearchMessageId, rows, firstItemIndex, virtuosoRef])
+    return scrollRowIntoView(activeSearchMessageId)
+  }, [activeSearchMessageId, scrollRowIntoView])
 
   /**
    * Land on a message somebody pointed at from outside the thread.
    *
-   * Keyed on the target's NONCE, not its id: clicking the same pin twice has to
-   * move the view both times, and the row it names may only get an index once
-   * `useMessageJump` has pulled the page holding it — hence `rows` in the deps
-   * as well.
+   * Keyed on the target's NONCE and nothing else: clicking the same pin twice
+   * has to move the view both times, so the nonce is what identifies a jump —
+   * and `rows` is deliberately NOT here. It used to be, so that a target whose
+   * page had not landed yet got another chance when it did; but the effect then
+   * re-fired on every cache write for the rest of the thread's life, and each
+   * re-fire dragged the view back to a message the reader had long since scrolled
+   * away from. Waiting for the row is the ticker's job.
    */
   const jumpNonce = jumpTarget?.nonce ?? null
   const jumpMessageId = jumpTarget?.messageId ?? null
   useEffect(() => {
     if (jumpMessageId === null) return
-    const index = rows.findIndex((row) => row.message.id === jumpMessageId)
-    if (index < 0) return
-    virtuosoRef.current?.scrollToIndex({
-      index: firstItemIndex + index,
-      align: 'center',
-      behavior: 'smooth',
-    })
+    return scrollRowIntoView(jumpMessageId)
     // `jumpMessageId` rides along with the nonce, which is what identifies a jump.
-  }, [jumpNonce, jumpMessageId, rows, firstItemIndex, virtuosoRef])
+  }, [jumpNonce, jumpMessageId, scrollRowIntoView])
 
   // Membership is asked once per rendered row per frame, so both of these are
   // sets rather than the arrays the props carry — an `includes` over a hundred
@@ -165,8 +266,10 @@ export function MessageList({
         {row.message.id === unreadAnchorId && <UnreadDivider />}
         <MessageBubble
           message={row.message}
+          replyTo={row.replyTo}
           isMine={row.isMine}
           startsGroup={row.startsGroup}
+          endsGroup={row.endsGroup}
           // Every incoming run is headed by its author — in a direct chat too,
           // so a thread reads the same wherever you opened it from. Only above
           // the FIRST bubble of a run; the rest sit under the spacer.
@@ -264,13 +367,43 @@ export function MessageList({
   )
 }
 
+/** The rendered row for a Virtuoso index, if it is mounted. */
+function rowElement(index: number): HTMLElement | null {
+  return document.querySelector<HTMLElement>(`[data-item-index="${index}"]`)
+}
+
 /**
- * Keyed on the message id, so a merge that re-sorts the array reuses rows
- * instead of remounting every bubble. Module-level, so its identity never
- * changes.
+ * Is that row sitting in the MIDDLE band of the scroller?
+ *
+ * Not merely "on screen": Virtuoso renders a screenful past the viewport in
+ * both directions, and a row half a screen below the fold is drawn but not
+ * looked at. Asking for the middle third is what stops the ticker as soon as the
+ * jump has actually arrived, and keeps correcting while it has not.
  */
-function computeItemKey(_index: number, row: ThreadRow): Id {
-  return row.message.id
+function isRowCentred(index: number): boolean {
+  const element = rowElement(index)
+  if (!element) return false
+  const scroller = element.closest<HTMLElement>('[data-testid="virtuoso-scroller"]')
+  const bounds = scroller?.getBoundingClientRect()
+  if (!bounds) return false
+  const row = element.getBoundingClientRect()
+  const centre = row.top + row.height / 2
+  const margin = bounds.height * 0.15
+  return centre > bounds.top + margin && centre < bounds.bottom - margin
+}
+
+/**
+ * Keyed so a merge that re-sorts the array reuses rows instead of remounting
+ * every bubble. Module-level, so its identity never changes.
+ *
+ * `clientMessageId` comes FIRST for a message of my own: the optimistic bubble
+ * carries a negative id, and reconciling it with the server's row would change
+ * the key — remounting the bubble, and with it the picture inside, which is what
+ * made a sent image blink out and back. The id is what everything else is keyed
+ * on, and it survives the swap because `adopt` keeps the client id on the row.
+ */
+function computeItemKey(_index: number, row: ThreadRow): Id | string {
+  return row.message.clientMessageId ?? row.message.id
 }
 
 const ListFooter = () => <div className="h-2" />

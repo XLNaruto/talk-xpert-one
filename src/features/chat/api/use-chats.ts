@@ -5,6 +5,7 @@ import { logger } from '@/lib/logger'
 import { useChatListStore } from '@/stores/chat-list-store'
 import type { Id } from '@/types/api'
 import type { ChatListQuery } from '../types'
+import { CHAT_LIST_MAX_PAGES } from '../constants'
 import * as chatApi from './chat-api'
 
 /**
@@ -20,7 +21,6 @@ import * as chatApi from './chat-api'
  */
 export function useChats(query: ChatListQuery = {}) {
   const setChats = useChatListStore((s) => s.setChats)
-  const setTotalUnread = useChatListStore((s) => s.setTotalUnread)
   const known = useChatListStore((s) => s.chats)
   const listedIds = useChatListStore((s) => s.listedIds)
   const isLoaded = useChatListStore((s) => s.isLoaded)
@@ -29,48 +29,83 @@ export function useChats(query: ChatListQuery = {}) {
   const { search, type, pinnedOnly, unreadOnly } = query
   const isFiltered = Boolean(search || type || pinnedOnly || unreadOnly)
 
+  /** Identifies the question the visible listing is an answer TO. */
+  const queryKey = `${search ?? ''}|${type ?? ''}|${pinnedOnly ? 1 : 0}|${unreadOnly ? 1 : 0}`
+  /** The query whose answer `listedIds` currently holds. */
+  const [settledKey, setSettledKey] = useState<string | null>(null)
+
   /**
    * What the sidebar draws: the rows the last read returned, in the store's
    * order so a socket event still bumps one to the top. The store keeps the
    * others — the open conversation among them — so narrowing the list never
    * closes the thread.
+   *
+   * While a read for a DIFFERENT question is in flight, the listing on screen is
+   * the previous question's answer, and drawing it is how switching from an
+   * empty "Unread" back to "All" flashed "No conversations yet" for a round trip
+   * before the rows it already held appeared. So the rows we hold are filtered
+   * here instead, and the server's answer replaces that the moment it lands. It
+   * is an approximation only for `search`, which the server matches against the
+   * other participant's name as well.
    */
   const chats = useMemo(() => {
+    if (settledKey !== queryKey) {
+      const term = search?.trim().toLowerCase()
+      return known.filter((chat) => {
+        if (type && chat.type !== type) return false
+        if (unreadOnly && chat.unreadCount === 0) return false
+        if (pinnedOnly && !chat.self.isPinned) return false
+        if (!term) return true
+        return [chat.name, chat.counterpartName].some((name) =>
+          name?.toLowerCase().includes(term),
+        )
+      })
+    }
     if (listedIds === null) return known
     const listed = new Set(listedIds)
     return known.filter((chat) => listed.has(chat.id))
-  }, [known, listedIds])
+  }, [known, listedIds, settledKey, queryKey, search, type, pinnedOnly, unreadOnly])
 
   const refetch = useCallback(async () => {
     setFetching(true)
     try {
       const page = await chatApi.fetchChats({ search, type, pinnedOnly, unreadOnly })
       setChats(page.items, page.total, isFiltered ? 'filter' : 'replace')
+      // The listing answers THIS question as soon as its first page is in —
+      // stop filtering locally. The pages behind it only extend the same answer.
+      setSettledKey(queryKey)
       // Fetch first, THEN join — a join with no preceding read is refused.
       await joinAll(page.items.map((chat) => chat.id))
+
+      // Walk the rest of the list. A row that is never read is never joined,
+      // and a chat whose room we are not in is one whose messages arrive only
+      // after a reload — so "the first thirty conversations are live and the
+      // rest are not" is not a state worth shipping. Bounded by
+      // `CHAT_LIST_MAX_PAGES`; each page joins as it lands.
+      let loaded = page.items.length
+      for (let read = 1; read < CHAT_LIST_MAX_PAGES && loaded < page.total; read += 1) {
+        const next = await chatApi.fetchChats({
+          search,
+          type,
+          pinnedOnly,
+          unreadOnly,
+          offset: loaded,
+        })
+        if (next.items.length === 0) break
+        setChats(next.items, next.total, 'append')
+        await joinAll(next.items.map((chat) => chat.id))
+        loaded += next.items.length
+      }
     } catch (error) {
       toastApiError(error, 'Could not load your conversations')
     } finally {
       setFetching(false)
     }
-  }, [search, type, pinnedOnly, unreadOnly, isFiltered, setChats])
-
-  const refreshUnreadSummary = useCallback(async () => {
-    try {
-      setTotalUnread(await chatApi.fetchUnreadSummary())
-    } catch (error) {
-      // The app badge is decoration; a failed read must not raise a toast.
-      logger.warn('unread summary read failed', error)
-    }
-  }, [setTotalUnread])
+  }, [search, type, pinnedOnly, unreadOnly, isFiltered, setChats, queryKey])
 
   useEffect(() => {
     void refetch()
   }, [refetch])
-
-  useEffect(() => {
-    void refreshUnreadSummary()
-  }, [refreshUnreadSummary])
 
   return {
     chats,
@@ -79,7 +114,6 @@ export function useChats(query: ChatListQuery = {}) {
     isLoading: isFetching && !isLoaded,
     isFetching,
     refetch,
-    refreshUnreadSummary,
   }
 }
 

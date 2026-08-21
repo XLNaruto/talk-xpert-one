@@ -1,7 +1,26 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Ban, Camera, Loader2, Search, ShieldOff, UserMinus, UserPlus, Users } from 'lucide-react'
+import {
+  Ban,
+  Camera,
+  Loader2,
+  MoreVertical,
+  Search,
+  Shield,
+  ShieldMinus,
+  ShieldOff,
+  UserMinus,
+  UserPlus,
+  Users,
+} from 'lucide-react'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Field } from '@/components/common/form-field'
@@ -18,13 +37,19 @@ import { useChatActions } from '../api/use-chat-actions'
 import { useChatPresence } from '../api/use-presence'
 import { useGroupDetailsForm } from '../hooks/use-group-details-form'
 import { useGroupInfo, type GroupInfoTab, type MemberConfirm } from '../hooks/use-group-info'
-import { chatLabel, formatBytes, mediaLabel, memberBlockCopy } from '../lib/chat-labels'
+import {
+  chatLabel,
+  formatBytes,
+  mediaLabel,
+  memberBlockCopy,
+  memberRoleCopy,
+} from '../lib/chat-labels'
+import { canActOnMember, canEditGroup, canManageMembers, roleLabel } from '../lib/member-roles'
 import { resolveTalkUser } from '../lib/talk-directory'
 import * as chatApi from '../api/chat-api'
 import { MediaThumb } from './message-media'
 import { PeoplePicker } from './people-picker'
-import type { Chat, ChatMember, MessageMedia } from '../types'
-import { Tip } from '@/components/common/tip'
+import type { Chat, ChatMember, MemberRole, MessageMedia } from '../types'
 
 /**
  * Group info: the group's picture and name on one pane, everybody in it — and
@@ -34,16 +59,23 @@ import { Tip } from '@/components/common/tip'
  * lengths: renaming is three controls, while the member list runs to dozens of
  * rows and grows its own "add" list above it.
  *
- * Every write in here is owner-only server-side, so the controls are hidden for
- * anyone else rather than shown and then refused — which is why the profile pane
- * reads as a card for a member and as a form for the owner.
+ * The controls are hidden for anybody the server would refuse, rather than shown
+ * and then toasted — and the two kinds of authority are gated separately.
+ * Membership (add, remove, mute, appoint) is the OWNER OR AN ADMIN; renaming,
+ * re-picturing and disbanding stay OWNER-ONLY. Which is why the profile pane
+ * reads as a card for an admin and as a form only for the creator.
  */
 export function ChatDetailsSheet({ chat, onClose }: { chat: Chat; onClose: () => void }) {
   const label = chatLabel(chat)
   const mediaUrl = useMediaUrl()
   const selfId = useAuthStore((s) => s.identity?.talkUserId ?? null)
   const isGroup = chat.type === 'group'
-  const isOwner = chat.self.memberRole === 'owner'
+  // Two different questions, and conflating them is the bug this screen had:
+  // `canEdit` is the rename form and the photo, which succession does not share;
+  // `canManage` is everything about WHO IS IN the group, which an admin holds in
+  // full.
+  const canEdit = canEditGroup(chat.self.memberRole)
+  const canManage = canManageMembers(chat.self.memberRole)
 
   const group = useGroupInfo(chat.id, isGroup)
   // The rename lives in `useGroupDetailsForm`; only the picture is saved from here.
@@ -58,9 +90,10 @@ export function ChatDetailsSheet({ chat, onClose }: { chat: Chat; onClose: () =>
 
   const manageProps = {
     selfId,
-    canManage: isOwner,
+    selfRole: chat.self.memberRole,
     onRemove: group.askRemove,
     onToggleBlocked: group.askToggleBlocked,
+    onSetRole: group.askSetRole,
   }
 
   // A right-hand sheet, matching "New group": this is the long panel that sits
@@ -101,13 +134,13 @@ export function ChatDetailsSheet({ chat, onClose }: { chat: Chat; onClose: () =>
                   src={mediaUrl(label.avatarKey) || undefined}
                   className="size-24 text-2xl"
                 />
-                {isGroup && isOwner && (
+                {isGroup && canEdit && (
                   <>
                     <button
                       type="button"
                       onClick={() => avatarInput.current?.click()}
                       aria-label="Change group photo"
-                      className="absolute right-0 bottom-0 rounded-full bg-primary p-1.5 text-primary-foreground transition-colors hover:bg-primary-hover"
+                      className="absolute right-0 bottom-0 rounded-full bg-primary-fill p-1.5 text-primary-fill-foreground transition-colors hover:bg-primary-fill-hover"
                     >
                       <Camera className="size-3.5" />
                     </button>
@@ -126,7 +159,7 @@ export function ChatDetailsSheet({ chat, onClose }: { chat: Chat; onClose: () =>
                 )}
               </span>
 
-              {isGroup && isOwner ? (
+              {isGroup && canEdit ? (
                 <p className="text-xs text-muted-foreground">Click to change photo</p>
               ) : (
                 <>
@@ -142,7 +175,7 @@ export function ChatDetailsSheet({ chat, onClose }: { chat: Chat; onClose: () =>
 
             {/* A direct chat has no name and no picture of its own — it is named
                 after the other person — so the rename form is groups only. */}
-            {isGroup && isOwner && (
+            {isGroup && canEdit && (
               <section className="grid gap-3">
                 {/* Each message is passed to the Field that owns it, so it lands
                     under its own box rather than at the foot of the section. */}
@@ -248,7 +281,7 @@ export function ChatDetailsSheet({ chat, onClose }: { chat: Chat; onClose: () =>
 
         {isGroup && group.tab === 'members' && (
           <>
-            {isOwner && (
+            {canManage && (
               <section className="grid gap-2">
                 <SectionHeading>Add members</SectionHeading>
                 {/* One tap picks one person, against a group that already
@@ -264,6 +297,12 @@ export function ChatDetailsSheet({ chat, onClose }: { chat: Chat; onClose: () =>
                   onAdd={group.askAdd}
                   pendingIds={group.pendingIds}
                   searchPlaceholder="Search users to add…"
+                  // Capped and scrolled in place: the directory can run to
+                  // hundreds of rows, and unbounded it pushed the group's own
+                  // Members list a page and a half down the sheet. No box drawn
+                  // around it — with one result the border read as an outline on
+                  // the PERSON; the rows carry their own hover instead.
+                  listClassName="max-h-64 overflow-y-auto"
                 />
               </section>
             )}
@@ -299,7 +338,9 @@ export function ChatDetailsSheet({ chat, onClose }: { chat: Chat; onClose: () =>
 /**
  * The question behind every membership write. Blocking is its own pair of
  * sentences rather than "remove" reworded: the member stays and keeps READING,
- * which is the part an owner has to be told before they press it.
+ * which is the part the person pressing it has to be told. Appointing an admin
+ * gets its own pair for the same reason — the word "admin" does not say what
+ * they will be able to do, or what they still cannot.
  */
 function MemberConfirmDialog({
   confirm,
@@ -329,7 +370,9 @@ function MemberConfirmDialog({
             confirmLabel: 'Remove',
             tone: 'destructive' as const,
           }
-        : memberBlockCopy(confirm.name, groupName, confirm.kind === 'block')
+        : confirm.kind === 'promote' || confirm.kind === 'demote'
+          ? memberRoleCopy(confirm.name, groupName, confirm.kind === 'promote')
+          : memberBlockCopy(confirm.name, groupName, confirm.kind === 'block')
 
   return (
     <ConfirmDialog
@@ -402,17 +445,19 @@ function MemberList({
   isLoading,
   isFiltered,
   selfId,
-  canManage,
+  selfRole,
   onRemove,
   onToggleBlocked,
+  onSetRole,
 }: {
   members: ChatMember[]
   isLoading: boolean
   isFiltered: boolean
   selfId: Id | null
-  canManage: boolean
+  selfRole: MemberRole
   onRemove: (id: Id) => void
   onToggleBlocked: (id: Id, blocked: boolean) => void
+  onSetRole: (id: Id, promote: boolean) => void
 }) {
   if (isLoading && members.length === 0) {
     return (
@@ -439,9 +484,13 @@ function MemberList({
           role={member.memberRole}
           isBlocked={member.isBlocked}
           isSelf={member.talkUserId === selfId}
-          canManage={canManage && member.talkUserId !== selfId}
+          // One answer for all three verbs, because they refuse together: the
+          // creator's row is untouchable by everybody, my own row refuses on
+          // mute, remove AND role, and a plain member holds none of them.
+          canManage={canActOnMember(selfRole, member, selfId)}
           onRemove={() => onRemove(member.talkUserId)}
           onToggleBlocked={() => onToggleBlocked(member.talkUserId, !member.isBlocked)}
+          onSetRole={() => onSetRole(member.talkUserId, member.memberRole !== 'admin')}
         />
       ))}
     </ul>
@@ -456,14 +505,16 @@ function MemberRow({
   canManage,
   onRemove,
   onToggleBlocked,
+  onSetRole,
 }: {
   member: ChatMember
-  role: string
+  role: MemberRole
   isBlocked: boolean
   isSelf: boolean
   canManage: boolean
   onRemove: () => void
   onToggleBlocked: () => void
+  onSetRole: () => void
 }) {
   const mediaUrl = useMediaUrl()
   // `GET /talk/chats/:id/members` answers a name and a photo per row now, so
@@ -472,7 +523,14 @@ function MemberRow({
   const presence = useChatStore((s) => s.presence[keyOf(member.talkUserId)])
 
   return (
-    <li className="flex items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-accent/40">
+    <li
+      className={cn(
+        'flex items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-accent/40',
+        // Your own row gets the faintest wash, so "where am I in this list" is
+        // answered by scanning rather than by reading every name.
+        isSelf && 'bg-primary/5',
+      )}
+    >
       <span className="relative shrink-0">
         <Avatar name={person.name} src={mediaUrl(person.avatarKey) || undefined} />
         <OnlineBadge
@@ -483,8 +541,16 @@ function MemberRow({
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-1.5">
           <span className="truncate text-sm font-medium">{person.name}</span>
-          {isSelf && <Pill tone="muted">You</Pill>}
-          {role !== 'member' && <Pill tone="primary">{role === 'owner' ? 'Admin' : role}</Pill>}
+          {/* Two different kinds of label, so they are drawn differently: the
+              role is a STATUS the group granted and takes brand paint; "You" is
+              an identity, and a filled grey pill gave it the visual weight of a
+              role nobody granted. It is a hairline outline instead. */}
+          {isSelf && <Pill tone="outline">You</Pill>}
+          {/* Owner and admin are now genuinely different — the same powers over
+              the membership, but the creator's row is untouchable — so one chip
+              cannot carry both. Without the distinction "why does my menu not
+              work on Minato" becomes a support question. */}
+          {roleLabel(role) && <Pill tone="primary">{roleLabel(role)}</Pill>}
         </span>
         {isBlocked && (
           <span className="block text-[11px] text-destructive">Muted — cannot post</span>
@@ -493,40 +559,77 @@ function MemberRow({
 
       {canManage && (
         <>
-          <Tip label={isBlocked ? 'Let them post again' : 'Mute — they keep reading'}>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onToggleBlocked}
-              aria-label={isBlocked ? `Let ${person.name} post again` : `Mute ${person.name}`}
-            >
-              {isBlocked ? <ShieldOff /> : <Ban />}
-            </Button>
-          </Tip>
-          <Tip label="Remove from group">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onRemove}
-              aria-label={`Remove ${person.name}`}
-            >
-              <UserMinus />
-            </Button>
-          </Tip>
+          {/* One menu instead of two bare icon buttons. A row of unlabelled
+              glyphs made every member look like a pair of pending actions, and
+              a mute and a removal a few pixels apart is a misclick that cannot
+              be taken back — a menu makes both NAMED and deliberate.
+
+              Drawn for the owner AND for any admin, and never on the creator's
+              row: every item in it is refused against the owner, so a menu there
+              would be three buttons that can only produce toasts. */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8 shrink-0 rounded-full text-muted-foreground data-[state=open]:bg-accent"
+                aria-label={`Manage ${person.name}`}
+              >
+                <MoreVertical />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-52">
+              <DropdownMenuItem className="items-start" onSelect={onToggleBlocked}>
+                {isBlocked ? <ShieldOff className="mt-0.5" /> : <Ban className="mt-0.5" />}
+                {/* Muting is the half-measure people reach for and misread, so
+                    the consequence rides under the label rather than in a
+                    tooltip the menu has no room for. */}
+                <span className="flex flex-col gap-0.5">
+                  {isBlocked ? 'Let them post again' : 'Mute'}
+                  <span className="text-[11px] leading-tight text-muted-foreground">
+                    {isBlocked ? 'They can send messages again' : 'They keep reading, cannot post'}
+                  </span>
+                </span>
+              </DropdownMenuItem>
+              {/* The role write is idempotent server-side, so nothing here is
+                  disabled after a tap: a second one answers 200 and announces
+                  nothing rather than putting a duplicate line in the thread. */}
+              <DropdownMenuItem className="items-start" onSelect={onSetRole}>
+                {role === 'admin' ? (
+                  <ShieldMinus className="mt-0.5" />
+                ) : (
+                  <Shield className="mt-0.5" />
+                )}
+                <span className="flex flex-col gap-0.5">
+                  {role === 'admin' ? 'Remove as admin' : 'Make admin'}
+                  <span className="text-[11px] leading-tight text-muted-foreground">
+                    {role === 'admin'
+                      ? 'They go back to an ordinary member'
+                      : 'They can add, remove and mute members'}
+                  </span>
+                </span>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem variant="destructive" onSelect={onRemove}>
+                <UserMinus />
+                Remove from group
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </>
       )}
     </li>
   )
 }
 
-function Pill({ tone, children }: { tone: 'primary' | 'muted'; children: ReactNode }) {
+function Pill({ tone, children }: { tone: 'primary' | 'outline'; children: ReactNode }) {
   return (
     <span
       className={cn(
-        'shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold capitalize',
+        'shrink-0 rounded-full px-1.5 py-px text-[10px] font-semibold capitalize',
         tone === 'primary'
           ? 'bg-primary/15 text-primary'
-          : 'bg-accent text-muted-foreground',
+          : 'border border-border text-muted-foreground',
       )}
     >
       {children}

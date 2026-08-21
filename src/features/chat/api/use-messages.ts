@@ -4,7 +4,12 @@ import { joinChatRoom } from '@/lib/socket-client'
 import { logger } from '@/lib/logger'
 import { useMessageCacheStore, newestMessageId, oldestMessageId } from '@/stores/message-cache-store'
 import { keyOf, type Id } from '@/types/api'
-import { MESSAGE_PAGE_SIZE, THREAD_HISTORY_PAGE_COOLDOWN_MS } from '../constants'
+import {
+  MESSAGE_OPENING_LIMIT,
+  MESSAGE_PAGE_SIZE,
+  THREAD_HISTORY_PAGE_COOLDOWN_MS,
+} from '../constants'
+import { resyncPreview } from '../hooks/use-message-stream'
 import * as chatApi from './chat-api'
 
 /**
@@ -43,18 +48,37 @@ export function useMessages(chatId: Id | null) {
    * compensated the scroll for the last.
    */
   const nextPageAllowedAtRef = useRef(0)
-  /** Which chats this mount has already read, so a re-render can't refetch. */
-  const opened = useRef(new Set<string>())
+  /**
+   * The chat this hook last issued the opening read for.
+   *
+   * A ref rather than a set of every chat seen: ENTERING a chat is what asks
+   * the server for the reader's unread run (`limit: -1`), so coming back to one
+   * visited earlier has to ask again — the cache has been collecting arrivals
+   * in the meantime and knows nothing about where reading stopped. It still
+   * reads once per entry: the effect below runs on other identities too, and
+   * this is what keeps those from refetching.
+   */
+  const openedChatRef = useRef<string | null>(null)
 
   const loadLatest = useCallback(
     async (chatIdToLoad: Id) => {
       setLoading(true)
       try {
-        const page = await chatApi.fetchMessages(chatIdToLoad, { limit: MESSAGE_PAGE_SIZE })
+        // The opening read, not a page: `-1` asks the server for the reader's
+        // whole unread run plus the context above it, so the divider and every
+        // message under it are in this one answer.
+        const page = await chatApi.fetchMessages(chatIdToLoad, {
+          limit: MESSAGE_OPENING_LIMIT,
+        })
         setPage(chatIdToLoad, page.items, {
           oldestId: page.oldestId,
           hasMore: page.hasMore,
         })
+        // The row quotes this chat's newest message, and two things about it are
+        // only knowable from the message itself: whether it is a tombstone, and
+        // whether it has been read. Opening the chat is when the sidebar can
+        // finally be told.
+        resyncPreview(chatIdToLoad)
         await joinChatRoom(chatIdToLoad)
       } catch (error) {
         toastApiError(error, 'Could not load this conversation')
@@ -68,17 +92,26 @@ export function useMessages(chatId: Id | null) {
   useEffect(() => {
     if (chatId == null) return
     const key = keyOf(chatId)
-    if (opened.current.has(key)) return
-    opened.current.add(key)
+    if (openedChatRef.current === key) return
+    openedChatRef.current = key
     // Bound the cache before the page lands, so this chat is never the one evicted.
     retain(chatId)
     void loadLatest(chatId)
   }, [chatId, loadLatest, retain])
 
-  /** Scroll up: one page older, from the oldest id held. */
-  const loadEarlier = useCallback(async () => {
+  /**
+   * One page older, from the oldest id held.
+   *
+   * `immediate` skips the between-pages rest. That rest exists for SCROLLING —
+   * one flick to the top would otherwise fire seven requests before Virtuoso had
+   * compensated for the first — but a SEEK is a loop of deliberate pages with
+   * nothing to compensate, and the cooldown turned it into twenty-five refusals
+   * in a millisecond, ending in "that message is too far back" for a message
+   * three pages up.
+   */
+  const fetchEarlier = useCallback(async (immediate: boolean) => {
     if (chatId == null || loadingMoreRef.current) return
-    if (Date.now() < nextPageAllowedAtRef.current) return
+    if (!immediate && Date.now() < nextPageAllowedAtRef.current) return
     if (paging?.hasMore === false) return
     // The topmost ROW is the cursor, not the last page's `oldestId` — see
     // `oldestMessageId`. Falls back to the recorded cursor for the window
@@ -108,6 +141,11 @@ export function useMessages(chatId: Id | null) {
     }
   }, [chatId, paging?.oldestId, paging?.hasMore, setPage])
 
+  /** Scroll-driven paging: rests between pages. */
+  const loadEarlier = useCallback(() => fetchEarlier(false), [fetchEarlier])
+  /** Seek-driven paging: walks as fast as the API answers. */
+  const loadEarlierNow = useCallback(() => fetchEarlier(true), [fetchEarlier])
+
   return {
     messages: messages ?? NO_MESSAGES,
     // Rows already held paint at once, so this only covers an empty thread.
@@ -115,6 +153,7 @@ export function useMessages(chatId: Id | null) {
     isLoadingMore,
     hasEarlier: paging?.hasMore !== false && Boolean(paging?.oldestId),
     loadEarlier,
+    loadEarlierNow,
     reload: useCallback(() => (chatId == null ? undefined : loadLatest(chatId)), [chatId, loadLatest]),
   }
 }
@@ -135,6 +174,8 @@ export async function catchUpMessages(chatId: Id): Promise<void> {
     const page = await chatApi.fetchMessages(chatId, { afterId, limit: 100 })
     if (page.items.length > 0) {
       useMessageCacheStore.getState().upsertMany(chatId, page.items)
+      // The gap we just replayed may end on a message that changed the row.
+      resyncPreview(chatId)
     }
   } catch (error) {
     logger.warn('catch-up read failed', chatId, error)

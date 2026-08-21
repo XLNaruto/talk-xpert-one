@@ -102,8 +102,25 @@ interface MessageCacheState {
   applyDeleteForEveryone: (chatId: Id, messageIds: Id[]) => void
   /** Delete FOR ME — the row is genuinely gone from my view. */
   removeMany: (chatId: Id, messageIds: Id[]) => void
-  /** `talk.message.read` — turn my own ticks blue. */
-  applyRead: (chatId: Id, messageIds: Id[]) => void
+  /**
+   * `talk.message.read` — turn my own ticks blue.
+   *
+   * `readerTalkUserId` is who did the reading, and `readerTotal` is how many
+   * people have to read before the message is read by ALL — 1 in a direct chat,
+   * everyone but me in a group. The event reports the READER's own receipts and
+   * nobody else's, so a group message goes blue only once its readers add up.
+   */
+  applyRead: (
+    chatId: Id,
+    messageIds: Id[],
+    /**
+     * `readerTotal` is how many people must read before the double tick is
+     * earned — every member but me in a group, one in a direct chat, and NULL
+     * when the chat's size is not known here. Null never concludes: the count
+     * rises and the flag is left to the server's `is_read_by_all`.
+     */
+    by?: { readerTalkUserId?: Id | null; readerTotal?: number | null },
+  ) => void
   /**
    * The two pins are separate flags on the same row: `forEveryone` writes the
    * chat-wide `isPinned`, and its opposite writes MY private `isPinnedForMe`.
@@ -160,7 +177,12 @@ function adopt(map: Map<Id, ChatMessage>, message: ChatMessage): ChatMessage {
     if ((held.replyToMessageId ?? null) !== (message.replyToMessageId ?? null)) continue
 
     map.delete(held.id)
-    revokeLocalPreviews(held)
+    // NOT revoked here. The tile is still showing this blob and will go on
+    // showing it until the stored copy has decoded — revoking under a picture
+    // that is mid-swap is how the photo blinked out. The send path releases it
+    // once the replacement can be drawn; this is the backstop for the socket
+    // echo, which arrives with no idea what the replacement looks like.
+    releaseLater(held)
     return { ...message, clientMessageId: held.clientMessageId, status: 'sent' }
   }
 
@@ -168,13 +190,22 @@ function adopt(map: Map<Id, ChatMessage>, message: ChatMessage): ChatMessage {
 }
 
 /**
- * The placeholder's `blob:` previews die with it. They are only ever minted for
- * an optimistic row, and the adopted server row draws from storage instead.
+ * The placeholder's `blob:` previews die with it — but not this instant.
+ *
+ * They are only ever minted for an optimistic row, and the adopted server row
+ * draws from storage instead. The delay is the width of the swap: long enough
+ * that the stored copy has had every chance to load behind the blob still on
+ * screen, short enough that a tab does not sit on a 25 MB file. Revoking twice
+ * is harmless, so the send path's own release can still beat this one.
  */
-function revokeLocalPreviews(message: ChatMessage): void {
-  for (const item of message.media) {
-    if (item.fileUrl.startsWith('blob:')) URL.revokeObjectURL(item.fileUrl)
-  }
+const BLOB_RELEASE_DELAY_MS = 30_000
+
+function releaseLater(message: ChatMessage): void {
+  const blobs = message.media
+    .map((item) => item.fileUrl)
+    .filter((url) => url.startsWith('blob:'))
+  if (blobs.length === 0) return
+  setTimeout(() => blobs.forEach((url) => URL.revokeObjectURL(url)), BLOB_RELEASE_DELAY_MS)
 }
 
 function byOldestFirst(a: ChatMessage, b: ChatMessage): number {
@@ -332,19 +363,32 @@ export const useMessageCacheStore = create<MessageCacheState>()((set) => ({
       return patchChat(s, chatId, (held) => held.filter((m) => !ids.has(m.id)))
     }),
 
-  applyRead: (chatId, messageIds) =>
+  applyRead: (chatId, messageIds, by = {}) =>
     set((s) => {
       const ids = new Set(messageIds)
+      const { readerTalkUserId = null, readerTotal = null } = by
       return patchChat(s, chatId, (held) =>
         mapWhere(
           held,
           (m) => ids.has(m.id),
-          (m) => ({
-            ...m,
-            isReadByAll: true,
-            readCount: Math.max(1, m.readCount),
-            status: m.status === 'sending' ? m.status : 'read',
-          }),
+          (m) => {
+            const readers =
+              readerTalkUserId === null
+                ? (m.readerIds ?? [])
+                : [...new Set([...(m.readerIds ?? []), readerTalkUserId])]
+            // Without a named reader there is nothing to count, so one read is
+            // taken at face value — which is what a direct chat means anyway.
+            const readCount = Math.max(m.readCount, readers.length, 1)
+            return {
+              ...m,
+              readerIds: readers,
+              isReadByAll:
+                m.isReadByAll ||
+                (readerTotal !== null && readCount >= Math.max(1, readerTotal)),
+              readCount,
+              status: m.status === 'sending' ? m.status : 'read',
+            }
+          },
         ),
       )
     }),

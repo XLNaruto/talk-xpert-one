@@ -3,7 +3,7 @@
 @custom-variant dark (&:is(.dark *));
 
 /* ------------------------------------------------------------------ */
-/* Design tokens — the One Talk design system                    */
+/* Design tokens — the XpertOne Talk design system                */
 /* ------------------------------------------------------------------ */
 /* Palette: sky accent (#0ea5e9) on a blue-tinted base.
    #0ea5e9 itself only carries white text at ~2.7:1, so filled surfaces in the
@@ -12,24 +12,23 @@
    Token NAMES match XpertOne exactly (--background, not --color-background)
    so a shadcn component can be copied between the two repos unedited. */
 :root {
+  /* The accent hue every surface below is mixed from. */
+  --tint: #0284c7;
   --radius: 0.75rem;
 
-  --background: #e3edf4;
   --foreground: #10202b;
-  --card: #eef5fa;
   --card-foreground: #10202b;
-  --popover: #eef5fa;
   --popover-foreground: #10202b;
 
   --primary: #0284c7;
   --primary-foreground: #ffffff;
   --primary-hover: #0369a1;
 
-  --secondary: #d5e6f0;
   --secondary-foreground: #16303f;
-  --muted: #d5e6f0;
-  --muted-foreground: #5b7386;
-  --accent: #c7dded;
+  /* One step darker than the sky base it used to sit on: a tinted surface can
+     be lighter OR darker than the old one, and secondary text has to clear 4.5:1
+     on all twelve. */
+  --muted-foreground: #516675;
   --accent-foreground: #16303f;
 
   /* Avatar fallbacks — a person with no photo gets one of eight fixed fills,
@@ -51,18 +50,22 @@
   --success: #15803d;
   --warning: #b45309;
   --info: #0284c7;
+  /* The READ tick, and only that one.
+   *
+   * The theme's OWN hue, lightened — not a fixed accent. It is drawn on the
+   * outgoing bubble, which is `--bubble-out`, a DEEPER shade of the same brand
+   * colour; a pastel of that hue therefore reads against it in every palette
+   * while still belonging to the theme. Derived rather than hard-coded, so the
+   * 13 palettes and the two modes all get their own without a 26th edit: the
+   * mix resolves against whichever `--primary` is in scope where it is used. */
+  --tick-read: color-mix(in oklab, var(--primary) 28%, #ffffff);
 
-  --border: #c6dae7;
-  --input: #c6dae7;
   --ring: #0ea5e9;
 
-  --sidebar: #dbe9f3;
   --sidebar-foreground: #10202b;
   --sidebar-primary: #0284c7;
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #c7dded;
   --sidebar-accent-foreground: #10202b;
-  --sidebar-border: #c0d6e4;
   --sidebar-ring: #0ea5e9;
 
   /* emoji-mart paints from `rgb(var(--rgb-*))`, so its surfaces need the same
@@ -76,20 +79,12 @@
   /* Chat-specific surfaces — the one place Talk needs tokens admin doesn't. */
   --bubble-out: #0284c7;
   --bubble-out-foreground: #ffffff;
-  --bubble-in: #eef5fa;
   --bubble-in-foreground: #10202b;
 
-  /* Sign-in canvas — the only full-bleed backdrop in the app, so its layers get
-     their own tokens rather than arbitrary values at the call site. Light is a
-     daytime sky, dark is a night sky; the web mechanics are identical and only
-     these colours change. */
-  --auth-space-near: #f4fafe;
-  --auth-space-far: #c8dded;
-  --auth-nebula-a: rgba(14, 165, 233, 0.26);
-  --auth-nebula-b: rgba(56, 189, 248, 0.16);
-  --auth-orb-a: rgba(56, 189, 248, 0.3);
-  --auth-orb-b: rgba(2, 132, 199, 0.24);
-  --auth-orb-c: rgba(125, 211, 252, 0.26);
+  /* Sign-in canvas — the only full-bleed backdrop in the app. Its sky, nebulae
+     and orbs are mixed from `--tint` further down; what stays here is what the
+     accent must NOT touch — the neutral glass, and the two colours a canvas
+     parses as bare channels rather than reading as CSS. */
 
   /* The web colour as a bare RGB triple — `web-canvas` parses it and applies
      its own per-thread alpha, so it cannot be an rgba() string. The alpha
@@ -113,36 +108,25 @@
   --auth-glass-shadow: rgba(16, 32, 43, 0.2);
   --auth-field: rgba(255, 255, 255, 0.6);
 
-  --auth-mark-from: #0ea5e9;
-  --auth-mark-to: #075985;
   --auth-mark-foreground: #f0f9ff;
 
-  /* The submit button is solid brand paint, not glass — it is the one element on
-     the card that must not read as translucent. Top-to-bottom only, so the fill
-     stays even across the full width. */
-  --auth-submit-from: #0ea5e9;
-  --auth-submit-to: #0369a1;
+  /* The sheen laid over the solid brand paint of the submit button. */
   --auth-submit-sheen: rgba(255, 255, 255, 0.24);
-  --auth-submit-shadow: rgba(3, 105, 161, 0.35);
 }
 
 .dark {
-  --background: #0f1a23;
+  /* The accent hue every surface below is mixed from. */
+  --tint: #38bdf8;
   --foreground: #e8f1f7;
-  --card: #172630;
   --card-foreground: #e8f1f7;
-  --popover: #1d303c;
   --popover-foreground: #e8f1f7;
 
   --primary: #38bdf8;
-  --primary-foreground: #0f1a23;
+  --primary-foreground: #0c151d;
   --primary-hover: #7dd3fc;
 
-  --secondary: #172630;
   --secondary-foreground: #d8e8f2;
-  --muted: #172630;
   --muted-foreground: #93a8b8;
-  --accent: #1d303c;
   --accent-foreground: #d8e8f2;
 
   --destructive: #f87171;
@@ -150,18 +134,22 @@
   --success: #4ade80;
   --warning: #fbbf24;
   --info: #38bdf8;
+  /* The READ tick, and only that one.
+   *
+   * The theme's OWN hue, lightened — not a fixed accent. It is drawn on the
+   * outgoing bubble, which is `--bubble-out`, a DEEPER shade of the same brand
+   * colour; a pastel of that hue therefore reads against it in every palette
+   * while still belonging to the theme. Derived rather than hard-coded, so the
+   * 13 palettes and the two modes all get their own without a 26th edit: the
+   * mix resolves against whichever `--primary` is in scope where it is used. */
+  --tick-read: color-mix(in oklab, var(--primary) 28%, #ffffff);
 
-  --border: #24394a;
-  --input: #24394a;
   --ring: #38bdf8;
 
-  --sidebar: #0c151d;
   --sidebar-foreground: #bacbd7;
   --sidebar-primary: #38bdf8;
   --sidebar-primary-foreground: #0c151d;
-  --sidebar-accent: #1d303c;
   --sidebar-accent-foreground: #d2e6f2;
-  --sidebar-border: #24394a;
   --sidebar-ring: #38bdf8;
 
   --emoji-rgb-background: 23, 38, 48;
@@ -171,17 +159,7 @@
 
   --bubble-out: #0369a1;
   --bubble-out-foreground: #f0f9ff;
-  --bubble-in: #172630;
   --bubble-in-foreground: #e8f1f7;
-
-  /* Night side — the same sky at midnight. */
-  --auth-space-near: #0d2135;
-  --auth-space-far: #03080f;
-  --auth-nebula-a: rgba(14, 165, 233, 0.2);
-  --auth-nebula-b: rgba(56, 189, 248, 0.1);
-  --auth-orb-a: rgba(56, 189, 248, 0.16);
-  --auth-orb-b: rgba(3, 105, 161, 0.24);
-  --auth-orb-c: rgba(125, 211, 252, 0.1);
 
   --auth-web-rgb: 147 216 255;
   --auth-web-alpha: 0.95;
@@ -197,23 +175,26 @@
   --auth-glass-shadow: rgba(0, 0, 0, 0.6);
   --auth-field: rgba(12, 21, 29, 0.5);
 
-  --auth-mark-from: #38bdf8;
-  --auth-mark-to: #075985;
   --auth-mark-foreground: #ffffff;
 
-  --auth-submit-from: #0ea5e9;
-  --auth-submit-to: #075985;
   --auth-submit-sheen: rgba(255, 255, 255, 0.18);
-  --auth-submit-shadow: rgba(2, 8, 15, 0.55);
 }
 
 
 /* ------------------------------------------------------------------ */
 /* Accent themes                                                      */
 /* ------------------------------------------------------------------ */
-/* The accent is a second axis on top of light/dark: it repaints only the
-   brand-coloured tokens and leaves every surface alone, so contrast stays
-   exactly as it was tuned above whichever colour is picked.
+/* The accent is a second axis on top of light/dark: it names the brand colours
+   and `--tint`, the single hue every surface downstream is mixed from. Light and
+   dark keep their own value for each, because the colour that carries white text
+   on a pale page is not the one that reads on a dark one.
+
+   That flip decides the INK too. Light picks a 600/700-level fill, so what sits
+   on it is white. Dark picks the 400-level sibling — bright enough to read
+   against the page, which means white text on it lands near 2:1 — so every dark
+   block pairs `--primary-foreground` with the same dark ink it already gives
+   `--sidebar-primary-foreground`. Never carry `#ffffff` into a dark accent
+   block: that is what made an amber "Apply theme" button unreadable.
 
    Written as an ATTRIBUTE selector rather than a class so it can be scoped to
    any element, not just <html>: the theme picker paints each swatch by wrapping
@@ -222,6 +203,7 @@
 
 [data-accent="default"] {
   --primary: #0284c7;
+  --tint: #0284c7;
   --primary-hover: #0369a1;
   --primary-foreground: #ffffff;
   --ring: #0284c7;
@@ -237,6 +219,7 @@
 .dark[data-accent="default"],
 .dark [data-accent="default"] {
   --primary: #38bdf8;
+  --tint: #38bdf8;
   --primary-hover: #7dd3fc;
   --primary-foreground: #0f1a23;
   --ring: #38bdf8;
@@ -251,6 +234,7 @@
 
 [data-accent="midnight"] {
   --primary: #4f46e5;
+  --tint: #4f46e5;
   --primary-hover: #4338ca;
   --primary-foreground: #ffffff;
   --ring: #4f46e5;
@@ -266,6 +250,7 @@
 .dark[data-accent="midnight"],
 .dark [data-accent="midnight"] {
   --primary: #818cf8;
+  --tint: #818cf8;
   --primary-hover: #a5b4fc;
   --primary-foreground: #0f1a23;
   --ring: #818cf8;
@@ -280,6 +265,7 @@
 
 [data-accent="lagoon"] {
   --primary: #0d9488;
+  --tint: #0d9488;
   --primary-hover: #0f766e;
   --primary-foreground: #ffffff;
   --ring: #0d9488;
@@ -295,6 +281,7 @@
 .dark[data-accent="lagoon"],
 .dark [data-accent="lagoon"] {
   --primary: #2dd4bf;
+  --tint: #2dd4bf;
   --primary-hover: #5eead4;
   --primary-foreground: #0f1a23;
   --ring: #2dd4bf;
@@ -309,6 +296,7 @@
 
 [data-accent="horizon"] {
   --primary: #2563eb;
+  --tint: #2563eb;
   --primary-hover: #1d4ed8;
   --primary-foreground: #ffffff;
   --ring: #2563eb;
@@ -324,6 +312,7 @@
 .dark[data-accent="horizon"],
 .dark [data-accent="horizon"] {
   --primary: #60a5fa;
+  --tint: #60a5fa;
   --primary-hover: #93c5fd;
   --primary-foreground: #0f1a23;
   --ring: #60a5fa;
@@ -338,6 +327,7 @@
 
 [data-accent="blossom"] {
   --primary: #db2777;
+  --tint: #db2777;
   --primary-hover: #be185d;
   --primary-foreground: #ffffff;
   --ring: #db2777;
@@ -353,6 +343,7 @@
 .dark[data-accent="blossom"],
 .dark [data-accent="blossom"] {
   --primary: #f472b6;
+  --tint: #f472b6;
   --primary-hover: #f9a8d4;
   --primary-foreground: #0f1a23;
   --ring: #f472b6;
@@ -367,6 +358,7 @@
 
 [data-accent="arctic"] {
   --primary: #0891b2;
+  --tint: #0891b2;
   --primary-hover: #0e7490;
   --primary-foreground: #ffffff;
   --ring: #0891b2;
@@ -382,6 +374,7 @@
 .dark[data-accent="arctic"],
 .dark [data-accent="arctic"] {
   --primary: #22d3ee;
+  --tint: #22d3ee;
   --primary-hover: #67e8f9;
   --primary-foreground: #0f1a23;
   --ring: #22d3ee;
@@ -396,6 +389,7 @@
 
 [data-accent="forest"] {
   --primary: #059669;
+  --tint: #059669;
   --primary-hover: #047857;
   --primary-foreground: #ffffff;
   --ring: #059669;
@@ -411,6 +405,7 @@
 .dark[data-accent="forest"],
 .dark [data-accent="forest"] {
   --primary: #34d399;
+  --tint: #34d399;
   --primary-hover: #6ee7b7;
   --primary-foreground: #0f1a23;
   --ring: #34d399;
@@ -425,6 +420,7 @@
 
 [data-accent="shadow"] {
   --primary: #334155;
+  --tint: #334155;
   --primary-hover: #1e293b;
   --primary-foreground: #ffffff;
   --ring: #334155;
@@ -440,6 +436,7 @@
 .dark[data-accent="shadow"],
 .dark [data-accent="shadow"] {
   --primary: #94a3b8;
+  --tint: #94a3b8;
   --primary-hover: #cbd5e1;
   --primary-foreground: #0f1a23;
   --ring: #94a3b8;
@@ -454,6 +451,7 @@
 
 [data-accent="passion"] {
   --primary: #e11d48;
+  --tint: #e11d48;
   --primary-hover: #be123c;
   --primary-foreground: #ffffff;
   --ring: #e11d48;
@@ -469,6 +467,7 @@
 .dark[data-accent="passion"],
 .dark [data-accent="passion"] {
   --primary: #fb7185;
+  --tint: #fb7185;
   --primary-hover: #fda4af;
   --primary-foreground: #0f1a23;
   --ring: #fb7185;
@@ -483,6 +482,7 @@
 
 [data-accent="sunset"] {
   --primary: #ea580c;
+  --tint: #ea580c;
   --primary-hover: #c2410c;
   --primary-foreground: #ffffff;
   --ring: #ea580c;
@@ -498,6 +498,7 @@
 .dark[data-accent="sunset"],
 .dark [data-accent="sunset"] {
   --primary: #fb923c;
+  --tint: #fb923c;
   --primary-hover: #fdba74;
   --primary-foreground: #0f1a23;
   --ring: #fb923c;
@@ -512,6 +513,7 @@
 
 [data-accent="velvet"] {
   --primary: #be123c;
+  --tint: #be123c;
   --primary-hover: #9f1239;
   --primary-foreground: #ffffff;
   --ring: #be123c;
@@ -527,6 +529,7 @@
 .dark[data-accent="velvet"],
 .dark [data-accent="velvet"] {
   --primary: #f43f5e;
+  --tint: #f43f5e;
   --primary-hover: #fb7185;
   --primary-foreground: #0f1a23;
   --ring: #f43f5e;
@@ -541,6 +544,7 @@
 
 [data-accent="autumn"] {
   --primary: #b45309;
+  --tint: #b45309;
   --primary-hover: #92400e;
   --primary-foreground: #ffffff;
   --ring: #b45309;
@@ -556,6 +560,7 @@
 .dark[data-accent="autumn"],
 .dark [data-accent="autumn"] {
   --primary: #f59e0b;
+  --tint: #f59e0b;
   --primary-hover: #fbbf24;
   --primary-foreground: #0f1a23;
   --ring: #f59e0b;
@@ -568,6 +573,122 @@
   --emoji-rgb-accent: 245, 158, 11;
 }
 
+
+/* ------------------------------------------------------------------ */
+/* Surfaces, derived from the accent                                  */
+/* ------------------------------------------------------------------ */
+/* Light/dark decides the NEUTRAL each surface starts from; the accent only
+   tints it, a few percent at a time. Written as a mix rather than as 12 more
+   hand-picked hexes per accent so the ratios cannot drift apart: every
+   foreground token stays exactly where it was tuned, so text keeps its contrast
+   whichever hue is on — a dark accent like Shadow lightens the light theme by
+   the same amount a bright one does.
+
+   The rule is repeated for `[data-accent]` because a custom property is
+   substituted where it is DECLARED, not where it is used: without the second
+   selector the picker's swatches and preview would inherit <html>'s surfaces
+   and every option would look identical. The dark rule comes last, and names
+   `.dark` on its own, so a first paint before the provider has stamped
+   `data-accent` is still dark. */
+
+:root,
+[data-accent] {
+  --background: color-mix(in srgb, var(--tint) 7%, #edf1f4);
+  --card: color-mix(in srgb, var(--tint) 4%, #f6f9fb);
+  --popover: color-mix(in srgb, var(--tint) 4%, #f6f9fb);
+  --secondary: color-mix(in srgb, var(--tint) 7%, #e0e6eb);
+  --muted: color-mix(in srgb, var(--tint) 7%, #e0e6eb);
+  --accent: color-mix(in srgb, var(--tint) 9%, #d6dee5);
+  --border: color-mix(in srgb, var(--tint) 9%, #d2dbe2);
+  --input: color-mix(in srgb, var(--tint) 9%, #d2dbe2);
+  --sidebar: color-mix(in srgb, var(--tint) 8%, #e6ebef);
+  --sidebar-accent: color-mix(in srgb, var(--tint) 9%, #d6dee5);
+  --sidebar-border: color-mix(in srgb, var(--tint) 10%, #cfd8e0);
+  --bubble-in: color-mix(in srgb, var(--tint) 4%, #f6f9fb);
+
+  /* The FILLED accent surface — a button, a badge, the active filter chip.
+     It defaults to the accent itself, which is what eleven of the twelve want;
+     see the deep-fill block below for why Autumn does not. */
+  --primary-fill: var(--primary);
+  --primary-fill-hover: var(--primary-hover);
+  --primary-fill-foreground: var(--primary-foreground);
+
+  /* Sign-in canvas — the sky takes the accent too, or the one full-bleed
+     screen in the app would be the only place the choice does not reach. */
+  --auth-space-near: color-mix(in srgb, var(--tint) 4%, #f6f9fb);
+  --auth-space-far: color-mix(in srgb, var(--tint) 16%, #dfe6ec);
+  --auth-nebula-a: color-mix(in srgb, var(--tint) 26%, transparent);
+  --auth-nebula-b: color-mix(in srgb, var(--tint) 15%, transparent);
+  --auth-orb-a: color-mix(in srgb, var(--tint) 28%, transparent);
+  --auth-orb-b: color-mix(in srgb, var(--tint) 22%, transparent);
+  --auth-orb-c: color-mix(in srgb, var(--tint) 24%, transparent);
+  --auth-mark-from: var(--tint);
+  --auth-mark-to: color-mix(in srgb, var(--tint) 55%, #062033);
+  --auth-submit-from: var(--tint);
+  --auth-submit-to: color-mix(in srgb, var(--tint) 70%, #062033);
+  --auth-submit-shadow: color-mix(in srgb, var(--tint) 35%, transparent);
+}
+
+.dark,
+.dark [data-accent],
+.dark[data-accent] {
+  --background: color-mix(in srgb, var(--tint) 6%, #10161c);
+  --card: color-mix(in srgb, var(--tint) 7%, #172129);
+  --popover: color-mix(in srgb, var(--tint) 8%, #1c2831);
+  --secondary: color-mix(in srgb, var(--tint) 7%, #172129);
+  --muted: color-mix(in srgb, var(--tint) 7%, #172129);
+  --accent: color-mix(in srgb, var(--tint) 9%, #1e2a34);
+  --border: color-mix(in srgb, var(--tint) 10%, #253340);
+  --input: color-mix(in srgb, var(--tint) 10%, #253340);
+  --sidebar: color-mix(in srgb, var(--tint) 5%, #0d1218);
+  --sidebar-accent: color-mix(in srgb, var(--tint) 9%, #1e2a34);
+  --sidebar-border: color-mix(in srgb, var(--tint) 10%, #253340);
+  --bubble-in: color-mix(in srgb, var(--tint) 7%, #172129);
+
+  --primary-fill: var(--primary);
+  --primary-fill-hover: var(--primary-hover);
+  --primary-fill-foreground: var(--primary-foreground);
+
+  --auth-space-near: color-mix(in srgb, var(--tint) 12%, #0a1622);
+  --auth-space-far: color-mix(in srgb, var(--tint) 4%, #03080f);
+  --auth-nebula-a: color-mix(in srgb, var(--tint) 20%, transparent);
+  --auth-nebula-b: color-mix(in srgb, var(--tint) 10%, transparent);
+  --auth-orb-a: color-mix(in srgb, var(--tint) 16%, transparent);
+  --auth-orb-b: color-mix(in srgb, var(--tint) 22%, transparent);
+  --auth-orb-c: color-mix(in srgb, var(--tint) 12%, transparent);
+  --auth-mark-from: var(--tint);
+  --auth-mark-to: color-mix(in srgb, var(--tint) 40%, #062033);
+  --auth-submit-from: var(--tint);
+  --auth-submit-to: color-mix(in srgb, var(--tint) 45%, #062033);
+  --auth-submit-shadow: color-mix(in srgb, var(--tint) 18%, #02080f);
+}
+
+/* ------------------------------------------------------------------ */
+/* Deep fills                                                         */
+/* ------------------------------------------------------------------ */
+/* A dark theme normally paints its accent BRIGHT — the 400/500-level sibling —
+   because `--primary` also draws icons, links and borders, and a 700-level
+   brown is invisible on a #10161c page. The cost is that the FILLED surfaces
+   read as the lightened hue rather than the themed one: dark Autumn's amber
+   `#f59e0b` is yellow, not autumn.
+
+   `--primary-fill` is the way out. Lines and text keep the bright `--primary`;
+   only the filled surfaces take the deeper shade, with light ink on top. The
+   two ends of a ramp are the only ones a filled control can use — every
+   mid-tone orange between them fails 4.5:1 against BOTH white and dark ink —
+   so this is a choice of end, not a free hue.
+
+   Declared after the surfaces blocks on purpose: `.dark [data-accent]` and
+   `.dark [data-accent="autumn"]` have the SAME specificity, so source order is
+   what makes the override win. */
+
+.dark[data-accent="autumn"],
+.dark [data-accent="autumn"] {
+  --primary-fill: #92400e;
+  --primary-fill-hover: #b45309;
+  --primary-fill-foreground: #f0f9ff;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -578,6 +699,9 @@
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
   --color-primary-hover: var(--primary-hover);
+  --color-primary-fill: var(--primary-fill);
+  --color-primary-fill-hover: var(--primary-fill-hover);
+  --color-primary-fill-foreground: var(--primary-fill-foreground);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
@@ -598,6 +722,7 @@
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-info: var(--info);
+  --color-tick-read: var(--tick-read);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -1032,11 +1157,288 @@
   }
 }
 
+@layer components {
+  /* The thread's own canvas.
+   *
+   * A flat fill left the log looking like a page with bubbles dropped on it.
+   * Three layers, all held far below the bubbles in contrast: a brand wash
+   * pulled down from the header, a second one rising off the composer, and a
+   * fine dot grid that gives the surface a texture to read the bubble shadows
+   * against. The dots are mixed from `--foreground`, so they invert with the
+   * theme instead of turning into grey speckle on the dark base, and every
+   * layer is mixed from `--tint`, so the whole canvas follows the accent the
+   * theme picker chose.
+   */
+  .thread-canvas {
+    background-color: var(--background);
+    background-image:
+      radial-gradient(
+        circle at 1px 1px,
+        color-mix(in oklab, var(--foreground) 5%, transparent) 1px,
+        transparent 0
+      ),
+      radial-gradient(
+        ellipse 120% 60% at 50% 0%,
+        color-mix(in oklab, var(--tint) 7%, transparent),
+        transparent 70%
+      ),
+      radial-gradient(
+        ellipse 110% 55% at 50% 100%,
+        color-mix(in oklab, var(--tint) 5%, transparent),
+        transparent 70%
+      );
+    background-size:
+      24px 24px,
+      100% 100%,
+      100% 100%;
+    background-repeat: repeat, no-repeat, no-repeat;
+  }
+
+  /* The empty thread pane (`ChatEmpty`).
+   *
+   * Positions come from Tailwind on the elements; only the paint and the motion
+   * live here. Every keyframe set holds the RESTING look at 0%, so the global
+   * reduced-motion rule freezes the illustration instead of blanking it.
+   */
+  .chat-empty-aurora {
+    border-radius: 9999px;
+    pointer-events: none;
+    filter: blur(56px);
+    background: radial-gradient(
+      circle,
+      color-mix(in oklab, var(--primary) 24%, transparent),
+      transparent 70%
+    );
+    animation: chat-empty-drift 19s ease-in-out infinite alternate;
+  }
+
+  /* The second blob runs longer and starts mid-cycle, so the two never line up
+   * and the background never looks like one pulsing shape. */
+  .chat-empty-aurora-lag {
+    animation-duration: 25s;
+    animation-delay: -9s;
+    background: radial-gradient(
+      circle,
+      color-mix(in oklab, var(--tint) 22%, transparent),
+      transparent 70%
+    );
+  }
+
+  /* The empty-list tile (`SidebarEmpty`).
+   *
+   * A flat card square read as a disabled button, so the tile is a soft brand
+   * gradient instead — the glow behind it and its float are what carry the
+   * "nothing here yet" mood, with no ring drawn around it.
+   */
+  .chat-empty-tile {
+    background-image: linear-gradient(
+      145deg,
+      color-mix(in oklab, var(--primary) 14%, var(--card)),
+      var(--card) 70%
+    );
+  }
+
+  /* Three rings on one stagger — a message leaving the medallion. */
+  .chat-empty-ring {
+    position: absolute;
+    inset: 0;
+    border-radius: 9999px;
+    border: 1px solid color-mix(in oklab, var(--primary) 40%, transparent);
+    animation: chat-empty-ping 4.2s ease-out infinite;
+  }
+
+  .chat-empty-ring:nth-child(2) {
+    animation-delay: 1.4s;
+  }
+
+  .chat-empty-ring:nth-child(3) {
+    animation-delay: 2.8s;
+  }
+
+  .chat-empty-medallion {
+    animation: chat-empty-float 5.5s ease-in-out infinite;
+  }
+
+  /* The chips float slower than the medallion and out of phase with each
+   * other, which is what stops the group reading as one rigid badge. */
+  .chat-empty-chip {
+    animation: chat-empty-float 7s ease-in-out infinite;
+    animation-delay: -1.5s;
+  }
+
+  .chat-empty-chip-lag {
+    animation-duration: 8.5s;
+    animation-delay: -4s;
+  }
+
+  .chat-empty-dot {
+    opacity: 0.4;
+    animation: chat-empty-dot 1.5s ease-in-out infinite;
+  }
+
+  .chat-empty-dot:nth-child(2) {
+    animation-delay: 0.18s;
+  }
+
+  .chat-empty-dot:nth-child(3) {
+    animation-delay: 0.36s;
+  }
+
+  /* The active chat row.
+   *
+   * A flat tint plus a static bar read the same as every other selected thing
+   * in the app, so the row carries its own signature: a tint that fades to the
+   * right (so the name stays the darkest thing on the row), a leading edge bar
+   * with a light travelling down it, and one slow sheen crossing the row. The
+   * motion is the "still here" cue while a thread is open — kept slow and low
+   * contrast so a long list never flickers. Reduced motion drops all of it and
+   * leaves the tint and a solid bar.
+   */
+  .chat-row-active {
+    /* Brand fill, held nearly flat across the row so the fill — not a fade —
+     * is what says "open", relaxing a little at the trailing edge so the time
+     * and the unread pill don't sit on the heaviest paint. 50% is the ceiling
+     * that still lets the row keep the sidebar's own text colour: past it the
+     * fill goes dark enough that the name has to flip to white, and the list
+     * then reads as two different palettes — so it sits well under that, a
+     * light wash the leading bar does the pointing for. */
+    background-image: linear-gradient(
+      90deg,
+      color-mix(in oklab, var(--primary) 26%, transparent),
+      color-mix(in oklab, var(--primary) 26%, transparent) 65%,
+      color-mix(in oklab, var(--primary) 18%, transparent)
+    );
+    /* A 0.5px hairline so the wash reads as one panel and not a paint spill —
+     * drawn as an INSET shadow rather than a border, because a real border
+     * would add to the row's box and nudge every inactive neighbour. Sub-pixel
+     * is a real width here: the browser resolves it against the device ratio,
+     * so it lands crisp on a retina panel and as a lighter 1px elsewhere. */
+    box-shadow: inset 0 0 0 0.5px color-mix(in oklab, var(--primary) 45%, transparent);
+  }
+
+  /* Leading edge bar — the wave is a highlight sliding down its length. */
+  .chat-row-active::before {
+    content: '';
+    position: absolute;
+    inset: 0.375rem auto 0.375rem 0;
+    width: 3px;
+    border-radius: 9999px;
+    background-color: var(--primary);
+    background-image: linear-gradient(
+      180deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.7) 45%,
+      rgba(255, 255, 255, 0.7) 55%,
+      transparent 100%
+    );
+    background-size: 100% 220%;
+    background-repeat: no-repeat;
+    animation: chat-row-wave 2.6s ease-in-out infinite;
+  }
+
+  /* One slow sheen across the row, clipped by the row's own rounding. */
+  .chat-row-active::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background: linear-gradient(
+      100deg,
+      transparent 35%,
+      color-mix(in oklab, var(--primary) 14%, transparent) 50%,
+      transparent 65%
+    );
+    background-size: 220% 100%;
+    background-repeat: no-repeat;
+    animation: chat-row-sheen 3.8s ease-in-out infinite;
+  }
+}
+
+@keyframes chat-row-wave {
+  0% {
+    background-position: 0 -120%;
+  }
+  100% {
+    background-position: 0 120%;
+  }
+}
+
+@keyframes chat-row-sheen {
+  0% {
+    background-position: -60% 0;
+    opacity: 0;
+  }
+  35% {
+    opacity: 1;
+  }
+  100% {
+    background-position: 160% 0;
+    opacity: 0;
+  }
+}
+
+@keyframes chat-empty-drift {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  100% {
+    transform: translate3d(7%, -9%, 0) scale(1.18);
+  }
+}
+
+@keyframes chat-empty-ping {
+  0% {
+    transform: scale(1);
+    opacity: 0;
+  }
+  12% {
+    opacity: 0.85;
+  }
+  100% {
+    transform: scale(2.3);
+    opacity: 0;
+  }
+}
+
+@keyframes chat-empty-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+@keyframes chat-empty-dot {
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  40% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-row-active::after,
+  .chat-empty-ring {
+    display: none;
+  }
+
+  .chat-row-active::before {
+    background-image: none;
   }
 }

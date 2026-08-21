@@ -58,5 +58,15 @@ export function useHistorySeek({ chatId, loadEarlier, hasEarlier }: HistorySeekO
     [chatId],
   )
 
-  return { ensureLoaded, isSeeking }
+  /**
+   * Is a walk in flight RIGHT NOW — read imperatively, not from a render.
+   *
+   * `isSeeking` is state and is a render behind, which is no good to a click
+   * handler deciding whether it may start a second walk. A second one cannot
+   * overtake the first anyway (`ensureLoaded` refuses it), so the caller needs to
+   * know before it has committed to anything.
+   */
+  const isSeekingNow = useCallback(() => seeking.current, [])
+
+  return { ensureLoaded, isSeeking, isSeekingNow }
 }

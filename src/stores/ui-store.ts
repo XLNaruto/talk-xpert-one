@@ -3,7 +3,7 @@ import { createJSONStorage, persist } from 'zustand/middleware'
 import { createIdbStorage } from '@/lib/idb-storage'
 import { isAccentTheme, type AccentTheme } from '@/lib/themes'
 
-type Theme = 'light' | 'dark'
+export type Theme = 'light' | 'dark'
 
 interface UiState {
   theme: Theme

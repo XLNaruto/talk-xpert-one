@@ -63,6 +63,23 @@ interface ChatState {
    */
   pinRevision: Record<string, number>
   memberRevision: Record<string, number>
+  /**
+   * Bumped when somebody reads in this chat, so an OPEN message-info sheet
+   * re-reads. The event's receipts are the reader's own, and the sheet lists
+   * every recipient including those who have not read — only the endpoint knows
+   * that, so this asks for it rather than patching a partial answer in.
+   */
+  receiptRevision: Record<string, number>
+  /**
+   * Whether the OPEN thread is showing its newest message.
+   *
+   * Owned by `use-thread-scroll`, read by the socket handler. A message is read
+   * when it lands in the VIEWPORT — so an arrival in the chat you are looking at
+   * counts as unread all the same when you are up in history, and the row's
+   * badge has to say so at the moment it arrives rather than being corrected a
+   * beat later.
+   */
+  isThreadAtBottom: boolean
 
   setActiveChat: (chatId: Id | null) => void
   setDraft: (chatId: Id, text: string) => void
@@ -90,6 +107,9 @@ interface ChatState {
   bumpPins: (chatId: Id) => void
   /** `talk.member.*` from somebody else. */
   bumpMembers: (chatId: Id) => void
+  /** `talk.message.read` from somebody else. */
+  bumpReceipts: (chatId: Id) => void
+  setThreadAtBottom: (atBottom: boolean) => void
   setBlockedTalkUserIds: (ids: Id[]) => void
   setBlocked: (talkUserId: Id, blocked: boolean) => void
 
@@ -107,6 +127,8 @@ export const useChatStore = create<ChatState>((set) => ({
   blockedTalkUserIds: [],
   pinRevision: {},
   memberRevision: {},
+  receiptRevision: {},
+  isThreadAtBottom: true,
 
   setActiveChat: (chatId) => set({ activeChatId: chatId }),
 
@@ -211,6 +233,17 @@ export const useChatStore = create<ChatState>((set) => ({
       }
     }),
 
+  bumpReceipts: (chatId) =>
+    set((s) => {
+      const key = keyOf(chatId)
+      return {
+        receiptRevision: { ...s.receiptRevision, [key]: (s.receiptRevision[key] ?? 0) + 1 },
+      }
+    }),
+
+  setThreadAtBottom: (isThreadAtBottom) =>
+    set((s) => (s.isThreadAtBottom === isThreadAtBottom ? {} : { isThreadAtBottom })),
+
   setBlockedTalkUserIds: (blockedTalkUserIds) => set({ blockedTalkUserIds }),
 
   setBlocked: (talkUserId, blocked) =>
@@ -232,6 +265,8 @@ export const useChatStore = create<ChatState>((set) => ({
       blockedTalkUserIds: [],
       pinRevision: {},
       memberRevision: {},
+      receiptRevision: {},
+      isThreadAtBottom: true,
     }),
 }))
 

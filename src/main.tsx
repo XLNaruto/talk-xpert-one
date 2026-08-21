@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { RouterProvider } from 'react-router-dom'
 import { AppProviders } from '@/app/providers'
+import { applyThemeToDocument } from '@/lib/theme-dom'
 import { router } from '@/app/router/router'
 import { useAuthStore } from '@/stores/auth-store'
 import { useChatListStore } from '@/stores/chat-list-store'
@@ -26,6 +27,14 @@ Promise.all(
     (store) => Promise.resolve(store.persist.rehydrate()),
   ),
 )
+  // The saved theme goes onto <html> BEFORE anything renders. Rehydrating the
+  // store is not enough on its own: the provider applied it from an effect,
+  // which runs after the first paint, so the opening frame was painted in the
+  // default palette and flipped a frame later.
+  .then(() => {
+    const { theme, accent } = useUiStore.getState()
+    applyThemeToDocument(theme, accent)
+  })
   // Then read `GET /config` — awaited only on a first-ever launch, refreshed in
   // the background when a persisted copy already exists. A failed read never
   // blocks the app: the store keeps the old values and env supplies fallbacks.

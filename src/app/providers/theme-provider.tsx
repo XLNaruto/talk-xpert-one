@@ -1,22 +1,20 @@
-import { useEffect, type ReactNode } from 'react'
+import { useLayoutEffect, type ReactNode } from 'react'
+import { applyThemeToDocument } from '@/lib/theme-dom'
 import { useUiStore } from '@/stores/ui-store'
 
 /**
- * Applies the current theme to <html>: `.dark` for the surfaces, `data-accent`
- * for the brand colour painted over them. Two attributes because the axes are
- * independent — every accent has a light and a dark palette.
+ * Keeps <html> in step with the theme the user picks. The FIRST application
+ * happens before the app mounts (`main.tsx`) — see `applyThemeToDocument`; this
+ * only has to catch the changes after that, and it does so in a layout effect so
+ * a toggle repaints in the same frame as the click.
  */
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const theme = useUiStore((s) => s.theme)
   const accent = useUiStore((s) => s.accent)
 
-  useEffect(() => {
-    document.documentElement.classList.toggle('dark', theme === 'dark')
-  }, [theme])
-
-  useEffect(() => {
-    document.documentElement.dataset.accent = accent
-  }, [accent])
+  useLayoutEffect(() => {
+    applyThemeToDocument(theme, accent)
+  }, [theme, accent])
 
   return <>{children}</>
 }

@@ -6,10 +6,10 @@ import {
   Clock,
   Copy,
   CornerUpLeft,
+  Download,
   Forward,
+  Image as ImageIcon,
   Info,
-  Bookmark,
-  BookmarkX,
   Pencil,
   Pin,
   PinOff,
@@ -26,22 +26,33 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { toastSuccess } from '@/lib/api-toast'
+import { toastProblem, toastSuccess } from '@/lib/api-toast'
+import { canCopyImages, copyImageToClipboard } from '@/lib/copy-image'
 import { useMediaUrl } from '@/hooks/use-app-config'
 import { cn } from '@/lib/utils'
 import type { Id } from '@/types/api'
-import { quoteLine } from '../lib/chat-labels'
+import { quoteText, DELETED_MESSAGE_TEXT } from '../lib/chat-labels'
+import { downloadMedia } from '../lib/media-download'
 import { countJumboEmoji, formatMessageTime } from '../lib/message-formatters'
 import { systemMessageText } from '../lib/system-messages'
 import { resolveTalkUser } from '../lib/talk-directory'
 import { MessageMediaGrid } from './message-media'
-import type { ChatMessage } from '../types'
+import { QuoteThumb } from './quote-thumb'
+import type { ChatMessage, MessageQuote } from '../types'
 
 interface MessageBubbleProps {
   message: ChatMessage
+  /**
+   * The inline quote, with its attachment resolved — `row.replyTo`, not
+   * `message.replyTo`: the server's quote carries no media, so the thread fills
+   * it in from its own copy of the message being replied to.
+   */
+  replyTo: MessageQuote | null
   isMine: boolean
   /** First of a run by the same person — carries the author name in groups. */
   startsGroup: boolean
+  /** Last of that run — the bubble that closes the stack's shape and spacing. */
+  endsGroup: boolean
   showAuthor: boolean
   selfTalkUserId: Id | null
   /** Non-null while a bulk selection is in progress. */
@@ -73,8 +84,10 @@ interface MessageBubbleProps {
  */
 function MessageBubbleBase({
   message,
+  replyTo,
   isMine,
   startsGroup,
+  endsGroup,
   showAuthor,
   selfTalkUserId,
   isSelected,
@@ -96,8 +109,13 @@ function MessageBubbleBase({
    */
   if (message.type === 'system') {
     return (
-      <div className="flex justify-center px-3 py-1.5">
-        <p className="rounded-full bg-secondary px-3 py-1 text-center text-[11px] text-muted-foreground">
+      <div className="flex min-w-0 justify-center px-3 py-1.5">
+        {/* Capped and breakable: the sentence is built from names the server
+            gives us — a group renamed to one unbroken 200-character run is a
+            legal rename, and uncapped it pushed the pill out past both edges of
+            the thread. `rounded-2xl` rather than a pill once it wraps, because a
+            full pill radius on two lines reads as a lozenge. */}
+        <p className="max-w-[85%] rounded-2xl bg-secondary px-3 py-1 text-center text-[11px] wrap-anywhere text-muted-foreground">
           {systemMessageText(message, selfTalkUserId)}
         </p>
       </div>
@@ -105,6 +123,19 @@ function MessageBubbleBase({
   }
 
   const selecting = isSelected !== null
+  // Shared by the plain mark and the unpin button, so the two cannot drift.
+  //
+  // The mark sits ON the bubble's corner, so half of it is over the fill and
+  // half over the canvas — bare, one colour had to lose on one of the two, and
+  // over a saturated bubble it lost badly. It carries a small `bg-background`
+  // disc again: the canvas colour reads as a bite taken out of the corner, the
+  // pin stays legible over either half, and it works over a photo too. No
+  // shadow and no padding to spare, which is what made the old one a button.
+  const pinMarkClass = cn(
+    'absolute -top-1.5 size-3.5 rounded-full bg-background p-px text-muted-foreground',
+    isMine ? '-rotate-45' : 'rotate-45',
+    !message.isPinned && 'opacity-60',
+  )
   const failed = message.status === 'failed'
   // A refusal (blocked, gone, rejected) is final: it states why and offers no
   // button, because replaying it is refused identically every time.
@@ -131,6 +162,18 @@ function MessageBubbleBase({
    */
   const framedMedia = message.media.length > 0 && !mediaOnly
   /**
+   * The one photo "Copy image" can mean.
+   *
+   * Offered for a lone image only: on an album of four, a single menu item
+   * cannot say WHICH tile it would copy, and the reader would find out by
+   * pasting. The lightbox copies per photo, which is where a specific tile is
+   * already the thing in view.
+   */
+  const copyableImage =
+    message.media.length === 1 && message.media[0].kind === 'image' && canCopyImages()
+      ? message.media[0]
+      : null
+  /**
    * A message that is nothing but a handful of emoji is drawn large and WITHOUT
    * a bubble — the emoji is the whole message, and a chrome-heavy container
    * around three glyphs reads as an afterthought rather than as the point.
@@ -146,9 +189,17 @@ function MessageBubbleBase({
     !message.isDeletedForEveryone
       ? countJumboEmoji(message.body)
       : null
-  // Right-click does nothing while a selection is running, on a tombstone, or on
-  // a bubble the server has not acknowledged — the same rule the hover row uses.
-  const actionable = !selecting && !message.isDeletedForEveryone && !sending
+  // Right-click does nothing while a selection is running, or on a bubble the
+  // server has not acknowledged. A TOMBSTONE still opens a menu — a withdrawn
+  // message can be cleared from my own view like any other row — but only the
+  // two actions that still mean something on one: see `deletedOnly`.
+  const actionable = !selecting && !sending
+  /**
+   * A tombstone has nothing left to reply to, quote, copy, edit, pin or report
+   * receipts for. What survives is hiding it and picking it, so the menu is cut
+   * down to those rather than offering actions the server would refuse.
+   */
+  const deletedOnly = message.isDeletedForEveryone
   // `sender_name` and `sender_photo` ride along with every message, so the run's
   // author is drawn from the message itself rather than from a second lookup.
   const author =
@@ -159,9 +210,13 @@ function MessageBubbleBase({
   return (
     <div
       className={cn(
-        'group flex gap-2 px-3',
+        'group flex gap-2 px-3 transition-colors',
         isMine ? 'justify-end' : 'justify-start',
-        startsGroup ? 'mt-2' : 'mt-0.5',
+        // A run is one block: its rows sit nearly flush, and the air goes
+        // between blocks. Both halves are needed — spacing above the first row
+        // alone left the last row of a run touching the next speaker's name.
+        startsGroup ? 'mt-3' : 'mt-px',
+        endsGroup && 'mb-1',
         isSelected && 'bg-primary/10',
         // The whole row is the hit target while a selection is running.
         selecting && 'cursor-pointer',
@@ -186,7 +241,17 @@ function MessageBubbleBase({
           wraps beneath it. */}
       <div
         className={cn(
-          'flex max-w-[75%] flex-col',
+          // `min-w-0` is load-bearing, not tidying: a flex item's automatic
+          // minimum size is its MIN-CONTENT width, and that beats `max-w`. One
+          // unbroken 60-digit run therefore stretched the column past 75% and
+          // out under the sidebar. Zeroing the floor lets the cap hold, and
+          // `wrap-anywhere` on the text below is what makes min-content small
+          // enough to honour it.
+          // Two caps, whichever bites first: 65% of the thread keeps the
+          // asymmetry that tells incoming from outgoing at a glance, and the
+          // 34rem ceiling holds the line length readable on a wide window —
+          // past roughly 90 characters the eye loses the line it came from.
+          'flex min-w-0 max-w-[min(65%,34rem)] flex-col',
           isMine ? 'items-end' : 'items-start',
         )}
       >
@@ -196,7 +261,7 @@ function MessageBubbleBase({
         {showAuthor && !isMine && author && (
           // The name row is exactly the avatar's height, so the two are centred
           // on one line instead of the avatar hanging below the text.
-          <p className="flex h-7 items-center px-1 text-xs font-semibold text-foreground/85">
+          <p className="flex h-7 items-center px-1 text-xs font-semibold tracking-[-0.01em] text-foreground/80">
             {author.name}
           </p>
         )}
@@ -209,7 +274,7 @@ function MessageBubbleBase({
         <ContextMenuTrigger asChild disabled={!actionable}>
         <div
           className={cn(
-            'relative overflow-hidden rounded-2xl text-sm',
+            'relative max-w-full min-w-0 overflow-hidden rounded-lg text-sm',
             mediaOnly ? 'p-1' : framedMedia ? 'p-1.5' : 'px-3 py-2',
             // The bubble steps aside entirely, so the emoji sits on the thread's
             // own background the way it would in any other messenger.
@@ -223,11 +288,24 @@ function MessageBubbleBase({
                     ? 'bg-bubble-out text-bubble-out-foreground'
                     : 'bg-bubble-in text-bubble-in-foreground',
                 ),
-            // The corner the tail grows out of goes square, so the two read as
-            // one shape instead of a bubble with a sticker beside it.
-            startsGroup &&
-              !jumboEmoji &&
-              (isMine ? 'rounded-tr-none' : 'rounded-tl-none'),
+            // The stack's shape. On the tail side, the run reads as one column
+            // of paper: the FIRST bubble squares off where the tail grows out of
+            // it, so the two are one shape rather than a bubble with a sticker
+            // beside it; the bubbles under it keep a tight corner top AND bottom
+            // so the seams between them stay visible without a gap; and the LAST
+            // one takes the full curve back to close the stack. A message on its
+            // own is both first and last, and comes out with the tail corner
+            // square and the rest round — exactly as before.
+            !jumboEmoji &&
+              (isMine
+                ? cn(
+                    startsGroup ? 'rounded-tr-none' : 'rounded-tr-sm',
+                    !endsGroup && 'rounded-br-sm',
+                  )
+                : cn(
+                    startsGroup ? 'rounded-tl-none' : 'rounded-tl-sm',
+                    !endsGroup && 'rounded-bl-sm',
+                  )),
           )}
         >
           {message.isForwarded && (
@@ -245,7 +323,7 @@ function MessageBubbleBase({
               second request for the message it points at. Clicking it goes to
               that message, which is the only way back to the context a reply
               was written against; history is walked back to it if need be. */}
-          {message.replyTo && (
+          {replyTo && (
             <button
               type="button"
               disabled={message.replyToMessageId === null || !onJumpToMessage}
@@ -254,30 +332,36 @@ function MessageBubbleBase({
               }}
               aria-label="Go to the replied message"
               className={cn(
-                'mb-1 block w-full rounded-md border-l-2 px-2 py-1 text-left text-xs',
+                // The thumbnail sits on the END of the quote and the words run
+                // beside it — the picture is the recognisable half, so it takes
+                // the edge where the eye lands, and the text keeps its own line
+                // to truncate on. One even inset on all four sides: a tile bled
+                // to the right edge only left the words pinned to the left one
+                // and the gaps above and below the picture reading as a mistake.
+                'mb-1 flex w-full items-center gap-2 overflow-hidden rounded-md border-l-2 p-1.5 text-left text-xs',
                 framedMedia && 'mb-1.5',
                 'transition-opacity enabled:cursor-pointer enabled:hover:opacity-80',
                 isMine ? 'border-white/50 bg-black/15' : 'border-primary bg-accent',
               )}
             >
-              <p className="font-medium opacity-80">
-                {message.replyTo.senderTalkUserId === selfTalkUserId
-                  ? 'You'
-                  : message.replyTo.senderTalkUserId !== null
-                    ? resolveTalkUser(
-                        message.replyTo.senderTalkUserId,
-                        message.replyTo.senderName,
-                      ).name
-                    : 'Message'}
-              </p>
-              <p className="truncate opacity-80">{quoteLine(message)}</p>
+              <span className="min-w-0 flex-1">
+                <span className="block font-medium opacity-80">
+                  {replyTo.senderTalkUserId === selfTalkUserId
+                    ? 'You'
+                    : replyTo.senderTalkUserId !== null
+                      ? resolveTalkUser(replyTo.senderTalkUserId, replyTo.senderName).name
+                      : 'Message'}
+                </span>
+                <span className="block truncate opacity-80">{quoteText(replyTo)}</span>
+              </span>
+              <QuoteThumb quote={replyTo} />
             </button>
           )}
 
           {message.isDeletedForEveryone ? (
             // The tombstone. The bubble SURVIVES a delete-for-everyone, because
             // replies still point at it.
-            <p className="text-xs italic opacity-70">This message was deleted</p>
+            <p className="text-xs italic opacity-70">{DELETED_MESSAGE_TEXT}</p>
           ) : (
             <>
               <MessageMediaGrid
@@ -288,7 +372,14 @@ function MessageBubbleBase({
               {message.body && (
                 <p
                   className={cn(
-                    'whitespace-pre-wrap wrap-break-word',
+                    // Message text is the one thing on the screen that is read
+                    // rather than scanned, so it gets the looser line height —
+                    // everything else in the bubble stays at the default.
+                    // `wrap-anywhere`, not `wrap-break-word`: both break a long
+                    // word once it overflows, but only `anywhere` also shrinks
+                    // the element's min-content size — which is the number the
+                    // flex row measures the bubble by.
+                    'whitespace-pre-wrap wrap-anywhere leading-[1.45]',
                     // A caption under an album keeps the album's own edge.
                     framedMedia && 'mt-1.5',
                     // Fewer emoji, bigger each — one on its own is the whole
@@ -307,39 +398,51 @@ function MessageBubbleBase({
 
           <span
             className={cn(
-              'flex items-center gap-1 text-[10px]',
+              'flex items-center gap-1 text-[10px] tabular-nums',
               mediaOnly
                 ? 'absolute right-2.5 bottom-2.5 rounded-full bg-black/55 px-1.5 py-0.5 text-white'
-                : 'mt-1 justify-end opacity-70',
+                : 'mt-1 justify-end',
               framedMedia && 'mt-1.5',
               // No bubble behind it any more, so the meta line takes the muted
               // colour rather than the bubble's foreground.
-              jumboEmoji && 'text-muted-foreground opacity-100',
+              jumboEmoji && 'text-muted-foreground',
             )}
           >
-            {message.isEdited && <span>edited</span>}
-            {formatMessageTime(message.createdAt)}
-            {isMine && <StatusTick message={message} />}
+            {/* The wash lives on the TIME, not on the whole line: a container
+                opacity capped the tick as well, so "read" could never be drawn
+                brighter than "sent" no matter what it asked for. */}
+            <span className={cn('flex items-center gap-1', !mediaOnly && !jumboEmoji && 'opacity-70')}>
+              {message.isEdited && !message.isDeletedForEveryone && <span>edited</span>}
+              {formatMessageTime(message.createdAt)}
+            </span>
+            {isMine && <StatusTick message={message} onFill={!jumboEmoji} />}
           </span>
         </div>
         </ContextMenuTrigger>
 
         {/* Radix anchors the menu to the pointer, so it opens where the click
             landed and flips itself away from the viewport edge. */}
-        <ContextMenuContent className="w-48">
-          <ContextMenuItem onSelect={() => onReply(message)}>
-            <CornerUpLeft />
-            Reply
-          </ContextMenuItem>
-          <ContextMenuItem onSelect={() => onForward(message)}>
-            <Forward />
-            Forward
-          </ContextMenuItem>
+        {/* Radix returns focus to the trigger when a menu closes, which would
+            take it straight back off the composer that "Reply" and "Edit" just
+            handed it to. */}
+        <ContextMenuContent className="w-48" onCloseAutoFocus={(event) => event.preventDefault()}>
+          {!deletedOnly && (
+            <>
+              <ContextMenuItem onSelect={() => onReply(message)}>
+                <CornerUpLeft />
+                Reply
+              </ContextMenuItem>
+              <ContextMenuItem onSelect={() => onForward(message)}>
+                <Forward />
+                Forward
+              </ContextMenuItem>
+            </>
+          )}
           <ContextMenuItem onSelect={() => onToggleSelected(message.id)}>
             <SquareCheck />
             Select
           </ContextMenuItem>
-          {message.body && (
+          {message.body && !deletedOnly && (
             <ContextMenuItem
               onSelect={() => {
                 navigator.clipboard
@@ -352,8 +455,44 @@ function MessageBubbleBase({
               Copy
             </ContextMenuItem>
           )}
+          {copyableImage && !deletedOnly && (
+            <ContextMenuItem
+              onSelect={() => {
+                void copyImageToClipboard(mediaUrl(copyableImage.fileUrl))
+                  .then(() => toastSuccess('Image copied'))
+                  // A media object served without a CORS header cannot be read
+                  // at all, so the copy is genuinely impossible — say what does
+                  // work instead of failing silently.
+                  .catch(() => toastProblem('That image could not be copied. Download it instead.'))
+              }}
+            >
+              <ImageIcon />
+              Copy image
+            </ContextMenuItem>
+          )}
+          {/* Every attachment, not only photos: a document, a voice note and a
+              video are all things a reader wants off the thread and onto their
+              disk, and the lightbox — which has its own download — never opens
+              for those. Saved one after another rather than all at once, since
+              a browser blocks a burst of simultaneous saves. */}
+          {message.media.length > 0 && !deletedOnly && (
+            <ContextMenuItem
+              onSelect={() => {
+                void (async () => {
+                  for (const item of message.media) {
+                    await downloadMedia(mediaUrl(item.fileUrl), item.fileName ?? undefined)
+                  }
+                })()
+              }}
+            >
+              <Download />
+              {message.media.length === 1
+                ? 'Download'
+                : `Download ${message.media.length} files`}
+            </ContextMenuItem>
+          )}
           {/* Editing is the SENDER's right alone, and only over text. */}
-          {isMine && message.body && (
+          {isMine && message.body && !deletedOnly && (
             <ContextMenuItem onSelect={() => onEdit(message)}>
               <Pencil />
               Edit
@@ -363,19 +502,25 @@ function MessageBubbleBase({
               the first changes what the whole conversation sees, the second is
               a private bookmark nobody is told about. Both are offered at once
               because a message can carry both at the same time. */}
-          <ContextMenuItem onSelect={() => onPin(message.id, !message.isPinned, true)}>
-            {message.isPinned ? <PinOff /> : <Pin />}
-            {message.isPinned ? 'Unpin for everyone' : 'Pin for everyone'}
-          </ContextMenuItem>
-          <ContextMenuItem onSelect={() => onPin(message.id, !message.isPinnedForMe, false)}>
-            {message.isPinnedForMe ? <BookmarkX /> : <Bookmark />}
-            {message.isPinnedForMe ? 'Unpin for me' : 'Pin for me'}
-          </ContextMenuItem>
-          {isMine && (
-            <ContextMenuItem onSelect={() => onShowInfo(message)}>
-              <Info />
-              Message info
-            </ContextMenuItem>
+          {!deletedOnly && (
+            <>
+              <ContextMenuItem onSelect={() => onPin(message.id, !message.isPinned, true)}>
+                {message.isPinned ? <PinOff /> : <Pin />}
+                {message.isPinned ? 'Unpin for everyone' : 'Pin for everyone'}
+              </ContextMenuItem>
+              <ContextMenuItem
+                onSelect={() => onPin(message.id, !message.isPinnedForMe, false)}
+              >
+                {message.isPinnedForMe ? <PinOff /> : <Pin />}
+                {message.isPinnedForMe ? 'Unpin for me' : 'Pin for me'}
+              </ContextMenuItem>
+              {isMine && (
+                <ContextMenuItem onSelect={() => onShowInfo(message)}>
+                  <Info />
+                  Message info
+                </ContextMenuItem>
+              )}
+            </>
           )}
           <ContextMenuSeparator />
           {/* The two deletions are named rather than hidden behind one word:
@@ -386,7 +531,7 @@ function MessageBubbleBase({
             <Trash2 />
             Delete for me
           </ContextMenuItem>
-          {isMine && !message.isDeletedForEveryone && (
+          {isMine && !deletedOnly && (
             <ContextMenuItem variant="destructive" onSelect={() => onDelete(message, true)}>
               <Trash2 />
               Delete for everyone
@@ -426,35 +571,51 @@ function MessageBubbleBase({
           </svg>
         )}
 
-        {/* Tilted like a pin pushed into the bubble, and lifted clear of the
-            thread background by its own disc so it reads on a photo too. */}
-        {message.isPinned ? (
-          <Pin
-            // Opposite corner from the tail, so the two never sit on top of
-            // each other: left on my own bubbles, right on incoming ones.
-            className={cn(
-              'absolute -top-1.5 size-4 rounded-full bg-background p-0.5 text-muted-foreground shadow-xs',
-              // The tilt mirrors with the corner, so the pin always leans INTO
-              // the bubble rather than away from it.
-              isMine ? '-left-1.5 -rotate-45' : '-right-1.5 rotate-45',
-            )}
-            aria-label="Pinned"
-          />
-        ) : (
-          // The private bookmark gets a bookmark, not a pin: the two mean
-          // different things — one is on the conversation, one is on my copy —
-          // and a reader must be able to tell at a glance which they are looking
-          // at. A message carrying both shows the pin, the stronger claim.
-          message.isPinnedForMe && (
-            <Bookmark
-              className={cn(
-                'absolute -top-1.5 size-4 rounded-full bg-background p-0.5 text-muted-foreground shadow-xs',
-                isMine ? '-left-1.5' : '-right-1.5',
-              )}
-              aria-label="Pinned for me"
+        {/* Tilted like a pin pushed into the bubble, and drawn bare on the
+            thread canvas — the disc it used to sit on read as a button.
+            A message carrying BOTH pins shows the chat-wide one, the stronger
+            claim; the private one is dimmer, which is now the only thing
+            separating them since both lean the same way.
+            It is also the UNPIN button: pinning took a right-click to undo,
+            which is a menu away from the thing you are looking at. It unpins
+            the scope it is SHOWING — the chat-wide pin when that is what is
+            drawn, my private one otherwise — so the glyph and the action never
+            disagree. While a selection is running it goes back to being a plain
+            mark: the whole row is the hit target then, and a button inside it
+            would swallow the tap that ticks the message. */}
+        {(message.isPinned || message.isPinnedForMe) &&
+          (selecting ? (
+            <Pin
+              // Opposite corner from the tail, so the two never sit on top of
+              // each other: left on my own bubbles, right on incoming ones. The
+              // tilt mirrors with the corner, so the pin always leans INTO the
+              // bubble rather than away from it.
+              className={cn(pinMarkClass, isMine ? '-left-1.5' : '-right-1.5')}
+              aria-label={message.isPinned ? 'Pinned' : 'Pinned for me'}
             />
-          )
-        )}
+          ) : (
+            <Tip label={message.isPinned ? 'Unpin for everyone' : 'Unpin for me'} side="top">
+              <button
+                type="button"
+                // The row behind it opens the context menu and, in a selection,
+                // ticks the message — neither should fire from this tap.
+                onClick={(event) => {
+                  event.stopPropagation()
+                  onPin(message.id, false, message.isPinned)
+                }}
+                aria-label={message.isPinned ? 'Unpin for everyone' : 'Unpin for me'}
+                // The target is bigger than the mark: a 12px glyph is under the
+                // 24px floor for a pointer, and far under it for a thumb. The
+                // padding is transparent, so the pin still looks bare.
+                className={cn(
+                  'absolute -top-3 cursor-pointer p-1.5 transition-transform hover:scale-110',
+                  isMine ? '-left-3' : '-right-3',
+                )}
+              >
+                <Pin className={cn(pinMarkClass, 'static')} aria-hidden />
+              </button>
+            </Tip>
+          ))}
         </div>
 
         {/* The reason states itself and the action sits beside it as its own
@@ -490,23 +651,55 @@ function MessageBubbleBase({
 export const MessageBubble = memo(MessageBubbleBase)
 
 /**
- * The sender's ticks.
+ * The sender's ticks, one weight per state.
  *
  * `is_read_by_all` and `read_count` are populated ONLY on your own messages —
  * always false and 0 on someone else's, because a reader is not shown who else
  * has read. So this renders for outgoing bubbles alone.
+ *
+ * The outgoing bubble is a saturated brand fill with near-white text, so HUE
+ * cannot carry the state here — a blue "read" tick the way a light-bubble app
+ * draws it would disappear into the paint. The states are separated by weight
+ * instead, and they climb in one direction: sending is the faintest, sent a
+ * notch up, read-by-some brighter, read-by-all the only one at full strength
+ * with a heavier stroke. Failure is the exception and takes a hue, because it
+ * is the one state that is not a step along that ladder.
  */
-function StatusTick({ message }: { message: ChatMessage }) {
-  if (message.status === 'sending') return <Clock className="size-3" aria-label="Sending" />
+function StatusTick({ message, onFill }: { message: ChatMessage; onFill: boolean }) {
+  if (message.status === 'sending')
+    return <Clock className="size-3 opacity-50" aria-label="Sending" />
   if (message.status === 'failed')
     return (
       <AlertCircle
-        className="size-3"
+        className="size-3 text-destructive"
         aria-label={message.canRetry === false ? 'Not delivered' : 'Not sent'}
       />
     )
-  if (message.isReadByAll) return <CheckCheck className="size-3" aria-label="Read" />
+  // The DOUBLE tick means EVERYONE — in a group it waits for the last member,
+  // which is the only reading of it people already hold. A partial read used to
+  // draw the same two ticks a shade fainter, so a five-person group looked fully
+  // read the moment one person opened it. Partial reads keep a SINGLE tick.
+  //
+  // Read is the one state that also changes COLOUR, and the colour depends on
+  // what it is sitting on: `--tick-read` — the theme's own hue lightened, so it
+  // reads on the deeper bubble fill — over the bubble and over the media chip's
+  // scrim, and `--info` when the bubble has stepped aside and the tick sits on
+  // the thread canvas (an emoji-only message), where a pastel would vanish.
+  if (message.isReadByAll)
+    return (
+      <CheckCheck
+        className={cn('size-3.5', onFill ? 'text-tick-read' : 'text-info')}
+        strokeWidth={2.75}
+        aria-label="Read by everyone"
+      />
+    )
   if (message.readCount > 0)
-    return <CheckCheck className="size-3 opacity-60" aria-label="Read by some" />
-  return <Check className="size-3" aria-label="Sent" />
+    return (
+      <Check
+        className={cn('size-3', onFill ? 'text-tick-read/85' : 'text-info/85')}
+        strokeWidth={2.5}
+        aria-label={`Read by ${message.readCount}`}
+      />
+    )
+  return <Check className="size-3 opacity-60" aria-label="Sent" />
 }

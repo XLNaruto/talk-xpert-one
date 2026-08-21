@@ -7,6 +7,8 @@ import { cn } from '@/lib/utils'
 interface ModalProps {
   title: string
   description?: string
+  /** A glyph shown before the title — for a dialog that is a place, not a step. */
+  icon?: ReactNode
   onClose: () => void
   footer?: ReactNode
   /**
@@ -35,6 +37,7 @@ interface ModalProps {
 export function Modal({
   title,
   description,
+  icon,
   onClose,
   footer,
   side = 'center',
@@ -86,9 +89,17 @@ export function Modal({
         <header
           className={cn(
             'flex shrink-0 gap-3 border-b border-border px-4 py-3',
-            description ? 'items-start' : 'items-center',
+            description && !icon ? 'items-start' : 'items-center',
           )}
         >
+          {icon && (
+            <span
+              className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/12 text-primary [&_svg]:size-4"
+              aria-hidden
+            >
+              {icon}
+            </span>
+          )}
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-semibold">{title}</h2>
             {description && (

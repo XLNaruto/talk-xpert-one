@@ -1,4 +1,5 @@
-import { Download, ZoomIn, ZoomOut } from 'lucide-react'
+import { useState } from 'react'
+import { Copy, Download, ZoomIn, ZoomOut } from 'lucide-react'
 import {
   CloseIcon,
   IconButton,
@@ -12,6 +13,8 @@ import {
 import type { ZoomRef } from 'yet-another-react-lightbox'
 import type {} from 'yet-another-react-lightbox/plugins/zoom'
 import { Tip } from '@/components/common/tip'
+import { toastProblem, toastSuccess } from '@/lib/api-toast'
+import { canCopyImages, copyImageToClipboard } from '@/lib/copy-image'
 import { downloadMedia, slideDownload } from '../lib/media-download'
 
 /**
@@ -28,6 +31,17 @@ import { downloadMedia, slideDownload } from '../lib/media-download'
  * put it behind the photo.
  */
 const TOOLTIP_LAYER = 'z-[10000]'
+
+/**
+ * `IconButton`'s label is a key into the library's own translation table, and
+ * the copy button is ours — so the key is declared, the same way each of the
+ * library's own plugins declares the label for the button it adds.
+ */
+declare module 'yet-another-react-lightbox' {
+  interface Labels {
+    'Copy image'?: string
+  }
+}
 
 function LightboxTip({ label, side = 'bottom', children }: Parameters<typeof Tip>[0]) {
   return (
@@ -77,6 +91,44 @@ export function LightboxDownloadButton() {
         disabled={!target}
         onClick={() => {
           if (target) void downloadMedia(target.url, target.filename)
+        }}
+      />
+    </LightboxTip>
+  )
+}
+
+/**
+ * Copy the photo on screen to the clipboard.
+ *
+ * Images only — there is nothing to put on a clipboard for a video, and a
+ * button that is present but permanently dead reads as broken, so it is absent
+ * on those slides instead of disabled. Absent too where the browser cannot take
+ * an image at all.
+ *
+ * The fetch and the PNG encode are not instant on a large photo, so the button
+ * holds its own pending flag: a second click while the first is still encoding
+ * would pay for the whole thing twice.
+ */
+export function LightboxCopyButton() {
+  const { currentSlide } = useLightboxState()
+  const [copying, setCopying] = useState(false)
+  const source = currentSlide?.type === 'video' ? null : slideDownload(currentSlide)?.url ?? null
+
+  if (!source || !canCopyImages()) return null
+
+  return (
+    <LightboxTip label="Copy image">
+      <IconButton
+        label="Copy image"
+        title={undefined}
+        icon={Copy}
+        disabled={copying}
+        onClick={() => {
+          setCopying(true)
+          void copyImageToClipboard(source)
+            .then(() => toastSuccess('Image copied'))
+            .catch(() => toastProblem('That image could not be copied. Download it instead.'))
+            .finally(() => setCopying(false))
         }}
       />
     </LightboxTip>

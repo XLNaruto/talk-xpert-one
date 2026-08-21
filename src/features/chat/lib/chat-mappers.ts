@@ -20,6 +20,7 @@ import type {
   SystemEvent,
   SystemParticipant,
 } from '../types'
+import { quoteMedia } from './quote-preview'
 
 /* ---------------------------------------------------------------- */
 /* Raw server payloads — snake_case, exactly as the API sends them   */
@@ -47,6 +48,11 @@ export interface MessageQuoteDto {
   type: string
   body?: string | null
   is_deleted?: boolean
+  /**
+   * The quote is a SUMMARY and may carry no attachments at all. Read when it
+   * does, so a quote that arrives with its photo needs nothing looked up.
+   */
+  media?: MessageMediaDto[] | null
 }
 
 export interface MessageDto {
@@ -104,6 +110,19 @@ export interface ChatDto {
   last_message_sender_talk_user_id?: number | null
   last_message_sender_name?: string | null
   last_message_sender_photo?: string | null
+  /**
+   * The last message's SHAPE, for the two cases where the preview alone is not
+   * enough to write the row: a system event has no sender but names an actor in
+   * `last_message_system_data`, and a tombstone has no preview at all.
+   */
+  last_message_type?: string | null
+  last_message_deleted_for_everyone?: boolean | null
+  /** The bubble's `is_read_by_all`, asked of the PREVIEWED message. */
+  last_message_is_read_by_all?: boolean | null
+  /** The bubble's `is_edited`, asked of the same message. Not sent today. */
+  last_message_is_edited?: boolean | null
+  last_message_system_event?: string | null
+  last_message_system_data?: Record<string, unknown> | null
   self?: ChatSelfDto | null
   created_at: string
 }
@@ -142,6 +161,8 @@ export interface PresenceDto {
 }
 
 export interface MessageReceiptDto {
+  /** Only on the rows `talk.message.read` carries — see `MessageReceipt`. */
+  message_id?: number | null
   talk_user_id: number
   name?: string | null
   photo?: string | null
@@ -194,6 +215,9 @@ const SYSTEM_EVENTS: SystemEvent[] = [
   'member_added',
   'member_removed',
   'member_left',
+  'member_promoted',
+  'member_demoted',
+  'owner_transferred',
 ]
 
 /**
@@ -202,6 +226,15 @@ const SYSTEM_EVENTS: SystemEvent[] = [
  */
 function oneOf<T extends string>(value: unknown, allowed: T[], fallback: T): T {
   return allowed.includes(value as T) ? (value as T) : fallback
+}
+
+/**
+ * Narrow a `member_role` off the wire. Used by the role write's own response and
+ * by `talk.member.role_changed`, both of which answer the role on its own rather
+ * than inside a member row.
+ */
+export function toMemberRole(value: unknown, fallback: MemberRole = 'member'): MemberRole {
+  return oneOf(value, MEMBER_ROLES, fallback)
 }
 
 export function toMessageMedia(dto: MessageMediaDto): MessageMedia {
@@ -229,6 +262,7 @@ export function toMessageQuote(dto: MessageQuoteDto): MessageQuote {
     type: oneOf(dto.type, MESSAGE_TYPES, 'text'),
     body: dto.body ?? null,
     isDeleted: dto.is_deleted ?? false,
+    ...quoteMedia((dto.media ?? []).map(toMessageMedia)),
   }
 }
 
@@ -368,6 +402,13 @@ function toChatSelf(dto: ChatSelfDto | null | undefined): ChatSelf {
   }
 }
 
+/** `by`, then the flat subject, then the first member — the sentences' order. */
+function systemDataActor(
+  data: MessageSystemData | null,
+): { talkUserId: number; name: string | null; photo: string | null } | null {
+  return data ? (data.by ?? data.subject ?? data.members[0] ?? null) : null
+}
+
 export function toChat(dto: ChatDto): Chat {
   return {
     id: dto.id,
@@ -389,6 +430,14 @@ export function toChat(dto: ChatDto): Chat {
     lastMessageSenderTalkUserId: dto.last_message_sender_talk_user_id ?? null,
     lastMessageSenderName: dto.last_message_sender_name ?? null,
     lastMessageSenderPhoto: dto.last_message_sender_photo ?? null,
+    lastMessageType: oneOf(dto.last_message_type, MESSAGE_TYPES, 'text'),
+    lastMessageDeletedForEveryone: dto.last_message_deleted_for_everyone ?? false,
+    lastMessageReadByAll: dto.last_message_is_read_by_all ?? false,
+    lastMessageEdited: dto.last_message_is_edited ?? false,
+    // A system last message has no sender, so WHO acted comes out of the same
+    // operands the thread renders from — `by`, or the flat subject on an event
+    // where the actor and the subject are one person.
+    lastMessageActor: systemDataActor(toMessageSystemData(dto.last_message_system_data)),
     self: toChatSelf(dto.self),
     createdAt: dto.created_at,
   }
@@ -445,6 +494,7 @@ export function toPresence(dto: PresenceDto): Presence {
 
 export function toMessageReceipt(dto: MessageReceiptDto): MessageReceipt {
   return {
+    messageId: dto.message_id ?? null,
     talkUserId: dto.talk_user_id,
     name: dto.name ?? null,
     photo: dto.photo ?? null,

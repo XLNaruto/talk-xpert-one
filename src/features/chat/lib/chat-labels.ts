@@ -1,5 +1,11 @@
 import type { Id } from '@/types/api'
-import type { Chat, ChatMessage, Contact, MessageMedia, MessageQuote } from '../types'
+import type {
+  Chat,
+  Contact,
+  MessageMedia,
+  MessageQuote,
+  MessageType,
+} from '../types'
 import { initialsOf, resolveTalkUser } from './talk-directory'
 
 /**
@@ -45,6 +51,12 @@ export function chatLabel(chat: Chat): ChatLabel {
 }
 
 /**
+ * What a deleted-for-everyone row says, in the thread and in the sidebar alike.
+ * A tombstone is not an empty message: a blank preview would be read as a file.
+ */
+export const DELETED_MESSAGE_TEXT = 'This message was deleted'
+
+/**
  * The one-line preview under a chat's name.
  *
  * `lastMessagePreview` is null when the last message was a file or was deleted
@@ -54,14 +66,55 @@ export function chatLabel(chat: Chat): ChatLabel {
 export function previewLine(chat: Chat, selfTalkUserId: Id | null): string {
   if (!chat.lastMessageAt) return 'No messages yet'
 
+  // A tombstone and a file BOTH arrive with no preview, so the flag is what
+  // separates them — without it a deleted message announced an attachment.
   const body = chat.lastMessagePreview?.trim()
-  const text = body || 'Attachment'
+  // A file's preview is its KIND, because it has no text of its own — and with a
+  // caption it is both, the way the thread shows the picture above the words.
+  // "Attachment" is only the fallback for a kind the client has not heard of.
+  const attachment = attachmentLabel(chat.lastMessageType)
+  const base = chat.lastMessageDeletedForEveryone
+    ? DELETED_MESSAGE_TEXT
+    : attachment
+      ? body
+        ? `${attachment} · ${body}`
+        : attachment
+      : body || 'Attachment'
+  // The bubble says "edited" beside the time, and the row quoting that bubble
+  // says the same — otherwise a preview that changed on its own looks like a
+  // message that was never sent. Never on a tombstone: it was not edited, it
+  // was withdrawn.
+  const text =
+    chat.lastMessageEdited && !chat.lastMessageDeletedForEveryone
+      ? `${base} · edited`
+      : base
 
   const sender = chat.lastMessageSenderTalkUserId
   if (sender === null) return text
   if (sender === selfTalkUserId) return `You: ${text}`
   if (chat.type === 'direct') return text
   return `${resolveTalkUser(sender, chat.lastMessageSenderName).name}: ${text}`
+}
+
+/**
+ * What to call the previewed message when it is a FILE. Null for text and for a
+ * system line, which speak for themselves.
+ */
+function attachmentLabel(type: MessageType): string | null {
+  switch (type) {
+    case 'image':
+      return 'Photo'
+    case 'video':
+      return 'Video'
+    case 'audio':
+      // Not "Voice message": an attachment can be any audio file, and calling a
+      // shared track a voice note is a small lie the row cannot take back.
+      return 'Audio'
+    case 'document':
+      return 'Document'
+    default:
+      return null
+  }
 }
 
 /** A short label for an attachment, used where a caption is missing. */
@@ -108,24 +161,9 @@ export function quoteText(quote: MessageQuote | null | undefined): string {
   return quote.body?.trim() || quotableType(quote.type)
 }
 
-/** The quote on a message, for a bubble that already holds the message. */
-export function quoteLine(message: ChatMessage): string {
-  return quoteText(message.replyTo)
-}
-
+/** The same words the sidebar uses, so a quote and a row never disagree. */
 function quotableType(type: string | undefined): string {
-  switch (type) {
-    case 'image':
-      return 'Photo'
-    case 'video':
-      return 'Video'
-    case 'audio':
-      return 'Audio'
-    case 'document':
-      return 'Document'
-    default:
-      return 'Message'
-  }
+  return attachmentLabel(type as MessageType) ?? 'Message'
 }
 
 /**
@@ -159,7 +197,8 @@ export function composerBlockedReason(
       : 'This conversation is no longer available.'
   }
   if (chat.self.isBlocked) {
-    return 'The group owner has muted you here. You can still read the conversation.'
+    // An admin can mute now too, so the sentence no longer names the creator.
+    return 'An admin has muted you here. You can still read the conversation.'
   }
   if (
     chat.type === 'direct' &&
@@ -214,7 +253,7 @@ export function personBlockCopy(name: string, blocked: boolean): ConfirmCopy {
 }
 
 /**
- * The question asked before the GROUP OWNER'S block, which is a different thing
+ * The question asked before the GROUP's block, which is a different thing
  * entirely: the member stays, keeps reading, and only loses posting — and unlike
  * the private block, they find out the moment they try to post.
  */
@@ -232,5 +271,58 @@ export function memberBlockCopy(name: string, groupName: string, blocked: boolea
     message: `${name} can post in ${groupName} from now on.`,
     confirmLabel: 'Allow',
     tone: 'default',
+  }
+}
+
+/**
+ * The question asked before appointing or standing down an admin.
+ *
+ * An admin holds the SAME powers over the membership as the creator, so the
+ * sentence says what they can do rather than naming the role and leaving the
+ * reader to guess. It also says what they cannot: the creator's row stays
+ * untouchable, which is what makes this a delegation and not a handover.
+ */
+export function memberRoleCopy(name: string, groupName: string, promote: boolean): ConfirmCopy {
+  if (promote) {
+    return {
+      title: `Make ${name} an admin?`,
+      message: `${name} will be able to add, remove and mute members of ${groupName}, and appoint other admins. They cannot rename or delete the group, and they cannot act on you.`,
+      confirmLabel: 'Make admin',
+      tone: 'default',
+    }
+  }
+  return {
+    title: `Remove ${name} as an admin?`,
+    message: `${name} stays in ${groupName} as an ordinary member and loses the ability to change who is in it.`,
+    confirmLabel: 'Remove as admin',
+    tone: 'destructive',
+  }
+}
+
+/**
+ * What LEAVING a group takes with it — and, for its creator, where the group
+ * goes next.
+ *
+ * The creator may now leave, and the group is handed on rather than left
+ * ungoverned: the longest-standing admin, else the longest-standing member. That
+ * is neither obvious nor reversible, so the heir is NAMED where the member list
+ * can resolve them, and hedged where it cannot.
+ */
+export function leaveGroupCopy(
+  groupName: string,
+  isOwner: boolean,
+  successorName: string | null,
+): ConfirmCopy {
+  const base = `You stop receiving messages in ${groupName}. The history stays readable, and an admin can add you back.`
+  if (!isOwner) {
+    return { title: 'Leave this group?', message: base, confirmLabel: 'Leave', tone: 'destructive' }
+  }
+  return {
+    title: 'Leave this group?',
+    message: successorName
+      ? `You will no longer be an admin of ${groupName} — ${successorName} takes over. ${base}`
+      : `You are the last one out, so ${groupName} is left with no admin: nobody can rename or delete it after this. The history stays readable.`,
+    confirmLabel: 'Leave',
+    tone: 'destructive',
   }
 }

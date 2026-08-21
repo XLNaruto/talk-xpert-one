@@ -1,11 +1,19 @@
+/**
+ * The date a run of messages was written on.
+ *
+ * A centred pill rather than a rule with the date sitting in a gap in it: the
+ * thread's canvas is textured now (`.thread-canvas` in globals.css), and a
+ * hairline across a dot grid reads as part of the pattern. The pill carries its
+ * own surface, so it holds the same weight over a photo as over the background,
+ * and it matches the shape a system message is drawn in — both are notes ABOUT
+ * the conversation rather than lines in it.
+ */
 export function DayDivider({ label }: { label: string }) {
   return (
-    <div className="my-3 flex items-center gap-3 px-3">
-      <span className="h-px flex-1 bg-border" />
-      <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+    <div className="my-3 flex justify-center px-3">
+      <span className="rounded-full border border-border/60 bg-card/85 px-2.5 py-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase shadow-xs backdrop-blur-sm">
         {label}
       </span>
-      <span className="h-px flex-1 bg-border" />
     </div>
   )
 }

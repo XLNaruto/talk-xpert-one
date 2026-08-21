@@ -1,4 +1,4 @@
-import { BookmarkX, Loader2, PinOff } from 'lucide-react'
+import { Loader2, PinOff } from 'lucide-react'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/common/empty-state'
@@ -6,7 +6,7 @@ import { Modal } from '@/components/common/modal'
 import { Tip } from '@/components/common/tip'
 import { useMediaUrl } from '@/hooks/use-app-config'
 import type { Id } from '@/types/api'
-import { mediaLabel } from '../lib/chat-labels'
+import { mediaLabel, DELETED_MESSAGE_TEXT } from '../lib/chat-labels'
 import { formatChatTime } from '../lib/message-formatters'
 import { systemMessageText } from '../lib/system-messages'
 import { pinKey } from '../lib/chat-mappers'
@@ -178,7 +178,10 @@ function PinnedRowItem({
           aria-label={isPrivate ? 'Unpin this for me' : 'Unpin this for everyone'}
           className="relative shrink-0 cursor-pointer rounded-md p-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground"
         >
-          {isPrivate ? <BookmarkX className="size-4" /> : <PinOff className="size-4" />}
+          {/* One glyph for both scopes — the ACTION is the same unpin either
+              way, and the tooltip plus the "Only you" badge already say which
+              audience the row belongs to. */}
+          <PinOff className="size-4" />
         </button>
       </Tip>
     </div>
@@ -187,7 +190,7 @@ function PinnedRowItem({
 
 /** One line for a pinned message, whatever kind it is. */
 function pinPreview(message: ChatMessage, selfTalkUserId: Id | null): string {
-  if (message.isDeletedForEveryone) return 'This message was deleted'
+  if (message.isDeletedForEveryone) return DELETED_MESSAGE_TEXT
   if (message.type === 'system') return systemMessageText(message, selfTalkUserId)
   const text = message.body?.trim()
   if (text) return text

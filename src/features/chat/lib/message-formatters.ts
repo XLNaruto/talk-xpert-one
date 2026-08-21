@@ -39,12 +39,25 @@ export function formatLastSeen(presence: Presence | undefined): string {
   return `Last seen ${format(date, 'd MMM')}`
 }
 
+/** How long a speaker may pause and still be answering their own last line. */
+const GROUP_GAP_MS = 5 * 60 * 1000
+
 /**
  * True when this message opens a new visual run — it gets an author name in a
- * group, and the extra spacing above.
+ * group, the tail on its bubble, and the extra spacing above.
  *
- * A system message always breaks the run: it belongs to nobody, so folding it
- * into the previous speaker's block would attribute it to them.
+ * Four things break a run, and each one is a case where folding the message
+ * into the block above it would say something untrue:
+ *
+ * - a **system** message belongs to nobody, so it would be attributed to the
+ *   previous speaker;
+ * - a **different sender**, which is the obvious one;
+ * - a gap longer than `GROUP_GAP_MS` — past a few minutes it is a new thought,
+ *   not the same breath;
+ * - a **day boundary**, because a day divider is about to be drawn between the
+ *   two. Without this the first message after "Today" arrived tucked under the
+ *   divider with no avatar and no name, reading as a continuation of a run that
+ *   the divider had already visibly ended.
  */
 export function startsNewGroup(
   message: ChatMessage,
@@ -53,9 +66,10 @@ export function startsNewGroup(
   if (!previous) return true
   if (message.type === 'system' || previous.type === 'system') return true
   if (previous.senderTalkUserId !== message.senderTalkUserId) return true
+  if (startsNewDay(message, previous)) return true
   const gapMs =
     new Date(message.createdAt).getTime() - new Date(previous.createdAt).getTime()
-  return gapMs > 5 * 60 * 1000
+  return gapMs > GROUP_GAP_MS
 }
 
 /** True when a day divider belongs above this message. */
@@ -78,8 +92,12 @@ export function startsNewDay(
  * Takes names, not ids: `talk.typing.*` carries only a `talk_user_id`, so the
  * lookup happens in `useTypingNames` and this stays pure.
  */
-export function formatTypingLine(names: string[]): string {
+export function formatTypingLine(names: string[], isDirect = false): string {
   if (names.length === 0) return ''
+  // In a DIRECT chat there is only one other person and their name is already
+  // the title of the row, the header and the thread — repeating it in the line
+  // below says nothing. A group has to name who it is.
+  if (isDirect) return 'typing…'
   if (names.length === 1) return `${names[0]} is typing…`
   if (names.length === 2) return `${names[0]} and ${names[1]} are typing…`
   return `${names[0]}, ${names[1]} and ${names.length - 2} more are typing…`

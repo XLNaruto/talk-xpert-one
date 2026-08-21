@@ -9,6 +9,7 @@ import { usePersonBlock } from '../hooks/use-person-block'
 import { AttachmentStrip } from './attachment-strip'
 import { EmojiPicker } from './emoji-picker'
 import { PersonBlockDialog } from './person-block-dialog'
+import { QuoteThumb } from './quote-thumb'
 import type { Chat } from '../types'
 import { Tip } from '@/components/common/tip'
 
@@ -94,6 +95,10 @@ export function MessageInput({ chat }: { chat: Chat }) {
               {quoteText(replyTo)}
             </span>
           </span>
+          {/* The picture of what is being replied to, not just the word for it:
+              in a run of photos the thumbnail is the only thing that says WHICH
+              one the reply will land under. */}
+          <QuoteThumb quote={replyTo} className="bg-muted" />
           <button type="button" onClick={cancelReply} aria-label="Cancel reply">
             <X className="size-3.5" />
           </button>
@@ -110,7 +115,9 @@ export function MessageInput({ chat }: { chat: Chat }) {
         className="flex cursor-text items-end gap-1 rounded-xl bg-card/70 px-2 py-1.5 ring-1 ring-border backdrop-blur-sm transition-colors focus-within:ring-ring"
         onClick={() => textareaRef.current?.focus()}
       >
-        {!editing && <EmojiPicker onSelect={insertEmoji} />}
+        {/* The picker stays during an edit — an edit rewrites TEXT, and an emoji
+            is text. Only the attachment controls drop out. */}
+        <EmojiPicker onSelect={insertEmoji} />
 
         <textarea
           ref={textareaRef}

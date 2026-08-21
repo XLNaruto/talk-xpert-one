@@ -6,6 +6,7 @@ import { useMessages } from '../api/use-messages'
 import { useMessageActions } from '../api/use-message-actions'
 import { usePins } from '../api/use-pins'
 import { startsNewDay, startsNewGroup } from '../lib/message-formatters'
+import { withQuoteMedia, quoteMedia } from '../lib/quote-preview'
 import { useTypingNames } from './use-typing'
 import { useThreadScroll } from './use-thread-scroll'
 import type { Chat, ChatMessage, MessageQuote, PinnedMessage } from '../types'
@@ -13,8 +14,21 @@ import type { Chat, ChatMessage, MessageQuote, PinnedMessage } from '../types'
 /** One rendered row: the message plus the flags the list needs to lay it out. */
 export interface ThreadRow {
   message: ChatMessage
+  /**
+   * The message's own quote, with the attachment filled in from the thread's
+   * copy of what it points at — see `withQuoteMedia`. Null when it is not a
+   * reply. Kept beside the message rather than merged into it so the bubble's
+   * `memo` still holds.
+   */
+  replyTo: MessageQuote | null
   /** First of a run by the same person — gets the spacing and the author name. */
   startsGroup: boolean
+  /**
+   * Last of that run — the bubble whose corner un-squares again, and the one the
+   * spacing below the run hangs off. Read from the NEXT message rather than the
+   * previous one, which is why it cannot be derived inside the bubble.
+   */
+  endsGroup: boolean
   /** A day divider belongs above this one. */
   newDay: boolean
   /** True when I wrote it — drives bubble alignment and the ticks. */
@@ -28,7 +42,8 @@ export interface ThreadRow {
 export function useMessageThread(chat: Chat | null) {
   const chatId = chat?.id ?? null
   const selfId = useAuthStore((s) => s.identity?.talkUserId ?? null)
-  const { messages, isLoading, isLoadingMore, hasEarlier, loadEarlier } = useMessages(chatId)
+  const { messages, isLoading, isLoadingMore, hasEarlier, loadEarlier, loadEarlierNow } =
+    useMessages(chatId)
   const {
     pins,
     total: pinTotal,
@@ -60,19 +75,33 @@ export function useMessageThread(chat: Chat | null) {
    * Precompute the per-row flags once, so the virtualised row renderer stays
    * cheap — it runs on every scroll frame.
    */
-  const rows = useMemo<ThreadRow[]>(
-    () =>
-      messages.map((message, index) => {
-        const previous = messages[index - 1]
-        return {
-          message,
-          startsGroup: startsNewGroup(message, previous),
-          newDay: startsNewDay(message, previous),
-          isMine: message.senderTalkUserId === selfId,
-        }
-      }),
-    [messages, selfId],
-  )
+  const rows = useMemo<ThreadRow[]>(() => {
+    // The server's `reply_to` is a summary with no attachments, so a reply's
+    // quote is filled in from the message it points at where the thread holds
+    // it. Built once per change rather than per row: a chat of five hundred
+    // messages would otherwise be a scan per reply.
+    const byId = new Map(messages.map((message) => [message.id, message]))
+    return messages.map((message, index) => {
+      const previous = messages[index - 1]
+      const next = messages[index + 1]
+      return {
+        message,
+        // Kept beside the message rather than merged into it: cloning the
+        // message would hand `MessageBubble` a new object on every arrival and
+        // cost every reply in the thread a re-render.
+        replyTo: message.replyTo
+          ? withQuoteMedia(message.replyTo, byId.get(message.replyTo.id))
+          : null,
+        startsGroup: startsNewGroup(message, previous),
+        // The run ends here when whatever follows opens a new one — and at the
+        // bottom of the log, where nothing follows yet. A row can be both the
+        // start and the end of its run: a message on its own.
+        endsGroup: next === undefined || startsNewGroup(next, message),
+        newDay: startsNewDay(message, previous),
+        isMine: message.senderTalkUserId === selfId,
+      }
+    })
+  }, [messages, selfId])
 
   /**
    * The pinned messages, newest pin first.
@@ -122,9 +151,9 @@ export function useMessageThread(chat: Chat | null) {
    * this with the newest message that was visible.
    */
   const markReadUpTo = useCallback(
-    (uptoMessageId: Id) => {
+    (uptoMessageId: Id, remainingUnread: number) => {
       if (chatId == null || uptoMessageId < 0) return
-      markRead([chatId], uptoMessageId)
+      markRead([chatId], uptoMessageId, remainingUnread)
     },
     [chatId, markRead],
   )
@@ -164,6 +193,10 @@ export function useMessageThread(chat: Chat | null) {
         type: message.type,
         body: message.body,
         isDeleted: message.isDeletedForEveryone,
+        // Taken from the message being replied to, which we plainly hold: the
+        // composer's bar draws the photo the moment "Reply" is chosen, with
+        // nothing to look up and nothing to wait for.
+        ...quoteMedia(message.media),
       }
       setReplyTo(chatId, quote)
     },
@@ -267,6 +300,8 @@ export function useMessageThread(chat: Chat | null) {
     isLoadingMore,
     hasEarlier,
     loadEarlier,
+    /** The same walk without the between-pages rest — for a SEEK, not a scroll. */
+    loadEarlierNow,
     pinnedMessages,
     pinnedForEveryoneTotal,
     pinnedRows,

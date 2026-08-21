@@ -1,4 +1,4 @@
-# CLAUDE.md — One Talk
+# CLAUDE.md — XpertOne Talk
 
 Guidance for Claude Code. Modular, **feature-based** architecture — the same
 folder shape and naming as the XpertOne admin portal, with a data layer built
@@ -39,6 +39,11 @@ What is deliberately different:
   MESSAGES page by message **id**: `before_id` walks up through history and
   `after_id` replays the gap after a reconnect. New rows arrive constantly, so an
   offset would skip or repeat between requests. That is `MessagePage<T>`.
+  Opening a thread is neither: `limit: -1` (`MESSAGE_OPENING_LIMIT`) answers with
+  twenty read messages plus EVERY unread one — a hundred when there is nothing
+  unread — so the divider always arrives in the first read and there is no
+  "load newer" direction. Only `before_id` pages, `MESSAGE_PAGE_SIZE` (500) at a
+  time.
 - **No response envelope.** Talk answers `{ items, total }` or the record itself
   at the top level. There is no `{ data }` to unwrap and no `unwrap()` helper.
   Errors are `{ code, message, details? }` — see `lib/api-error.ts`.
@@ -103,6 +108,44 @@ and can write "You added Draco". An unrecognised code maps to `systemEvent: null
 and falls through to the server's sentence — never onto a guessed event. Those
 names also feed `rememberPeople`, so typing and presence still resolve.
 
+### A group's authority is SHAREABLE, and the owner can leave
+
+`member_role` is still `owner` | `admin` | `member`, but **`owner` and `admin` now
+hold exactly the same powers over the MEMBERSHIP** — add, remove, mute, appoint
+further admins. The one difference is the TARGET: **the `owner` row is
+untouchable**, by an admin and by the owner on their own row, which is what makes
+appointing an admin a delegation rather than a gamble. Two powers stay
+owner-only: rename/edit (`PATCH /talk/chats/{id}`) and disband. So the screens
+gate on TWO questions, never one — `canManageMembers` and `canEditGroup` in
+`features/chat/lib/member-roles.ts`, which is the only file that decides either.
+
+`PUT /talk/chats/{id}/members/{talk_user_id}/role` (or `talk:member.role`) takes
+`admin` or `member` and nothing else — `owner` is a 422, because it moves only by
+SUCCESSION. It is **idempotent**: setting a role somebody already holds writes
+nothing and announces nothing, so the item is never disabled after a tap. It
+refuses the owner's row, your own row, and a plain-member caller, which is why
+`canActOnMember` collapses all three into one answer and no request is made.
+
+The owner may now **leave**, and the group is handed on in the same operation: the
+longest-standing remaining **admin**, else the longest-standing remaining
+**member**. The thread gets `member_left` then `owner_transferred`, and everybody
+gets `talk.member.role_changed` naming the heir. `successorOf()` works the heir
+out client-side with the same rule so the confirm dialog can NAME them. **The
+last member out leaves the group owner-less** — allowed, not an error, and
+nothing can rename or disband it afterwards. So never assume a group has an
+`owner` in its member list.
+
+`talk.member.role_changed` covers all three cases in one event;
+`previous_member_role` tells them apart and `member_role: 'owner'` means
+succession (where `by_*` is the person who LEFT, not a promoter). The stream
+patches the member list AND — when it names me — `chat.self.member_role` through
+`setSelfRole`, which is the field every gate above reads. Without it a promoted
+member sees no new controls until they reload.
+
+Three new `system_event` codes ride along: `member_promoted`, `member_demoted`,
+`owner_transferred`, rendered from the operands in `lib/system-messages.ts` and
+falling back to the server's `body` as always.
+
 ### Three pin features, and no two share storage or audience
 
 - **Pin the CHAT in my list** — `PUT /talk/chats/{id}/pin`, private, `chat-list-store`.
@@ -120,6 +163,40 @@ private ones. The private pin needs only MEMBERSHIP, so it works in a group you
 left or are muted in. Its two socket events, `talk.message.self_pinned` /
 `self_unpinned`, go to MY OTHER DEVICES and never to the room — no actor to
 compare, so they always bump the pin list.
+
+### A group's history starts where YOU joined
+
+A member added later is served nothing written before they joined — filtered in
+the database on every path: thread, `before_id` paging, the inline `reply_to`
+quote, search, the gallery, both pin lists, the preview and the unread count.
+Removed and re-added starts again from the RE-ADD. So an empty first page is a
+correct answer for a fresh member (render the empty thread, not a spinner), an
+empty older page means "this is the start", and a `reply_to` can be null for a
+reason other than deletion. Direct chats are unaffected.
+
+### Arriving in a chat, and the inbox tick
+
+`talk.chat.created` is the ONE event for both arrivals — a chat created with me
+in it, and me being ADDED to a group that already existed, told apart by
+`added_by_talk_user_id`. Both carry the whole row from my side and the server
+admits my sockets to the room in the same call, so the row is inserted and no
+read is needed; `talk.member.added` still goes to the ROOM, which is exactly
+where the added person is not. The envelope's `type` is the event name and the
+chat's kind is `chat_type` — never read the kind off `type`.
+
+Rooms for chats that ALREADY existed are still the client's job: every row of
+`GET /talk/chats` must be joined, including the pages past the first, which is
+why `useChats` walks the list to `CHAT_LIST_MAX_PAGES` rather than stopping at
+thirty. A row that is listed but never joined is a chat that only updates on
+reload.
+
+`last_message_is_read_by_all` puts the sender's blue tick on the inbox row, and
+`talk.message.read` keeps it live between reads. That event now carries
+`receipts` — but they are the READER'S OWN rows, so in a group one event means
+one more person, not everyone: `applyRead` counts distinct readers against the
+member count instead of flipping the tick on the first one. The message-info
+sheet still re-reads the endpoint, because it lists people who have NOT read and
+the event cannot name them.
 
 ### The direct-chat block is a WINDOW, not a wall
 
@@ -326,6 +403,7 @@ src/
 | A new inbound socket event (a write) | name in `SOCKET_ACTIONS` (`features/chat/constants.ts`), call through `write()` in `chat-api.ts` |
 | A new outbound socket event | name in `SOCKET_EVENTS` (`features/chat/constants.ts`), handler in `use-message-stream.ts` |
 | A way to label a person | `features/chat/lib/talk-directory.ts` — nowhere else |
+| A check on what a role may do | `features/chat/lib/member-roles.ts` — never `=== 'owner'` at a call site |
 | A name for an id with no name in the payload | `stores/talk-directory-store.ts` (typing and presence only) |
 | A file upload | a presign path in `lib/endpoints.ts`, then `uploadFile` from `lib/uploads.ts` |
 | A dialog | `Modal` from `components/common/modal.tsx` |

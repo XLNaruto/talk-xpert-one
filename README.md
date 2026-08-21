@@ -1,4 +1,4 @@
-# One Talk
+# XpertOne Talk
 
 Realtime chat web app. Sibling to the **XpertOne** admin portal — same
 architecture and conventions, separate repo, separate session, own theme.

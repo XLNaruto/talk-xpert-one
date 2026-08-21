@@ -52,7 +52,7 @@ export function ScrollToBottomButton({
           <span
             className={cn(
               'absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center',
-              'rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground',
+              'rounded-full bg-primary-fill px-1 text-[10px] font-semibold text-primary-fill-foreground',
             )}
           >
             {unreadCount > 99 ? '99+' : unreadCount}

@@ -8,6 +8,7 @@ import 'yet-another-react-lightbox/plugins/counter.css'
 import { useMediaViewerStore } from '@/stores/media-viewer-store'
 import {
   LightboxCloseButton,
+  LightboxCopyButton,
   LightboxDownloadButton,
   LightboxNextButton,
   LightboxPrevButton,
@@ -38,6 +39,10 @@ export default function MediaLightboxViewer() {
       index={index}
       plugins={[Video, Zoom, Counter, DownloadPlugin]}
       carousel={{ finite: true }}
+      // Spelled out so the copy button has a place in the order rather than
+      // being prepended ahead of everything: each plugin swaps itself into its
+      // own placeholder, and anything unclaimed is dropped.
+      toolbar={{ buttons: ['zoom', <LightboxCopyButton key="copy" />, 'download', 'close'] }}
       // A video keeps playing behind a closed lightbox otherwise.
       video={{ autoPlay: false, controls: true, playsInline: true, preload: 'metadata' }}
       counter={{ container: { style: { top: 'unset', bottom: 0 } } }}

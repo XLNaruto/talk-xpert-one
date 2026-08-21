@@ -4,7 +4,8 @@ import { Avatar } from '@/components/ui/avatar'
 import { Modal } from '@/components/common/modal'
 import { useMediaUrl } from '@/hooks/use-app-config'
 import { toApiError } from '@/lib/api-error'
-import type { Id } from '@/types/api'
+import { useChatStore } from '@/stores/chat-store'
+import { keyOf, type Id } from '@/types/api'
 import * as chatApi from '../api/chat-api'
 import { formatDateTime } from '../lib/message-formatters'
 import { resolveTalkUser } from '../lib/talk-directory'
@@ -29,6 +30,10 @@ export function MessageInfoDialog({
   const mediaUrl = useMediaUrl()
   const [receipts, setReceipts] = useState<MessageReceipt[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Somebody reading while this is open changes the list under it. The event
+  // carries only the reader's own rows, and this sheet lists everyone the
+  // message reached — so it re-reads rather than patching one row in.
+  const revision = useChatStore((s) => s.receiptRevision[keyOf(chatId)] ?? 0)
 
   useEffect(() => {
     let cancelled = false
@@ -49,7 +54,7 @@ export function MessageInfoDialog({
     return () => {
       cancelled = true
     }
-  }, [chatId, messageId])
+  }, [chatId, messageId, revision])
 
   return (
     <Modal title="Message info" onClose={onClose}>

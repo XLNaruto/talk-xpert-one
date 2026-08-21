@@ -19,11 +19,12 @@ import { useTypingNames } from '../hooks/use-typing'
 import type { Chat } from '../types'
 
 /**
- * Sent / read ticks.
+ * Sent / read ticks — the same pair the bubble draws, so the two screens agree.
  *
- * The row only ever knows "sent": `is_read_by_all` lives on a message, not on a
- * chat row, so the blue tick is the thread's job and the list shows the single
- * one. Both states are here so the two screens read the same.
+ * `is_read_by_all` lives on a MESSAGE and not on a chat row, so the blue tick
+ * comes off the cached message the row is quoting (`lastMessageReadByAll`),
+ * which `talk.message.read` keeps current. A chat this device has not opened
+ * this session has no cached message to ask, and shows the single tick.
  */
 function ReadTick({ read }: { read: boolean }) {
   return read ? (
@@ -70,18 +71,34 @@ export function ChatListItem({
   // Someone typing is more useful than the last message, so it wins the line.
   const secondLine =
     typingNames.length > 0
-      ? formatTypingLine(typingNames)
+      ? formatTypingLine(typingNames, chat.type === 'direct')
       : previewLine(chat, selfTalkUserId)
 
   // The last sender is drawn from the row itself — `last_message_sender_name`
   // and `_photo` ride along with the chat, so the corner costs no second read.
+  //
+  // A SYSTEM event ("Minato added Goku") has no sender at all, so it falls back
+  // to whoever ACTED, which the stream copies off `system_data` as the event
+  // lands. That leaves one gap the API cannot close: a system event this device
+  // only ever saw through a list read carries no operands, and keeps the glyph.
+  const cornerPerson =
+    chat.lastMessageSenderTalkUserId !== null
+      ? {
+          id: chat.lastMessageSenderTalkUserId,
+          name: chat.lastMessageSenderName,
+          photo: chat.lastMessageSenderPhoto,
+        }
+      : chat.lastMessageActor
+        ? {
+            id: chat.lastMessageActor.talkUserId,
+            name: chat.lastMessageActor.name,
+            photo: chat.lastMessageActor.photo,
+          }
+        : null
+
   const groupCorner =
-    chat.type === 'group' && chat.lastMessageSenderTalkUserId !== null
-      ? resolveTalkUser(
-          chat.lastMessageSenderTalkUserId,
-          chat.lastMessageSenderName,
-          chat.lastMessageSenderPhoto,
-        )
+    chat.type === 'group' && cornerPerson
+      ? resolveTalkUser(cornerPerson.id, cornerPerson.name, cornerPerson.photo)
       : null
 
   const isMyLastMessage =
@@ -97,14 +114,23 @@ export function ChatListItem({
       aria-current={isActive}
       aria-pressed={isSelected ?? undefined}
       className={cn(
-        'relative flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors',
-        'hover:bg-sidebar-accent/50',
+        'relative flex w-full items-center gap-3 overflow-hidden rounded-lg px-3 py-2.5 text-left',
+        // Colour AND the press, so a tap answers on the way down rather than
+        // only once the thread has swapped.
+        'transition-[background-color,transform] duration-150 active:scale-[0.995]',
+        // Separation is the hover tint and the gap between rows — NO hairline.
+        // A line under every row turned the list into a table of boxes, and it
+        // cut across the active row's own paint.
+        'hover:bg-sidebar-accent/60',
         // The active row is brand paint, not the neutral accent — the accent sat
         // a shade away from the avatar fill and the two washed each other out.
-        // The inset bar down the leading edge is what carries "this one" at a
-        // glance, so the row still reads as active on a tinted or busy list.
-        isActive &&
-          'bg-primary/12 text-sidebar-accent-foreground shadow-[inset_3px_0_0_0_var(--primary)] hover:bg-primary/12',
+        // `chat-row-active` (globals.css) draws it: a light brand wash, the
+        // leading edge bar with a highlight travelling down it, and one slow
+        // sheen across the row. The bar is what carries "this one" at a glance;
+        // the motion says the thread is the open one. The wash stays light
+        // enough that the row keeps the sidebar's own text colour — only the
+        // preview line steps up from muted grey, which dulls against blue.
+        isActive && 'chat-row-active text-sidebar-accent-foreground hover:bg-transparent',
         // Selection is carried by the tick on the avatar, the way WhatsApp does
         // it — the row only tints. A ring around every picked row fights the
         // active row's own highlight and turns the list into a stack of boxes.
@@ -115,13 +141,18 @@ export function ChatListItem({
         <Avatar
           name={label.title}
           src={mediaUrl(label.avatarKey) || undefined}
-          className={cn(isSelected && 'opacity-80')}
+          className={cn(
+            isSelected && 'opacity-80',
+            // A halo the tint alone can't give — the picture is the row's
+            // anchor, so the active state should reach it too.
+            isActive && 'ring-2 ring-primary/45',
+          )}
         />
         {/* While a selection is running the corner is the tick's, so presence
             and the group glyph step aside rather than stack under it. */}
         {isSelected ? (
-          <span className="absolute -right-1 -bottom-1 flex size-4 items-center justify-center rounded-full border-2 border-sidebar bg-primary">
-            <Check className="size-2.5 text-primary-foreground" strokeWidth={3} />
+          <span className="absolute -right-1 -bottom-1 flex size-4 items-center justify-center rounded-full border-2 border-sidebar bg-primary-fill">
+            <Check className="size-2.5 text-primary-fill-foreground" strokeWidth={3} />
           </span>
         ) : chat.type === 'group' ? (
           // A group's corner names WHO SPOKE LAST — the row already reads as a
@@ -149,18 +180,35 @@ export function ChatListItem({
 
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline justify-between gap-2">
-          <span className="flex min-w-0 items-center gap-1">
-            {chat.self.isPinned && (
-              <Pin
-                className="size-3 shrink-0 text-muted-foreground"
-                aria-label="Pinned"
-              />
+          {/* Three weights, and each one means something: the OPEN thread and
+              anything UNREAD are semibold, everything else is normal. Making
+              every row medium flattened the list into one texture, so nothing
+              stood out from it. The negative tracking is what keeps a semibold
+              name from looking wider than its neighbours. */}
+          <span
+            className={cn(
+              'min-w-0 truncate text-sm tracking-[-0.01em]',
+              isActive || chat.unreadCount > 0 ? 'font-semibold' : 'font-normal',
             )}
-            <span className={cn('truncate text-sm', isActive ? 'font-semibold' : 'font-medium')}>
-              {label.title}
-            </span>
+          >
+            {label.title}
           </span>
-          <span className="shrink-0 text-[11px] text-muted-foreground">
+          {/* The pin rides with the timestamp rather than the name: it is a
+              property of the ROW's placement in the list, and a long name no
+              longer pushes it off the line. */}
+          <span
+            className={cn(
+              'flex shrink-0 items-center gap-1 text-[11px]',
+              // The time steps up with the row: on an unread row it is part of
+              // "something happened here", not chrome.
+              chat.unreadCount > 0
+                ? 'font-medium text-foreground/70'
+                : 'text-muted-foreground',
+            )}
+          >
+            {chat.self.isPinned && (
+              <Pin className="size-3 shrink-0" aria-label="Pinned" />
+            )}
             {formatChatTime(chat.lastMessageAt)}
           </span>
         </span>
@@ -169,18 +217,28 @@ export function ChatListItem({
           <span
             className={cn(
               'flex min-w-0 items-center gap-1 text-xs',
-              typingNames.length > 0 ? 'text-primary' : 'text-muted-foreground',
+              typingNames.length > 0
+                ? 'text-primary'
+                : isActive
+                  ? 'text-sidebar-accent-foreground/85'
+                  : chat.unreadCount > 0
+                    // Unread copy is the message you have not read yet, so it
+                    // sits at reading contrast rather than at chrome grey.
+                    ? 'font-medium text-foreground/80'
+                    : 'text-muted-foreground',
             )}
           >
             {/* Ticks belong on my own last message only — read state is the
                 sender's information, so a row I did not write shows none. */}
-            {isMyLastMessage && typingNames.length === 0 && <ReadTick read={false} />}
+            {isMyLastMessage && typingNames.length === 0 && (
+              <ReadTick read={chat.lastMessageReadByAll} />
+            )}
             <span className="truncate">{secondLine}</span>
           </span>
 
           {chat.unreadCount > 0 && (
             <span
-              className="shrink-0 rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-semibold text-primary-foreground"
+              className="shrink-0 rounded-full bg-primary-fill px-1.5 py-0.5 text-[10px] font-semibold text-primary-fill-foreground"
               aria-label={`${chat.unreadCount} unread`}
             >
               {chat.unreadCount > 99 ? '99+' : chat.unreadCount}

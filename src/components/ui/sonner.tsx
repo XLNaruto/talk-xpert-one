@@ -5,17 +5,30 @@ import {
   OctagonXIcon,
   TriangleAlertIcon,
 } from 'lucide-react'
-import { Toaster as Sonner, type ToasterProps } from 'sonner'
+import { Toaster as Sonner, toast, type ToasterProps } from 'sonner'
 import { useUiStore } from '@/stores/ui-store'
 
 export function Toaster({ ...props }: ToasterProps) {
   const theme = useUiStore((s) => s.theme)
 
   return (
+    // Sonner dismisses on its close button alone — a swipe or that button, never
+    // a click on the body. So `cursor-pointer` on the toast would promise
+    // something that does not happen; this listener is what makes it true. It
+    // clears the stack rather than the one row clicked, because sonner does not
+    // expose an id on the element, and a toast is a transient notice: "clear
+    // these" is the only intent a click on one of them can carry.
+    <div
+      role="presentation"
+      onClick={(event) => {
+        if ((event.target as HTMLElement).closest('[data-sonner-toast]')) toast.dismiss()
+      }}
+    >
     <Sonner
       theme={theme}
       position="top-center"
       className="toaster group"
+      toastOptions={{ classNames: { toast: 'cursor-pointer select-none' } }}
       icons={{
         success: <CircleCheckIcon className="size-4" />,
         info: <InfoIcon className="size-4" />,
@@ -45,5 +58,6 @@ export function Toaster({ ...props }: ToasterProps) {
       }
       {...props}
     />
+    </div>
   )
 }

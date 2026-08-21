@@ -34,7 +34,6 @@ export const ENDPOINTS = {
 
   chats: {
     list: '/talk/chats',
-    unreadSummary: '/talk/chats/unread-summary',
     /** Idempotent — opening the same direct chat twice returns the same id. */
     direct: '/talk/chats/direct',
     group: '/talk/chats/group',
@@ -57,12 +56,23 @@ export const ENDPOINTS = {
   members: {
     list: (chatId: Id) => `/talk/chats/${chatId}/members`,
     add: (chatId: Id) => `/talk/chats/${chatId}/members`,
-    /** The owner cannot leave — they disband instead. */
+    /**
+     * Anyone may leave, the OWNER included — the role is handed on to the
+     * longest-standing admin, else the longest-standing member, and the last
+     * one out leaves the group owner-less.
+     */
     leave: (chatId: Id) => `/talk/chats/${chatId}/leave`,
     remove: (chatId: Id, talkUserId: Id) => `/talk/chats/${chatId}/members/${talkUserId}`,
-    /** Silences posting, keeps reading. Announced to the group. Owner only. */
+    /** Silences posting, keeps reading. Announced to the group. Owner or admin. */
     block: (chatId: Id, talkUserId: Id) =>
       `/talk/chats/${chatId}/members/${talkUserId}/block`,
+    /**
+     * Promote to `admin` or demote to `member` — owner or admin, and never
+     * against the owner's row or your own. `owner` is not a valid value: it
+     * moves by succession only.
+     */
+    role: (chatId: Id, talkUserId: Id) =>
+      `/talk/chats/${chatId}/members/${talkUserId}/role`,
   },
 
   messages: {

@@ -58,8 +58,17 @@ export const SOCKET_ACTIONS = {
   memberLeave: 'talk:member.leave',
   /** `{ chat_id, talk_user_id }` → `{ removed }`. */
   memberRemove: 'talk:member.remove',
-  /** `{ chat_id, talk_user_id, blocked }` → `{ blocked }`. The OWNER's block, not the private one. */
+  /** `{ chat_id, talk_user_id, blocked }` → `{ blocked }`. The group block, not the private one. */
   memberBlock: 'talk:member.block',
+  /**
+   * `{ chat_id, talk_user_id, member_role }` → `{ member_role }`.
+   *
+   * Promote to `admin` or demote to `member`. `owner` is refused by the schema —
+   * it moves by succession only. IDEMPOTENT: setting a role somebody already
+   * holds answers 200, writes nothing and announces nothing, so two admins
+   * tapping the same item do not put two identical lines in the thread.
+   */
+  memberRole: 'talk:member.role',
 } as const
 
 /**
@@ -76,7 +85,16 @@ export const SOCKET_EVENTS = {
   messageEdited: 'talk.message.edited',
   /** `{ chat_id, message_ids }` — delete for EVERYONE only. */
   messageDeleted: 'talk.message.deleted',
-  /** `{ chat_id, message_ids, by_talk_user_id, by_name, by_photo }` — turns your ticks blue. */
+  /**
+   * `{ chat_id, message_ids, by_talk_user_id, by_name, by_photo, receipts }` —
+   * turns your ticks blue.
+   *
+   * `receipts` runs parallel to `message_ids`, one row per message, each an item
+   * of the receipts endpoint plus the `message_id` it belongs to. They are the
+   * READER'S OWN receipts and nobody else's — no member is ever shown who else
+   * has read — so in a GROUP one event means "one more person has read this",
+   * not "everybody has". The blue tick is the client's sum of them.
+   */
   messageRead: 'talk.message.read',
   /** `{ chat_id, message_id, by_talk_user_id, by_name, by_photo }` */
   messagePinned: 'talk.message.pinned',
@@ -91,9 +109,18 @@ export const SOCKET_EVENTS = {
   messageSelfUnpinned: 'talk.message.self_unpinned',
 
   /**
-   * `{ chat_id, type, name?, created_by_*, chat }` — addressed to you
-   * PERSONALLY, so it needs no join: you cannot have joined a chat that did not
-   * exist.
+   * `{ chat_id, chat_type, created_by_*, added_by_*?, chat }` — addressed to you
+   * PERSONALLY, so it needs no join: the server admits your live sockets to the
+   * room in the same call that makes the chat yours.
+   *
+   * The envelope's `type` is the EVENT NAME and cannot be overwritten by the
+   * payload — the chat's own kind is `chat_type` (and `chat.type`). It used to
+   * be emitted as `direct` / `group`, which is why no listener ever fired.
+   *
+   * It covers TWO arrivals, told apart by `added_by_talk_user_id`: a chat
+   * created with you in it (absent), and you being added to a group that
+   * already existed (present, naming who added you). Both carry the row, so
+   * both are inserted the same way.
    *
    * `chat` is the whole row built from YOUR OWN side — byte-identical to what
    * `GET /talk/chats/:id` would answer, `self.member_role` and a direct chat's
@@ -110,7 +137,14 @@ export const SOCKET_EVENTS = {
   /** `{ chat_id, by_talk_user_id, by_name, by_photo }` — disbanded; eviction follows. */
   chatDeleted: 'talk.chat.deleted',
 
-  /** `{ chat_id, talk_user_ids, members[], by_talk_user_id, by_name, by_photo }` */
+  /**
+   * `{ chat_id, talk_user_ids, members[], by_talk_user_id, by_name, by_photo }`
+   *
+   * Addressed to the ROOM, so the people just added are precisely the ones who
+   * do not receive it — they get a `talk.chat.created` with `added_by_*`
+   * instead. It still arrives naming me when I was re-added while holding the
+   * row, which is why that case refreshes rather than re-reads.
+   */
   memberAdded: 'talk.member.added',
   /** `{ chat_id, talk_user_id, name, photo }` */
   memberLeft: 'talk.member.left',
@@ -122,6 +156,17 @@ export const SOCKET_EVENTS = {
   memberRemoved: 'talk.member.removed',
   /** `{ chat_id, talk_user_id, name, photo, blocked, by_* }` */
   memberBlocked: 'talk.member.blocked',
+  /**
+   * `{ chat_id, talk_user_id, name, photo, member_role, previous_member_role,
+   * by_* }` — one event for all three cases, addressed to the ROOM.
+   *
+   * `previous_member_role` is what tells a promotion from a demotion without a
+   * lookup, and `member_role: 'owner'` means SUCCESSION — the owner left and the
+   * role was handed on, so `by_*` is the person who LEFT, not a promoter. The
+   * person whose role changed is already in the room, so unlike
+   * `talk.member.added` there is no separate personal admission to handle.
+   */
+  memberRoleChanged: 'talk.member.role_changed',
 
   /** `{ chat_id, talk_user_id, name, photo }` — sender excluded server-side. */
   typingStart: 'talk.typing.start',
@@ -132,10 +177,28 @@ export const SOCKET_EVENTS = {
    * event broadcast to the whole account, so it must be filtered client-side.
    */
   presence: 'talk.presence',
+
 } as const
 
-/** How many messages one history page pulls. The API caps `limit` at 100. */
-export const MESSAGE_PAGE_SIZE = 40
+/**
+ * The OPENING read of a thread — `limit: -1`, which is not a page size at all.
+ *
+ * The server answers it with everything the reader needs to pick up where they
+ * left off: the last twenty READ messages for context, plus EVERY unread one
+ * however many that is (and a flat hundred when there is nothing unread). So
+ * the divider is always in the answer, and there is no "load newer" to build —
+ * the thread opens holding its own newest end.
+ */
+export const MESSAGE_OPENING_LIMIT = -1
+
+/**
+ * How many messages one page of OLDER history pulls.
+ *
+ * Only one direction pages: `before_id`, walking back from the oldest row held.
+ * Large on purpose — scrolling up through a long thread should not be a request
+ * every screenful, and the rows are cheap next to the round trip.
+ */
+export const MESSAGE_PAGE_SIZE = 500
 
 /**
  * In-thread find: how many hits one search page pulls, and how many hits we are
@@ -165,6 +228,29 @@ export const CHAT_URL_PARAM = 'data'
 
 /** How many chats one page of the sidebar pulls. The API caps `limit` at 100. */
 export const CHAT_PAGE_SIZE = 30
+
+/**
+ * How many pages of the inbox one read will walk.
+ *
+ * Every row has to be listed AND `talk:join`ed or its messages never arrive
+ * live — the server admits you to a room when a chat becomes yours, but it does
+ * not push an admission per row of a list read. So the read pages to the end
+ * instead of stopping at the first thirty. The cap is what stops an account with
+ * thousands of conversations from opening with a burst of requests; rows past it
+ * still work, they just wait for the next read.
+ */
+export const CHAT_LIST_MAX_PAGES = 10
+
+/**
+ * How long to leave a chat alone after a read of it was REFUSED.
+ *
+ * The gateway now admits your sockets to rooms you never joined, so messages
+ * arrive for chats the client has never listed — one past the inbox pages, one
+ * created while you were offline, one you had deleted for yourself. Each is read
+ * and inserted. A read that fails (removed from the group, say) must not be
+ * retried once per message in it.
+ */
+export const ADOPT_RETRY_COOLDOWN_MS = 60_000
 
 /**
  * How many pins one page of the pinned-messages sheet pulls. The API caps
@@ -251,6 +337,40 @@ export const THREAD_OPEN_SETTLE_MS = 2500
 
 /** How often the bottom is re-asserted during that window. */
 export const THREAD_OPEN_SETTLE_TICK_MS = 100
+
+/**
+ * How long the thread is held off its own corrections after a jump has landed.
+ *
+ * The landing is not one scroll: `scrollToIndex` works off estimated heights, so
+ * the rows between here and the target are measured for the first time as they
+ * mount and each measurement moves the target again. The list re-asserts through
+ * that, and until it has finished, "the reader is at the bottom" is still the
+ * wrong conclusion to draw — so the hold outlives the scroll rather than ending
+ * with the call that started it.
+ *
+ * Comfortably longer than the retry window below, so the hold is released after
+ * the last correction rather than during it.
+ */
+export const THREAD_JUMP_SETTLE_MS = 1400
+
+/**
+ * How often a jump re-checks that its message is on screen, and how long it
+ * keeps checking once the row exists.
+ *
+ * The row may not exist on the first pass at all — the page holding it can land
+ * a render later — so the ticker waits for it rather than giving up, and only
+ * starts spending its window once there is something to centre.
+ */
+export const THREAD_JUMP_RETRY_MS = 90
+export const THREAD_JUMP_CENTRE_WINDOW_MS = 1000
+
+/**
+ * The longest a jump will wait for its message to be drawn before giving up.
+ *
+ * The history walk has already put it in the cache by the time the scroll is
+ * asked for, so this is only a backstop against a ticker with nothing to find.
+ */
+export const THREAD_JUMP_WAIT_CAP_MS = 8000
 
 /**
  * How long a jumped-to message stays banded.
