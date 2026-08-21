@@ -19,6 +19,7 @@ import {
 } from '../lib/chat-mappers'
 import { peopleInChat, peopleInMessage } from '../lib/talk-directory'
 import { systemActor } from '../lib/system-messages'
+import { traceCount } from '../lib/thread-trace'
 import { catchUpMessages } from '../api/use-messages'
 import * as chatApi from '../api/chat-api'
 import { joinAll } from '../api/use-chats'
@@ -577,6 +578,12 @@ export function useMessageStream() {
       ])
     }
 
+    // Counts what the gateway is actually SENDING, by name — a flood of one
+    // event looks the same from inside a handler as a single one. `onAny` sees
+    // every inbound frame, including the ones nothing here subscribes to.
+    const countEvent = (event: string) => traceCount(`socket:${event}`)
+    socket.onAny(countEvent)
+
     socket.on(SOCKET_EVENTS.messageNew, onMessageNew)
     socket.on(SOCKET_EVENTS.messageEdited, onMessageEdited)
     socket.on(SOCKET_EVENTS.messageDeleted, onMessageDeleted)
@@ -617,6 +624,7 @@ export function useMessageStream() {
       socket.off(SOCKET_EVENTS.typingStart, onTypingStart)
       socket.off(SOCKET_EVENTS.typingStop, onTypingStop)
       socket.off(SOCKET_EVENTS.presence, onPresence)
+      socket.offAny(countEvent)
     }
   }, [talkUserId])
 

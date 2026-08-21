@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Download, FileText, ImageOff, Music, Play } from 'lucide-react'
 import { useMediaUrl } from '@/hooks/use-app-config'
 import { cn } from '@/lib/utils'
 import { useMediaViewer } from '../hooks/use-media-viewer'
 import { formatBytes, formatDuration, mediaLabel } from '../lib/chat-labels'
 import { isPreviewable } from '../lib/media-slides'
+import { traceCount } from '../lib/thread-trace'
 import type { MessageMedia } from '../types'
 import { Tip } from '@/components/common/tip'
 
@@ -48,7 +49,7 @@ export function MessageMediaGrid({
         <div className={cn('relative', isUploading && 'pointer-events-none')}>
           <MediaAlbum tiles={tiles} siblings={media} />
           {isUploading && (
-            <span className="absolute inset-0 flex flex-col items-center justify-center gap-2 rounded-lg bg-black/45 backdrop-blur-[1px]">
+            <span className="absolute inset-0 flex flex-col items-center justify-center gap-2 rounded-sm bg-black/45 backdrop-blur-[1px]">
               <UploadRing percent={percent} />
               <span className="text-[10px] font-medium tracking-wide text-white/90">
                 Uploading…
@@ -130,6 +131,64 @@ const ALBUM_TILES = 4
 /** Natural pixel size of a photo or a video frame, or null before it is known. */
 type MediaSize = { w: number; h: number } | null
 
+/**
+ * Natural sizes we have already learnt, keyed by the attachment's own url.
+ *
+ * It has to outlive the component, and that is the whole point. A tile that
+ * measures itself on load and keeps the answer in `useState` FORGETS it the
+ * moment the row scrolls out of the virtualised window — and the thread is a
+ * virtualised list, so that happens constantly. On the way back in the tile
+ * reverted to the portrait fallback box, which is a different HEIGHT from the
+ * landscape box it had settled into; the row changed size, that moved the edges
+ * of the mounted window, which unmounted and remounted OTHER image rows, which
+ * forgot and re-learnt their own sizes in turn.
+ *
+ * That is a feedback loop with nothing to damp it: the list reported a hundred
+ * and fifty range changes every two seconds, indefinitely, with no scrolling, no
+ * renders of our own and no data arriving. Learning a size once per attachment
+ * per session is what breaks it — the second mount is the same shape as the
+ * first, so nothing moves.
+ *
+ * Keyed on the url rather than on the message id because the id CHANGES under an
+ * optimistic send (a local negative id becomes the server's), while a blob url
+ * and a storage key each name one frame for as long as they exist.
+ */
+const naturalSizes = new Map<string, { w: number; h: number }>()
+
+/** Bounded, because a long session in a media-heavy chat would otherwise keep
+    every frame it ever drew. Oldest out first — the entries being lost are the
+    ones furthest from the viewport. */
+const NATURAL_SIZE_CAP = 500
+
+function rememberNaturalSize(key: string, size: { w: number; h: number }): void {
+  evictOldest(naturalSizes, NATURAL_SIZE_CAP)
+  naturalSizes.set(key, size)
+}
+
+/**
+ * Urls that have already decoded once in this session.
+ *
+ * A tile fades its picture in from a grey pulse, which is right the FIRST time —
+ * it covers the wait. It is wrong every time after that, and in a virtualised
+ * list "after that" is constant: a row that scrolls out of the mounted window
+ * and back is a fresh mount with fresh state, so `state` began at `loading`, the
+ * element was handed `opacity-0`, and a picture the browser could already paint
+ * faded up from grey over 200ms. That is the blink — one per image per trip past
+ * the fold, and nothing to do with the bytes, which had long since arrived.
+ *
+ * So the fade is spent once per url and never again. Keyed on the resolved url
+ * because that is what the browser's own cache is keyed on: if it can paint
+ * immediately, we must not ask it to fade.
+ */
+const decoded = new Set<string>()
+const DECODED_CAP = 500
+
+function evictOldest(store: Map<string, unknown> | Set<string>, cap: number): void {
+  if (store.size < cap) return
+  const oldest = store.keys().next()
+  if (!oldest.done) store.delete(oldest.value as string)
+}
+
 const isLandscape = (size: MediaSize) => !!size && size.w > size.h
 
 /**
@@ -173,7 +232,11 @@ function MediaAlbum({
   return (
     <div
       className={cn(
-        'grid gap-0.5 overflow-hidden rounded-lg',
+        // `rounded-sm` (8px), not the bubble's own `rounded-lg` (12px): the
+        // album sits inside 4px of bubble padding, and a nested corner has to be
+        // the outer radius MINUS that gap or the two curves run at different
+        // rates and the photo reads as bulging out of its frame.
+        'grid gap-0.5 overflow-hidden rounded-sm',
         solo ? 'w-fit max-w-full grid-cols-1' : 'w-64 max-w-full grid-cols-2',
       )}
     >
@@ -218,10 +281,67 @@ function AlbumTile({
    * Seeded from the payload when the API named the dimensions — which is the
    * common case and means the right box is picked on the FIRST paint, with no
    * reflow once the bytes decode. An optimistic row from a local file has
-   * neither, so the element measures itself on load as the fallback.
+   * neither, so the element measures itself on load as the fallback — and what
+   * it measures is kept in `naturalSizes`, so a row that scrolls away and back
+   * comes back the SAME SHAPE. See that map for why it cannot be state alone.
    */
+  const sizeKey = media.fileUrl
   const [size, setSize] = useState<MediaSize>(
-    media.width && media.height ? { w: media.width, h: media.height } : null,
+    () =>
+      (media.width && media.height ? { w: media.width, h: media.height } : null) ??
+      naturalSizes.get(sizeKey) ??
+      null,
+  )
+
+  /** The tile itself — asked below whether the reader is looking at it. */
+  const frameRef = useRef<HTMLButtonElement>(null)
+
+  /**
+   * A measured frame: always remembered, applied only when it is safe to move.
+   *
+   * Knowing the shape is what lets a landscape photo out of the portrait
+   * fallback box — but applying it CHANGES THE ROW'S HEIGHT, and a row that
+   * changes height under the reader is the blink: the thread twitches and the
+   * scroll is corrected beneath a picture they had already started looking at.
+   *
+   * So the rule is that nothing moves in the viewport. Off screen — which, with
+   * a screenful of overscan, is where most frames decode — the box is corrected
+   * immediately and the reader arrives to a tile that is already the right
+   * shape. On screen, the measurement is banked and nothing is touched; the
+   * picture stays whole inside the fallback box (`object-contain`, so nothing is
+   * cropped) and the NEXT mount opens at the exact shape, because
+   * `naturalSizes` seeded it.
+   *
+   * The way to have both, for the record, is `width`/`height` in the payload:
+   * the box is then exact on the first paint with nothing to measure and nothing
+   * to correct. This is the fallback for attachments the API did not measure.
+   */
+  const learnSize = useCallback(
+    (next: MediaSize) => {
+      if (!next) return
+      const held = naturalSizes.get(sizeKey)
+      if (held && held.w === next.w && held.h === next.h) return
+      // Should fire ONCE per attachment. Repeatedly means a tile is still
+      // forgetting its shape between mounts, which is the loop above.
+      traceCount('media:size-learned')
+      rememberNaturalSize(sizeKey, next)
+
+      const frame = frameRef.current
+      if (!frame) {
+        setSize(next)
+        return
+      }
+      // Its own box against the window's: cheap, one read per attachment, and
+      // it needs no knowledge of which element happens to be scrolling.
+      const box = frame.getBoundingClientRect()
+      const onScreen = box.bottom > 0 && box.top < window.innerHeight
+      if (onScreen) {
+        traceCount('media:size-deferred')
+        return
+      }
+      setSize(next)
+    },
+    [sizeKey],
   )
   const wide = solo && isLandscape(size)
   // A landscape frame drives its own height, so it is a full-width block with
@@ -234,6 +354,7 @@ function AlbumTile({
 
   return (
     <button
+      ref={frameRef}
       type="button"
       onClick={() => openViewer(siblings, media)}
       aria-label={
@@ -268,7 +389,7 @@ function AlbumTile({
           onLoadedMetadata={(event) => {
             const element = event.currentTarget
             if (element.videoWidth && element.videoHeight) {
-              setSize({ w: element.videoWidth, h: element.videoHeight })
+              learnSize({ w: element.videoWidth, h: element.videoHeight })
             }
           }}
         >
@@ -281,7 +402,7 @@ function AlbumTile({
           width={media.width}
           height={media.height}
           imgClassName={fitClass}
-          onNaturalSize={setSize}
+          onNaturalSize={learnSize}
         />
       )}
 
@@ -332,7 +453,11 @@ function TileImage({
   /** Reports the decoded frame's size, for the tiles the payload left unmeasured. */
   onNaturalSize?: (size: MediaSize) => void
 }) {
-  const [state, setState] = useState<'loading' | 'ready' | 'failed'>('loading')
+  // Seeded, not assumed: a url that has decoded before needs no fade and no
+  // placeholder, so a remounted tile paints its picture in the first frame.
+  const [state, setState] = useState<'loading' | 'ready' | 'failed'>(() =>
+    decoded.has(src) ? 'ready' : 'loading',
+  )
   /**
    * The src on SCREEN, which lags the src in props by however long the new one
    * takes to decode.
@@ -393,8 +518,17 @@ function TileImage({
       <img
         src={shown}
         alt={alt}
-        loading="lazy"
+        // NOT `loading="lazy"`, and that is the opposite of the usual advice.
+        // The virtualiser is already the thing deciding what gets loaded — a
+        // tile only exists at all when its row is near the viewport. Handing the
+        // browser a second, tighter threshold on top of that deferred the fetch
+        // until the row was practically on screen, which put the decode (and so
+        // the change of box shape it causes) in the reader's eyeline instead of
+        // ahead of it. In the gallery grid, where every tile is mounted at once,
+        // lazy loading still earns its keep.
         onLoad={(event) => {
+          evictOldest(decoded, DECODED_CAP)
+          decoded.add(shown)
           setState('ready')
           const element = event.currentTarget
           if (element.naturalWidth && element.naturalHeight) {

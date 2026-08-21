@@ -6,10 +6,24 @@ import { useMessages } from '../api/use-messages'
 import { useMessageActions } from '../api/use-message-actions'
 import { usePins } from '../api/use-pins'
 import { startsNewDay, startsNewGroup } from '../lib/message-formatters'
+import { traceCount, traceMs } from '../lib/thread-trace'
 import { withQuoteMedia, quoteMedia } from '../lib/quote-preview'
 import { useTypingNames } from './use-typing'
 import { useThreadScroll } from './use-thread-scroll'
 import type { Chat, ChatMessage, MessageQuote, PinnedMessage } from '../types'
+
+/**
+ * One row plus everything it was derived FROM — see `rowCache`. Held so a rebuild
+ * can prove a row is still current instead of computing it again.
+ */
+interface CachedRow {
+  row: ThreadRow
+  message: ChatMessage
+  previous: ChatMessage | undefined
+  following: ChatMessage | undefined
+  quoted: ChatMessage | undefined
+  selfId: Id | null
+}
 
 /** One rendered row: the message plus the flags the list needs to lay it out. */
 export interface ThreadRow {
@@ -72,35 +86,88 @@ export function useMessageThread(chat: Chat | null) {
   }, [chatId])
 
   /**
+   * The rows a previous pass already worked out, keyed by message id.
+   *
+   * A row is a pure function of five things — the message, the two rows either
+   * side of it (the run and the day divider are decided by comparison), the
+   * message its quote points at, and who I am. All five are immutable objects,
+   * so identity is a sound test for "nothing that decides this row has changed".
+   */
+  const rowCache = useRef(new Map<Id, CachedRow>())
+
+  /**
    * Precompute the per-row flags once, so the virtualised row renderer stays
    * cheap — it runs on every scroll frame.
+   *
+   * Rebuilt INCREMENTALLY, which is the difference between a message arriving
+   * and the thread stalling. Every socket event — an arrival, a read receipt, an
+   * edit — hands this a new `messages` array, and deriving nine hundred rows
+   * from scratch each time cost hundreds of milliseconds on the main thread
+   * while the list was trying to scroll. An arrival only actually changes two
+   * rows: its own, and the one above it, whose run now has something after it.
+   *
+   * Reusing the row OBJECT matters as much as skipping the work: `MessageBubble`
+   * is memo'd on it, so a row that comes back identical re-renders nothing.
    */
   const rows = useMemo<ThreadRow[]>(() => {
+    const startedAt = performance.now()
+    let rebuilt = 0
     // The server's `reply_to` is a summary with no attachments, so a reply's
     // quote is filled in from the message it points at where the thread holds
     // it. Built once per change rather than per row: a chat of five hundred
     // messages would otherwise be a scan per reply.
     const byId = new Map(messages.map((message) => [message.id, message]))
-    return messages.map((message, index) => {
+    const held = rowCache.current
+    const fresh = new Map<Id, CachedRow>()
+
+    const built = messages.map((message, index) => {
       const previous = messages[index - 1]
-      const next = messages[index + 1]
-      return {
+      const following = messages[index + 1]
+      const quoted = message.replyTo ? byId.get(message.replyTo.id) : undefined
+
+      const cached = held.get(message.id)
+      if (
+        cached &&
+        cached.message === message &&
+        cached.previous === previous &&
+        cached.following === following &&
+        cached.quoted === quoted &&
+        cached.selfId === selfId
+      ) {
+        fresh.set(message.id, cached)
+        return cached.row
+      }
+
+      rebuilt += 1
+      const row: ThreadRow = {
         message,
         // Kept beside the message rather than merged into it: cloning the
         // message would hand `MessageBubble` a new object on every arrival and
         // cost every reply in the thread a re-render.
-        replyTo: message.replyTo
-          ? withQuoteMedia(message.replyTo, byId.get(message.replyTo.id))
-          : null,
+        replyTo: message.replyTo ? withQuoteMedia(message.replyTo, quoted) : null,
         startsGroup: startsNewGroup(message, previous),
         // The run ends here when whatever follows opens a new one — and at the
         // bottom of the log, where nothing follows yet. A row can be both the
         // start and the end of its run: a message on its own.
-        endsGroup: next === undefined || startsNewGroup(next, message),
+        endsGroup: following === undefined || startsNewGroup(following, message),
         newDay: startsNewDay(message, previous),
         isMine: message.senderTalkUserId === selfId,
       }
+      fresh.set(message.id, { row, message, previous, following, quoted, selfId })
+      return row
     })
+
+    // Only what this pass actually holds, so a chat that is paged away or a
+    // message deleted for me takes its entry with it.
+    rowCache.current = fresh
+    // `rows-build` is the whole pass; `rows:rebuilt` is how much of it was work
+    // that the incremental cache could not avoid. A rebuilt count near the row
+    // count on an ordinary arrival means the cache is missing for a reason
+    // worth finding.
+    traceMs('rows-build', performance.now() - startedAt)
+    traceCount('rows:pass')
+    traceCount('rows:rebuilt', rebuilt)
+    return built
   }, [messages, selfId])
 
   /**

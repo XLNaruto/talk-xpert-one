@@ -5,7 +5,8 @@ import { Button } from '@/components/ui/button'
 import { OnlineBadge } from '@/components/common/online-badge'
 import { useMediaUrl } from '@/hooks/use-app-config'
 import { ThemePickerDialog } from '@/components/common/theme-picker-dialog'
-import { AccountSheet, useLogout } from '@/features/auth'
+import { ConfirmDialog } from '@/components/common/confirm-dialog'
+import { AccountSheet, logoutCopy, useLogout } from '@/features/auth'
 import { useOnlineStatus } from '@/hooks/use-online-status'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
@@ -34,6 +35,8 @@ export function SidebarAccountBar() {
   const [showAccount, setShowAccount] = useState(false)
   const [showThemes, setShowThemes] = useState(false)
   const [showBlocked, setShowBlocked] = useState(false)
+  // Logging out cannot be undone without the password, so the item asks first.
+  const [confirmLogout, setConfirmLogout] = useState(false)
   const bar = useRef<HTMLDivElement>(null)
 
   // A menu that only closes on its own items is a trap — Escape and a click
@@ -136,10 +139,15 @@ export function SidebarAccountBar() {
                 theme === 'dark' ? 'bg-primary-fill' : 'bg-muted-foreground/40',
               )}
             >
+              {/* On, the knob sits on `--primary-fill`, so it takes that fill's own
+                  ink rather than `--card` — which in the dark palette is a dark
+                  tinted surface and disappeared into the track. */}
               <span
                 className={cn(
-                  'size-4 rounded-full bg-card transition-transform',
-                  theme === 'dark' && 'translate-x-4',
+                  'size-4 rounded-full transition-transform',
+                  theme === 'dark'
+                    ? 'translate-x-4 bg-primary-fill-foreground'
+                    : 'bg-card',
                 )}
               />
             </span>
@@ -191,7 +199,10 @@ export function SidebarAccountBar() {
             type="button"
             role="menuitem"
             disabled={isPending}
-            onClick={() => void logout(false)}
+            onClick={() => {
+              setMenuOpen(false)
+              setConfirmLogout(true)
+            }}
             className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-destructive hover:bg-destructive/10 disabled:opacity-60"
           >
             <LogOut className="size-4" aria-hidden />
@@ -203,6 +214,14 @@ export function SidebarAccountBar() {
       {showAccount && <AccountSheet onClose={() => setShowAccount(false)} />}
       {showThemes && <ThemePickerDialog onClose={() => setShowThemes(false)} />}
       {showBlocked && <BlockedPeopleDialog onClose={() => setShowBlocked(false)} />}
+      {confirmLogout && (
+        <ConfirmDialog
+          {...logoutCopy('Log out')}
+          isPending={isPending}
+          onConfirm={() => void logout(false)}
+          onCancel={() => setConfirmLogout(false)}
+        />
+      )}
     </div>
   )
 }

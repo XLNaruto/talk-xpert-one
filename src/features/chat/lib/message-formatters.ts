@@ -67,9 +67,7 @@ export function startsNewGroup(
   if (message.type === 'system' || previous.type === 'system') return true
   if (previous.senderTalkUserId !== message.senderTalkUserId) return true
   if (startsNewDay(message, previous)) return true
-  const gapMs =
-    new Date(message.createdAt).getTime() - new Date(previous.createdAt).getTime()
-  return gapMs > GROUP_GAP_MS
+  return stampOf(message).time - stampOf(previous).time > GROUP_GAP_MS
 }
 
 /** True when a day divider belongs above this message. */
@@ -78,9 +76,39 @@ export function startsNewDay(
   previous: ChatMessage | undefined,
 ): boolean {
   if (!previous) return true
-  return (
-    new Date(previous.createdAt).toDateString() !== new Date(message.createdAt).toDateString()
-  )
+  return stampOf(previous).day !== stampOf(message).day
+}
+
+/**
+ * One message's timestamp, parsed ONCE for as long as the row lives.
+ *
+ * The two tests above are asked for every row of the thread and for its
+ * neighbour, so a thread of nine hundred messages used to parse several thousand
+ * dates — and call `toDateString()`, which formats to a locale string only to
+ * throw it away — every time a single socket event touched the cache. That was
+ * the `'message' handler took 381ms` in the console: one arrival re-derived the
+ * whole log, and the main thread was not painting while it did.
+ *
+ * A `WeakMap` on the message OBJECT is the right cache for it: rows here are
+ * immutable, so a message that has been edited is a different object and gets a
+ * fresh entry, and a row that falls out of the cache takes its entry with it
+ * without anything having to clear up.
+ */
+const stamps = new WeakMap<ChatMessage, { day: number; time: number }>()
+
+function stampOf(message: ChatMessage): { day: number; time: number } {
+  const held = stamps.get(message)
+  if (held) return held
+  const at = new Date(message.createdAt)
+  const stamp = {
+    // A LOCAL calendar day as one comparable number — the divider has to break
+    // where the reader's day breaks, not where UTC's does, so this cannot be
+    // derived from the ISO string by slicing it.
+    day: at.getFullYear() * 10_000 + at.getMonth() * 100 + at.getDate(),
+    time: at.getTime(),
+  }
+  stamps.set(message, stamp)
+  return stamp
 }
 
 /**

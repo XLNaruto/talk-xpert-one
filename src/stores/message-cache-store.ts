@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { traceCount } from '@/features/chat/lib/thread-trace'
 import { keyOf, type Id } from '@/types/api'
 import type { ChatMessage } from '@/features/chat/types'
 
@@ -220,7 +221,14 @@ function patchChat(
   patch: (messages: ChatMessage[]) => ChatMessage[],
 ): Pick<MessageCacheState, 'byChat'> {
   const key = keyOf(chatId)
-  return { byChat: { ...state.byChat, [key]: patch(state.byChat[key] ?? []) } }
+  const held = state.byChat[key] ?? []
+  const next = patch(held)
+  // Every write here hands the thread a new array, and a new array is a full
+  // rebuild downstream — so a write that changed NOTHING is pure cost, and worth
+  // counting separately from one that did.
+  traceCount(next === held ? 'cache:write-noop' : 'cache:write')
+  if (next.length !== held.length) traceCount('cache:length-changed')
+  return { byChat: { ...state.byChat, [key]: next } }
 }
 
 /** Apply a change to whichever rows match, leaving the rest identical. */
@@ -271,10 +279,35 @@ export const useMessageCacheStore = create<MessageCacheState>()((set) => ({
   reconcile: (chatId, clientMessageId, saved) =>
     set((s) =>
       patchChat(s, chatId, (held) => {
-        // Drop the placeholder, then merge the real row in — merging first
-        // would leave both, since they carry different ids.
-        const without = held.filter((m) => m.clientMessageId !== clientMessageId)
-        return merge(without, [{ ...saved, status: 'sent', clientMessageId }])
+        // Drop the PLACEHOLDER, then merge the real row in — merging first would
+        // leave both, since they carry different ids.
+        //
+        // Only the placeholder, and that limit is load-bearing. `adopt` matches
+        // on the TEXT, because the id is never echoed back, so two identical
+        // sends in flight at once are indistinguishable to it: send "hi" twice
+        // and the echo of the SECOND can land on the FIRST bubble, leaving the
+        // two saved rows holding each other's client id. Filtering every row
+        // that carries this one then deleted a message that had already been
+        // saved, and the reconcile for the other client id deleted it back —
+        // each send removing a row and re-adding another, which is a message
+        // blinking out of the thread and Virtuoso remounting the rows around it.
+        // A row with a real id needs no removing anyway: `merge` upserts it by
+        // that id.
+        const without = held.filter(
+          (m) => !(m.id < 0 && m.clientMessageId === clientMessageId),
+        )
+        // A client id names exactly ONE row, and after the mix-up above two rows
+        // can claim it — which is one React key for two bubbles
+        // (`computeItemKey` reads the client id first), and React answers that by
+        // mounting and unmounting them in a loop. Whichever row is not the one
+        // being reconciled gives the id up; it is a saved row, so nothing else
+        // needs it.
+        const claimed = without.map((m) =>
+          m.clientMessageId === clientMessageId && m.id !== saved.id
+            ? { ...m, clientMessageId: undefined }
+            : m,
+        )
+        return merge(claimed, [{ ...saved, status: 'sent', clientMessageId }])
       }),
     ),
 

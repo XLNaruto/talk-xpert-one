@@ -410,11 +410,20 @@ export const THREAD_HISTORY_PAGE_COOLDOWN_MS = 400
  * How far outside the viewport Virtuoso keeps rows mounted, in pixels.
  *
  * Virtuoso mounts only what is visible, so a fast scroll outruns it and shows
- * bare background until the next render catches up. Rendering a screenful of
- * slack in each direction covers the gap; more than that costs mount time on
- * every page of history for rows nobody is going to see.
+ * bare background until the next render catches up. Rendering slack in each
+ * direction covers the gap; more than that costs mount time on every page of
+ * history for rows nobody is going to see.
+ *
+ * Two screenfuls rather than one, and the second one is bought for the MEDIA.
+ * An attachment whose size the API did not name can only be measured by
+ * decoding it, and the tile is what starts that decode — so the row has to be
+ * mounted for a while BEFORE it is looked at, or the frame arrives, the box
+ * changes shape to fit it, and the reader watches the thread twitch under a
+ * photo they were already reading. Mounting a screenful earlier gives the bytes
+ * that head start; `naturalSizes` in `message-media.tsx` then keeps the answer
+ * for every later visit.
  */
-export const THREAD_OVERSCAN_PX = 600
+export const THREAD_OVERSCAN_PX = 1200
 
 /**
  * How close to the end counts as landed, when CORRECTING the scroll.

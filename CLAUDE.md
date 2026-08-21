@@ -135,6 +135,14 @@ last member out leaves the group owner-less** — allowed, not an error, and
 nothing can rename or disband it afterwards. So never assume a group has an
 `owner` in its member list.
 
+Leaving KEEPS the row, frozen at the moment you left, and `POST
+/talk/chats/delete` is the second step that gets rid of it: it takes direct
+chats **and groups you have left** (`self.has_left`), refusing a group you are
+still in with a 400 naming the ids. A hidden group never comes back — nothing
+sent after you left is yours to be told about — where a hidden direct chat
+returns on the next message. `canHideChat()` in `features/chat/lib/chat-labels.ts`
+is the only place that decides which rows a delete may name.
+
 `talk.member.role_changed` covers all three cases in one event;
 `previous_member_role` tells them apart and `member_role: 'owner'` means
 succession (where `by_*` is the person who LEFT, not a promoter). The stream

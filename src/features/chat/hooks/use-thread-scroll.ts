@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { VirtuosoHandle } from 'react-virtuoso'
 import { isPageActive, subscribePageActive } from '@/hooks/use-page-active'
+import { logger } from '@/lib/logger'
 import { useChatStore } from '@/stores/chat-store'
 import type { Id } from '@/types/api'
 import {
@@ -10,6 +11,7 @@ import {
   THREAD_OPEN_SETTLE_TICK_MS,
   THREAD_READ_SETTLE_MS,
 } from '../constants'
+import { traceCount } from '../lib/thread-trace'
 import type { ThreadRow } from './use-message-thread'
 
 /** What Virtuoso hands back on `rangeChanged` — the rows currently rendered. */
@@ -126,8 +128,18 @@ export function useThreadScroll({
   /** False until the list has settled; gates read receipts. */
   const readyRef = useRef(false)
   const lastRangeRef = useRef<VisibleRange | null>(null)
-  /** Skips the own-send jump on the very first render of a chat. */
-  const mountedRef = useRef(false)
+  /**
+   * The newest row's key as the last pass saw it — empty until a page lands.
+   *
+   * This is what tells an ARRIVAL apart from the thread simply OPENING. Both
+   * change the newest row, and the open was being read as an arrival: the first
+   * page landing fired a jump to the bottom and three corrective scrolls of its
+   * own, on top of the ones the open settle was already making — six scrolls in
+   * the first two seconds, which is a thread that fights the reader rather than
+   * one that opens. Where a thread opens is `initialTopMostItemIndex`'s job, and
+   * the unread divider depends on nothing here overruling it.
+   */
+  const newestKeyRef = useRef('')
   /**
    * How long a freshly-opened, caught-up chat keeps re-asserting the bottom.
    *
@@ -160,7 +172,7 @@ export function useThreadScroll({
     jumpingRef.current = false
     readyRef.current = false
     lastRangeRef.current = null
-    mountedRef.current = false
+    newestKeyRef.current = ''
     openSettleUntilRef.current = Date.now() + THREAD_OPEN_SETTLE_MS
     firstItemIndexRef.current = THREAD_FIRST_ITEM_INDEX_BASE
     topRowIdRef.current = null
@@ -175,7 +187,11 @@ export function useThreadScroll({
   if (topRowId !== null && topRowId !== topRowIdRef.current) {
     if (topRowIdRef.current !== null) {
       const prepended = rows.findIndex((row) => row.message.id === topRowIdRef.current)
+      // A NEGATIVE find means the row that was top has gone from the array —
+      // Virtuoso's index base is then out of step with the data, which is the
+      // one thing that would make it draw rows at the wrong offsets.
       if (prepended > 0) firstItemIndexRef.current -= prepended
+      else if (prepended < 0) traceCount('rows:top-row-vanished')
     }
     topRowIdRef.current = topRowId
   }
@@ -192,18 +208,31 @@ export function useThreadScroll({
     // reader is dropped at the bottom on top of sixty-three messages they have
     // not seen. So when the row says there is unread and the frontier disagrees,
     // the ROW is believed: count that many incoming messages back from the end.
-    let anchorIndex = rows.findIndex((row) => isUnread(row, lastReadMessageId))
+    //
+    // The divider is the one place a SYSTEM row does not count. It counts
+    // everywhere else — the server puts it in `unread_count` and a receipt has
+    // to name it — but "Unread messages" over "Goku created the group and added
+    // you" is a banner over the only line a brand-new group contains, and it
+    // stays up after the receipt has gone because the anchor is deliberately
+    // frozen for the visit. A divider marks where reading stopped, and nobody
+    // stopped reading above the line that made the conversation exist.
+    let anchorIndex = rows.findIndex((row) => isDividerAnchor(row, lastReadMessageId))
     if (unreadCount > 0 && anchorIndex < 0) {
       let counted = 0
       for (let i = rows.length - 1; i >= 0; i -= 1) {
-        // Only somebody else's saved messages can be unread — the same rule the
-        // frontier test uses, so the two agree on WHAT is being counted.
+        // Counting back uses the SERVER's rule — system lines included — or the
+        // walk lands too far up the thread by however many of them there are.
         if (rows[i].isMine || rows[i].message.id < 0) continue
-        if (rows[i].message.type === 'system') continue
         anchorIndex = i
         counted += 1
         if (counted === unreadCount) break
       }
+      // Then down again to the first row a divider may sit above. All system
+      // lines and the block has no anchor at all, which is the new-group case.
+      while (anchorIndex >= 0 && anchorIndex < rows.length && !isDividerAnchor(rows[anchorIndex], null)) {
+        anchorIndex += 1
+      }
+      if (anchorIndex >= rows.length) anchorIndex = -1
       // The frontier is pulled back with it, or the badge would read zero while
       // the divider says otherwise — and `sentUpto` with it, or the receipts for
       // this run would be refused as already sent and the count would never
@@ -239,10 +268,13 @@ export function useThreadScroll({
    * the caught-up case aligns to the END, or the last message would sit at the
    * top of the viewport with the rest of the pane empty beneath it.
    */
-  const initialTopMostItemIndex =
-    firstUnreadIndex >= 0
-      ? firstUnreadIndex
-      : { index: Math.max(rows.length - 1, 0), align: 'end' as const }
+  const initialTopMostItemIndex = useMemo(
+    () =>
+      firstUnreadIndex >= 0
+        ? firstUnreadIndex
+        : { index: Math.max(rows.length - 1, 0), align: 'end' as const },
+    [firstUnreadIndex, rows.length],
+  )
 
   /**
    * Land on the TRUE bottom, not merely on the last row.
@@ -265,8 +297,14 @@ export function useThreadScroll({
    * browser clamp. Independent of item heights, footers and estimates.
    */
   const scrollToEnd = useCallback(
-    (behavior: 'smooth' | 'auto') =>
-      virtuosoRef.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior }),
+    (behavior: 'smooth' | 'auto', why = 'unknown') => {
+      // Dev-only, and it earns its keep: every flicker in this hook is two of
+      // these fighting, and the console is the only place that can say WHICH
+      // two. Silent in a production build — see `lib/logger.ts`.
+      traceCount(`scroll:${why}`)
+      logger.debug('thread scroll → end', { why, behavior })
+      virtuosoRef.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior })
+    },
     [],
   )
 
@@ -289,20 +327,23 @@ export function useThreadScroll({
   }, [])
 
   /** A correction that costs nothing when there is nothing to correct. */
-  const scrollToEndIfNeeded = useCallback(() => {
-    if (isAtEnd()) return
-    scrollToEnd('auto')
-  }, [isAtEnd, scrollToEnd])
+  const scrollToEndIfNeeded = useCallback(
+    (why = 'correction') => {
+      if (isAtEnd()) return
+      scrollToEnd('auto', why)
+    },
+    [isAtEnd, scrollToEnd],
+  )
 
   const jumpToBottom = useCallback(
-    (behavior: 'smooth' | 'auto' = 'auto') => {
+    (behavior: 'smooth' | 'auto' = 'auto', why = 'jump') => {
       parkedRef.current = false
       for (const timer of settleTimersRef.current) clearTimeout(timer)
 
       virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior })
-      scrollToEnd(behavior)
+      scrollToEnd(behavior, why)
       settleTimersRef.current = [120, 320, 600].map((delay) =>
-        setTimeout(scrollToEndIfNeeded, delay),
+        setTimeout(() => scrollToEndIfNeeded(`${why}:settle`), delay),
       )
     },
     [scrollToEnd, scrollToEndIfNeeded],
@@ -324,7 +365,7 @@ export function useThreadScroll({
    * sending is motion instead of your own message. Both are deliberate acts with
    * a known destination, so they cut straight to it.
    */
-  const scrollToBottom = useCallback(() => jumpToBottom('auto'), [jumpToBottom])
+  const scrollToBottom = useCallback(() => jumpToBottom('auto', 'button'), [jumpToBottom])
 
   /**
    * A jump to a specific message is starting — stop everything that pulls the
@@ -413,9 +454,15 @@ export function useThreadScroll({
    * is what makes the bar push the thread rather than scroll it.
    */
   const onScrollerResize = useCallback(() => {
+    // Counted before the guards: this fires whenever the scroller's own box
+    // changes, and a box that changes size on a ticker would move the rendered
+    // range exactly as much as a row that changes height. The two are the only
+    // candidates left for a range that will not settle, and this tells them
+    // apart — a high count here means the VIEWPORT is oscillating, not the rows.
+    traceCount('resize:scroller')
     if (parkedRef.current) return
     if (!atBottomRef.current) return
-    scrollToEnd('auto')
+    scrollToEnd('auto', 'scroller-resize')
   }, [scrollToEnd])
 
   const onScrollerRef = useCallback(
@@ -564,34 +611,77 @@ export function useThreadScroll({
     [rows, readUpTo, countUnreadBelow, showUnreadBelow],
   )
 
-  const onRangeChanged = useCallback(
-    (range: VisibleRange) => {
-      // Virtuoso reports the OFFSET index — `rows` position plus
-      // `firstItemIndex` — so it has to come back down to an array index before
-      // anything here indexes `rows` with it.
-      const offset = firstItemIndexRef.current
-      // ...and it reports the RENDERED range, which runs a screenful past the
-      // viewport in both directions (`increaseViewportBy`). Rendered is not
-      // seen: taking it at face value sent receipts for messages 600px below
-      // the fold and left the badge with nothing to count. The last row that is
-      // genuinely on screen is measured instead, and the range is clipped to it.
-      const seenEnd = newestVisibleIndex()
-      const rangeEnd = range.endIndex - offset
-      applyVisibleRange({
-        startIndex: range.startIndex - offset,
-        endIndex: seenEnd === null ? rangeEnd : Math.min(rangeEnd, seenEnd),
-      })
-    },
-    [applyVisibleRange, newestVisibleIndex],
-  )
-
-  // Keep a live handle on the latest version so the settle timer below can run
-  // the range it captured before receipts were allowed.
+  // Keep a live handle on the latest version, so the settle timer and the
+  // measuring frame below both run against the current rows rather than the ones
+  // that were loaded when they were scheduled.
   const applyVisibleRangeRef = useRef(applyVisibleRange)
   applyVisibleRangeRef.current = applyVisibleRange
 
+  /**
+   * The newest range Virtuoso has reported but that has not been measured yet,
+   * and the frame that will measure it.
+   *
+   * `rangeChanged` is called from inside Virtuoso's own scroll handler, and the
+   * measurement below reads layout — the scroller's box and a rect per mounted
+   * row — which forces the browser to lay the list out before it can answer.
+   * Doing that in the scroll handler is what put `'scroll' handler took 231ms`
+   * in the console: the frame is already gone by the time the handler returns,
+   * so the list paints late and the reader sees the gap as a flicker.
+   *
+   * Nothing here has to be answered THIS tick — a read receipt and a badge
+   * count are both fine one frame later — so the range is parked and measured
+   * in a rAF, which runs after layout instead of forcing it. Several ranges
+   * arriving in one frame collapse into the last, which is the only one whose
+   * answer would have survived anyway.
+   */
+  const pendingRangeRef = useRef<VisibleRange | null>(null)
+  const rangeFrameRef = useRef<number | null>(null)
+
+  const measurePendingRange = useCallback(() => {
+    rangeFrameRef.current = null
+    const range = pendingRangeRef.current
+    pendingRangeRef.current = null
+    if (!range) return
+
+    // Virtuoso reports the OFFSET index — `rows` position plus `firstItemIndex`
+    // — so it has to come back down to an array index before anything here
+    // indexes `rows` with it.
+    const offset = firstItemIndexRef.current
+    // ...and it reports the RENDERED range, which runs a screenful past the
+    // viewport in both directions (`increaseViewportBy`). Rendered is not seen:
+    // taking it at face value sent receipts for messages 600px below the fold
+    // and left the badge with nothing to count. The last row that is genuinely
+    // on screen is measured instead, and the range is clipped to it.
+    const seenEnd = newestVisibleIndex()
+    const rangeEnd = range.endIndex - offset
+    applyVisibleRangeRef.current({
+      startIndex: range.startIndex - offset,
+      endIndex: seenEnd === null ? rangeEnd : Math.min(rangeEnd, seenEnd),
+    })
+  }, [newestVisibleIndex])
+
+  const onRangeChanged = useCallback(
+    (range: VisibleRange) => {
+      traceCount('rangeChanged')
+      pendingRangeRef.current = range
+      if (rangeFrameRef.current !== null) return
+      rangeFrameRef.current = requestAnimationFrame(measurePendingRange)
+    },
+    [measurePendingRange],
+  )
+
+  // A frame that fires after the thread has gone would measure a scroller that
+  // is no longer on screen.
+  useEffect(
+    () => () => {
+      if (rangeFrameRef.current !== null) cancelAnimationFrame(rangeFrameRef.current)
+    },
+    [],
+  )
+
   const onAtBottomChange = useCallback(
     (atBottom: boolean) => {
+      traceCount(`atBottom:${atBottom}`)
       setAtBottom(atBottom)
       atBottomRef.current = atBottom
       // The socket handler needs this to decide whether an arriving message
@@ -625,14 +715,30 @@ export function useThreadScroll({
     // Belt and braces: a jump in flight never follows, whatever else has
     // happened to the park in the meantime.
     if (jumpingRef.current) return false
+    // The argument is NOT "the reader is at the bottom". Virtuoso asks with
+    // `isAtBottom || scrollingInProgress`, and it asks on every change of
+    // `totalCount` — which a history page PREPENDED above the reader changes
+    // exactly as much as an arrival below them. So the one moment this is asked
+    // during a scroll up is the moment a page lands mid-gesture, and the answer
+    // handed in is `true` because the gesture is still running. Following it
+    // scrolls to the last row: the reader is hauled back to the newest message,
+    // scrolls up again, pulls the next page, and is hauled back again — the
+    // up-down-up-down flicker, one bounce per page the flick pulls in.
+    //
+    // `atBottomStateChange` is the same library's answer to the question that
+    // was actually asked, and it does not move with the gesture, so the two have
+    // to agree before the view is allowed to jump to the end.
+    if (!atBottomRef.current) return false
+    if (atBottom) logger.debug('thread scroll → end', { why: 'follow-output' })
     // `true` is Virtuoso's instant follow. Deliberately NOT 'smooth': an arrival
     // while you sit at the bottom is a one-row nudge, and animating it competes
     // with the instant jump the send below has already started.
-    // Virtuoso's own answer, and ONLY that. Measuring the scroller here as a
-    // second opinion made every misread — and there is no shortage of moments
-    // when `scrollHeight` is mid-correction — say "you are at the bottom", which
-    // turns every list change into a scroll to the end: pinning a message, or
-    // landing a jump three screens up.
+    //
+    // And the scroller is deliberately NOT measured here as a third opinion:
+    // every misread — and there is no shortage of moments when `scrollHeight` is
+    // mid-correction — said "you are at the bottom", which turned every list
+    // change into a scroll to the end: pinning a message, or landing a jump
+    // three screens up.
     return atBottom
   }, [])
 
@@ -687,13 +793,13 @@ export function useThreadScroll({
   const newestIsMine = Boolean(newest?.isMine)
   const newestId = newest?.message.id ?? -1
   useEffect(() => {
-    if (!mountedRef.current) {
-      mountedRef.current = true
-      return
-    }
+    const previousKey = newestKeyRef.current
+    newestKeyRef.current = newestKey
+    // Nothing to follow yet — this is the opening page, not a new message.
+    if (previousKey === '') return
     if (newestIsMine) {
       showUnreadBelow(0)
-      jumpToBottom('auto')
+      jumpToBottom('auto', 'own-send')
       return
     }
 
@@ -709,7 +815,7 @@ export function useThreadScroll({
     if (parkedRef.current) return
     if (!atBottomRef.current) return
     showUnreadBelow(0)
-    jumpToBottom('auto')
+    jumpToBottom('auto', 'arrival')
     // Watched go past IS read, so the frontier moves with the view rather than
     // waiting for the next `rangeChanged` to notice. Without it the reader could
     // scroll up afterwards and be told those same messages were unread — which
@@ -742,7 +848,7 @@ export function useThreadScroll({
     // lands, and an unconditional scroll there would yank a reader who had
     // already moved. A null scroller reads as "not at the end", so the genuine
     // opening scroll still happens.
-    scrollToEndIfNeeded()
+    scrollToEndIfNeeded('open-settle')
     const ticker = setInterval(() => {
       if (Date.now() > openSettleUntilRef.current) {
         clearInterval(ticker)
@@ -753,7 +859,7 @@ export function useThreadScroll({
       // there is nothing to correct. Each needless scroll re-enters Virtuoso's
       // handler, and twenty-five of them over two and a half seconds is what a
       // freshly-opened thread was doing to itself.
-      scrollToEndIfNeeded()
+      scrollToEndIfNeeded('open-settle:tick')
     }, THREAD_OPEN_SETTLE_TICK_MS)
     return () => clearInterval(ticker)
   }, [chatId, rows.length, unreadAnchorId, scrollToEndIfNeeded])
@@ -766,34 +872,76 @@ export function useThreadScroll({
     showUnreadBelow(countUnreadBelow(lastRangeRef.current))
   }, [rows, isAtBottom, countUnreadBelow, showUnreadBelow])
 
-  return {
-    virtuosoRef,
-    onScrollerRef,
-    /** Index of the divider row, or -1 when the chat opened fully read. */
-    firstUnreadIndex,
-    /** The message the divider sits above — frozen for this visit. */
-    unreadAnchorId,
-    initialTopMostItemIndex,
-    /** Virtuoso's index for `rows[0]` — see `THREAD_FIRST_ITEM_INDEX_BASE`. */
-    firstItemIndex: firstItemIndexRef.current,
-    isAtBottom,
-    unreadBelow,
-    scrollToBottom,
-    beginJump,
-    endJump,
-    followOutput,
-    onAtBottomChange,
-    onRangeChanged,
-  }
+  /**
+   * Held stable, because this object is a PROP of the list.
+   *
+   * A fresh object here re-rendered `MessageList` on every render of the pane,
+   * and Virtuoso republishes every one of its props into its own state on every
+   * render it does — data, totalCount, firstItemIndex, followOutput, the lot —
+   * which recomputes the list state and re-arms the machinery that decides
+   * whether to pin the view to the end. Opening a thread renders the pane
+   * twenty-eight times in two seconds (the page lands, the chat row updates,
+   * presence arrives, the socket connects), and each one was paying for that.
+   * With this memoised and the list memo'd, only the renders that changed
+   * something the list draws reach it.
+   */
+  const firstItemIndex = firstItemIndexRef.current
+  return useMemo(
+    () => ({
+      virtuosoRef,
+      onScrollerRef,
+      /** Index of the divider row, or -1 when the chat opened fully read. */
+      firstUnreadIndex,
+      /** The message the divider sits above — frozen for this visit. */
+      unreadAnchorId,
+      initialTopMostItemIndex,
+      /** Virtuoso's index for `rows[0]` — see `THREAD_FIRST_ITEM_INDEX_BASE`. */
+      firstItemIndex,
+      isAtBottom,
+      unreadBelow,
+      scrollToBottom,
+      beginJump,
+      endJump,
+      followOutput,
+      onAtBottomChange,
+      onRangeChanged,
+    }),
+    [
+      onScrollerRef,
+      firstUnreadIndex,
+      unreadAnchorId,
+      initialTopMostItemIndex,
+      firstItemIndex,
+      isAtBottom,
+      unreadBelow,
+      scrollToBottom,
+      beginJump,
+      endJump,
+      followOutput,
+      onAtBottomChange,
+      onRangeChanged,
+    ],
+  )
 }
 
-/** Somebody else's message, newer than the frontier. My own never count. */
+/**
+ * Where the "Unread messages" rule may be drawn: an unread row that a PERSON
+ * wrote. See the note at the call site for why a system line is not one.
+ */
+function isDividerAnchor(row: ThreadRow | undefined, frontier: Id | null): boolean {
+  return isUnread(row, frontier) && row?.message.type !== 'system'
+}
+
+/** Anything not mine, newer than the frontier. My own never count. */
 function isUnread(row: ThreadRow | undefined, frontier: Id | null): boolean {
   if (!row || row.isMine) return false
   // A negative id is an optimistic bubble of my own that has not been saved yet.
   if (row.message.id < 0) return false
-  // A system line belongs to the conversation, not to a person, so it is never
-  // somebody's unread message — including one whose event code we don't know.
-  if (row.message.type === 'system') return false
+  // A SYSTEM line counts. It belongs to the conversation rather than to a
+  // person, which is why it is tempting to exclude — but the server counts it in
+  // `unread_count`, and a brand-new group contains NOTHING ELSE: "Goku created
+  // the group and added you" is the whole thread. Excluding it left no row a
+  // receipt could name, so the badge sat on 1 with the chat open in front of the
+  // reader and only a manual "mark as read" could shift it.
   return frontier === null || row.message.id > frontier
 }

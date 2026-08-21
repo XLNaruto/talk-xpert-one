@@ -7,6 +7,7 @@ import { useMessageCacheStore } from '@/stores/message-cache-store'
 import type { Id } from '@/types/api'
 import type { Chat, CreateGroupInput, UpdateChatInput } from '../types'
 import * as chatApi from './chat-api'
+import { canHideChat } from '../lib/chat-labels'
 import { joinAll } from './use-chats'
 
 /**
@@ -178,21 +179,25 @@ export function useChatActions() {
   const deleteForMe = useCallback(
     async (chatIds: Id[]): Promise<boolean> => {
       const chats = useChatListStore.getState().chats
-      const directIds = chatIds.filter(
-        (id) => chats.find((c) => c.id === id)?.type === 'direct',
-      )
-      if (directIds.length === 0) {
-        toastProblem('Groups work differently — leave the group instead of removing it.')
+      // Direct chats, and groups I have already left — the server's own rule.
+      // A group I am still in is a 400 naming the ids, so it is dropped here
+      // rather than taking the whole call down with it.
+      const removableIds = chatIds.filter((id) => {
+        const chat = chats.find((c) => c.id === id)
+        return chat !== undefined && canHideChat(chat)
+      })
+      if (removableIds.length === 0) {
+        toastProblem('Leave the group first — then you can remove it from your list.')
         return false
       }
       setPending(true)
       try {
-        await chatApi.deleteChatsForMe(directIds)
-        forget(directIds)
+        await chatApi.deleteChatsForMe(removableIds)
+        forget(removableIds)
         toastSuccess(
-          directIds.length === 1
+          removableIds.length === 1
             ? 'Conversation removed'
-            : `${directIds.length} conversations removed`,
+            : `${removableIds.length} conversations removed`,
         )
         return true
       } catch (error) {

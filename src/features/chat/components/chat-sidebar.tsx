@@ -3,10 +3,14 @@ import { CheckCheck, Search, Trash2, UserRoundPlus, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { BrandLogo } from '@/components/common/brand-logo'
+import { ConfirmDialog } from '@/components/common/confirm-dialog'
 import { Tip } from '@/components/common/tip'
 import { useAuthStore } from '@/stores/auth-store'
 import { cn } from '@/lib/utils'
 import { useChatList, type ChatFilter } from '../hooks/use-chat-list'
+import { chatCursorKey, contactCursorKey } from '../hooks/use-search-cursor'
+import { chatLabel, leaveGroupCopy, removeChatCopy } from '../lib/chat-labels'
+import { canEditGroup } from '../lib/member-roles'
 import { formatBadge, tabUnreadCount } from '../lib/unread-badges'
 import type { Chat } from '../types'
 import { ChatListItem } from './chat-list-item'
@@ -43,10 +47,9 @@ export function ChatSidebar() {
     activeChatId,
     selectChat,
     setChatPinned,
-    deleteChat,
     markChatRead,
     selectedIds,
-    selectedDirectIds,
+    selectedRemovableIds,
     toggleSelected,
     clearSelection,
     deleteSelected,
@@ -56,6 +59,9 @@ export function ChatSidebar() {
     isDirectoryLoading,
     openContact,
     isOpeningContact,
+    cursorKey,
+    onSearchKeyDown,
+    rowConfirm,
   } = useChatList()
 
   const selfTalkUserId = useAuthStore((s) => s.identity?.talkUserId ?? null)
@@ -78,11 +84,14 @@ export function ChatSidebar() {
       isActive={chat.id === activeChatId}
       selfTalkUserId={selfTalkUserId}
       isSelected={hasSelection ? selectedIds.includes(chat.id) : null}
+      isCursor={cursorKey === chatCursorKey(chat.id)}
       onSelect={selectChat}
       onToggleSelected={toggleSelected}
       onPin={setChatPinned}
       onMarkRead={markChatRead}
-      onDelete={deleteChat}
+      onDelete={() => rowConfirm.ask('remove', chat)}
+      onLeaveGroup={(target) => rowConfirm.ask('leave', target)}
+      onDisbandGroup={(target) => rowConfirm.ask('disband', target)}
     />
   )
 
@@ -145,7 +154,13 @@ export function ChatSidebar() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Escape') closeSearch()
+                if (e.key === 'Escape') {
+                  closeSearch()
+                  return
+                }
+                // Up/down walk the results below and Enter opens one — the field
+                // keeps focus throughout, so the term stays editable.
+                onSearchKeyDown(e)
               }}
               placeholder="Search people and groups"
               className="px-8"
@@ -211,7 +226,11 @@ export function ChatSidebar() {
                   <span
                     aria-label={`${unread} unread conversations`}
                     className={cn(
-                      'shrink-0 rounded-full px-1 text-[10px] leading-4 font-semibold tabular-nums',
+                      // A CIRCLE at one digit, a stadium at two or more: the
+                      // height and the floor are both 1rem, so a lone "1" sits
+                      // in a round badge instead of the squat oval that padding
+                      // alone gave it, and "12" grows sideways from there.
+                      'inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold tabular-nums',
                       isPicked
                         ? 'bg-primary-fill-foreground/20 text-primary-fill-foreground'
                         : 'bg-primary/15 text-primary',
@@ -239,22 +258,22 @@ export function ChatSidebar() {
           <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary-fill text-[10px] font-semibold text-primary-fill-foreground tabular-nums">
             {selectedIds.length > 99 ? '99+' : selectedIds.length}
           </span>
-          {/* Groups can't be hidden this way — you leave them — so when the
-              selection holds nothing removable the line says WHY the action is
-              dimmed. A disabled button takes no pointer events, so a tooltip
-              would never be read here. */}
+          {/* A group you are still IN can't be hidden — you leave it first — so
+              when the selection holds nothing removable the line says WHY the
+              action is dimmed. A disabled button takes no pointer events, so a
+              tooltip would never be read here. */}
           <span className="min-w-0 flex-1 truncate text-xs font-medium">
-            {selectedDirectIds.length === 0
-              ? 'Groups are left, not removed'
+            {selectedRemovableIds.length === 0
+              ? 'Leave a group before removing it'
               : `selected of ${chats.length}`}
           </span>
           <Button
             variant="ghost"
             size="sm"
             onClick={() => void deleteSelected()}
-            disabled={selectedDirectIds.length === 0}
+            disabled={selectedRemovableIds.length === 0}
             className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-            aria-label={`Remove ${selectedDirectIds.length} selected conversations`}
+            aria-label={`Remove ${selectedRemovableIds.length} selected conversations`}
           >
             <Trash2 />
             Remove
@@ -335,6 +354,7 @@ export function ChatSidebar() {
                     <ContactRow
                       key={contact.talkUserId}
                       contact={contact}
+                      isCursor={cursorKey === contactCursorKey(contact.talkUserId)}
                       isPending={isOpeningContact}
                       onOpen={openContact}
                     />
@@ -347,6 +367,34 @@ export function ChatSidebar() {
       </div>
 
       <SidebarAccountBar />
+
+      {/* Leaving and deleting a group, asked from the row's own menu. The copy
+          is the header's, so the same act reads the same wherever it started —
+          and the owner's leave still names the heir it hands the group to. */}
+      {rowConfirm.confirmChat !== null && (
+        <ConfirmDialog
+          {...(rowConfirm.confirmKind === 'disband'
+            ? {
+                title: 'Delete this group for everyone?',
+                message: `${chatLabel(rowConfirm.confirmChat).title} and its messages go away for every member. This cannot be undone.`,
+                confirmLabel: 'Delete for everyone',
+              }
+            : rowConfirm.confirmKind === 'leave'
+              ? leaveGroupCopy(
+                  chatLabel(rowConfirm.confirmChat).title,
+                  canEditGroup(rowConfirm.confirmChat.self.memberRole),
+                  rowConfirm.successorName,
+                )
+              : removeChatCopy(
+                  chatLabel(rowConfirm.confirmChat).title,
+                  rowConfirm.confirmChat.type === 'group',
+                ))}
+          tone="destructive"
+          isPending={rowConfirm.isPending}
+          onConfirm={() => void rowConfirm.run()}
+          onCancel={rowConfirm.cancel}
+        />
+      )}
 
       {isCreatingGroup && <CreateGroupDialog onClose={() => setCreatingGroup(false)} />}
     </aside>

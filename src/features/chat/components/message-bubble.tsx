@@ -212,11 +212,15 @@ function MessageBubbleBase({
       className={cn(
         'group flex gap-2 px-3 transition-colors',
         isMine ? 'justify-end' : 'justify-start',
-        // A run is one block: its rows sit nearly flush, and the air goes
-        // between blocks. Both halves are needed — spacing above the first row
-        // alone left the last row of a run touching the next speaker's name.
-        startsGroup ? 'mt-3' : 'mt-px',
-        endsGroup && 'mb-1',
+        // A run is one block: its rows sit CLOSE, and the air goes between
+        // blocks. Both halves are needed — spacing above the first row alone
+        // left the last row of a run touching the next speaker's name. A single
+        // pixel between rows was too little: a stack of one-word messages read
+        // as one striped slab, with no seam to tell where a message ended, so
+        // the within-run gap is now a visible hairline of background while
+        // staying well under the gap between runs.
+        startsGroup ? 'mt-4' : 'mt-1',
+        endsGroup && 'mb-1.5',
         isSelected && 'bg-primary/10',
         // The whole row is the hit target while a selection is running.
         selecting && 'cursor-pointer',
@@ -247,11 +251,13 @@ function MessageBubbleBase({
           // out under the sidebar. Zeroing the floor lets the cap hold, and
           // `wrap-anywhere` on the text below is what makes min-content small
           // enough to honour it.
-          // Two caps, whichever bites first: 65% of the thread keeps the
+          // Two caps, whichever bites first, and they are deliberately on TWO
+          // elements rather than one `min()`: 65% of the thread here keeps the
           // asymmetry that tells incoming from outgoing at a glance, and the
-          // 34rem ceiling holds the line length readable on a wide window —
-          // past roughly 90 characters the eye loses the line it came from.
-          'flex min-w-0 max-w-[min(65%,34rem)] flex-col',
+          // bubble's own 34rem ceiling (below) holds the line length readable on
+          // a wide window — past roughly 90 characters the eye loses the line it
+          // came from.
+          'flex min-w-0 max-w-[65%] flex-col',
           isMine ? 'items-end' : 'items-start',
         )}
       >
@@ -274,7 +280,14 @@ function MessageBubbleBase({
         <ContextMenuTrigger asChild disabled={!actionable}>
         <div
           className={cn(
-            'relative max-w-full min-w-0 overflow-hidden rounded-lg text-sm',
+            // The readable ceiling — see the column above. On a narrow window
+            // the column's 65% bites first and this never applies.
+            'relative max-w-[34rem] min-w-0 overflow-hidden rounded-lg text-sm',
+            // A quote is a two-line block with a picture beside it, and it is
+            // capped at whatever the message below it needs (see the quote's own
+            // note). Under a one-word reply that would leave a sliver, so a
+            // bubble carrying one gets a floor to lay the quote out in.
+            replyTo && 'min-w-[11rem]',
             mediaOnly ? 'p-1' : framedMedia ? 'p-1.5' : 'px-3 py-2',
             // The bubble steps aside entirely, so the emoji sits on the thread's
             // own background the way it would in any other messenger.
@@ -344,8 +357,16 @@ function MessageBubbleBase({
                 isMine ? 'border-white/50 bg-black/15' : 'border-primary bg-accent',
               )}
             >
-              <span className="min-w-0 flex-1">
-                <span className="block font-medium opacity-80">
+              {/* `w-0`, not merely `min-w-0`. The quote line below is
+                  `truncate`, which is `white-space: nowrap` — so its MAX-content
+                  width is the whole quoted message, and the bubble, which sizes
+                  to its widest child, was stretched to the full length of the
+                  message being replied to instead of ellipsing it. A zero base
+                  width contributes nothing to that measurement: the bubble sizes
+                  to the reply's OWN text and the quote takes the width it lands
+                  on. */}
+              <span className="w-0 min-w-0 flex-1">
+                <span className="block truncate font-medium opacity-80">
                   {replyTo.senderTalkUserId === selfTalkUserId
                     ? 'You'
                     : replyTo.senderTalkUserId !== null

@@ -326,3 +326,35 @@ export function leaveGroupCopy(
     tone: 'destructive',
   }
 }
+
+/**
+ * Can this row be taken off MY list — `POST /talk/chats/delete`?
+ *
+ * A direct chat always; a group only once I have LEFT it. Leaving keeps the row,
+ * frozen at the moment I left, and hiding it is the second step that gets rid of
+ * it for good (nothing sent after I left is mine to be told about, so it cannot
+ * come back). A group I am STILL IN is refused by the server with a 400 naming
+ * the ids, so the control is not drawn for one.
+ */
+export function canHideChat(chat: Chat): boolean {
+  return chat.type === 'direct' || chat.self.hasLeft
+}
+
+/**
+ * What HIDING a row takes with it, which is different for the two kinds.
+ *
+ * A direct chat comes back the moment the other person writes again — nothing
+ * shared is deleted, only my view of it. A group I have LEFT does not: messages
+ * sent after I left are not mine to be told about, so there is nothing that
+ * could bring the row back, and the copy has to say so before the choice is made.
+ */
+export function removeChatCopy(name: string, isLeftGroup: boolean): ConfirmCopy {
+  return {
+    title: isLeftGroup ? 'Remove this group from your list?' : 'Remove this conversation?',
+    message: isLeftGroup
+      ? `${name} leaves your list and its history goes with it. You have already left the group, so nothing will bring the row back — an admin adding you again starts a fresh one.`
+      : `${name} leaves your list and its messages are hidden from you. The conversation comes back if they message you again.`,
+    confirmLabel: 'Remove',
+    tone: 'destructive',
+  }
+}

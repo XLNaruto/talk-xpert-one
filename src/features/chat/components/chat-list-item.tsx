@@ -1,4 +1,5 @@
-import { Check, CheckCheck, Pin, PinOff, SquareCheck, Trash2, Users } from 'lucide-react'
+import { useEffect, useRef } from 'react'
+import { Check, CheckCheck, LogOut, Pin, PinOff, SquareCheck, Trash2, Users } from 'lucide-react'
 import { Avatar } from '@/components/ui/avatar'
 import {
   ContextMenu,
@@ -12,7 +13,8 @@ import { useMediaUrl } from '@/hooks/use-app-config'
 import { useChatStore } from '@/stores/chat-store'
 import { cn } from '@/lib/utils'
 import { keyOf, type Id } from '@/types/api'
-import { chatLabel, previewLine } from '../lib/chat-labels'
+import { canHideChat, chatLabel, previewLine } from '../lib/chat-labels'
+import { canEditGroup } from '../lib/member-roles'
 import { resolveTalkUser } from '../lib/talk-directory'
 import { formatChatTime, formatTypingLine } from '../lib/message-formatters'
 import { useTypingNames } from '../hooks/use-typing'
@@ -40,11 +42,16 @@ interface ChatListItemProps {
   selfTalkUserId: Id | null
   /** Non-null while a bulk selection is in progress. */
   isSelected: boolean | null
+  /** Highlighted by the sidebar search field's arrow keys. */
+  isCursor?: boolean
   onSelect: (chatId: Id) => void
   onToggleSelected: (chatId: Id) => void
   onPin: (chatId: Id, pinned: boolean) => void
   onMarkRead: (chatId: Id) => void
   onDelete: (chatId: Id) => void
+  /** Group only — both ask before they run, in the sidebar's own dialog. */
+  onLeaveGroup: (chat: Chat) => void
+  onDisbandGroup: (chat: Chat) => void
 }
 
 export function ChatListItem({
@@ -52,14 +59,24 @@ export function ChatListItem({
   isActive,
   selfTalkUserId,
   isSelected,
+  isCursor = false,
   onSelect,
   onToggleSelected,
   onPin,
   onMarkRead,
   onDelete,
+  onLeaveGroup,
+  onDisbandGroup,
 }: ChatListItemProps) {
   const mediaUrl = useMediaUrl()
+  const ref = useRef<HTMLButtonElement>(null)
   const label = chatLabel(chat)
+
+  // Focus stays in the search field while the arrows run, so the row has to
+  // bring ITSELF into view once the cursor walks past the fold.
+  useEffect(() => {
+    if (isCursor) ref.current?.scrollIntoView({ block: 'nearest' })
+  }, [isCursor])
   const typingNames = useTypingNames(chat.id)
   const presence = useChatStore((s) =>
     chat.counterpartTalkUserId === null
@@ -68,6 +85,9 @@ export function ChatListItem({
   )
 
   const selecting = isSelected !== null
+  // Is there anything at the foot of the menu at all — see the note there.
+  const endingActions =
+    canHideChat(chat) || !chat.self.hasLeft || canEditGroup(chat.self.memberRole)
   // Someone typing is more useful than the last message, so it wins the line.
   const secondLine =
     typingNames.length > 0
@@ -109,6 +129,7 @@ export function ChatListItem({
     <ContextMenu>
       <ContextMenuTrigger asChild disabled={selecting}>
     <button
+      ref={ref}
       type="button"
       onClick={() => (selecting ? onToggleSelected(chat.id) : onSelect(chat.id))}
       aria-current={isActive}
@@ -135,6 +156,9 @@ export function ChatListItem({
         // it — the row only tints. A ring around every picked row fights the
         // active row's own highlight and turns the list into a stack of boxes.
         isSelected && 'bg-primary/10',
+        // The keyboard's highlight — a ring, so it reads on top of the active
+        // row's own paint instead of being swallowed by it.
+        isCursor && 'bg-sidebar-accent ring-2 ring-primary ring-inset',
       )}
     >
       <span className="relative shrink-0">
@@ -266,17 +290,34 @@ export function ChatListItem({
           <SquareCheck />
           Select
         </ContextMenuItem>
-        {/* Deleting is hiding, and only a DIRECT chat can be hidden — the API
-            refuses a group with a 400, so a group is offered "Leave" in its
-            details sheet instead of an action that cannot work here. */}
-        {chat.type === 'direct' && (
-          <>
-            <ContextMenuSeparator />
-            <ContextMenuItem variant="destructive" onSelect={() => onDelete(chat.id)}>
-              <Trash2 />
-              Delete
-            </ContextMenuItem>
-          </>
+        {/* Deleting is HIDING — it takes the row off MY list only. A direct chat
+            can always be hidden; a GROUP only once I have left it, which is the
+            server's own rule (`canHideChat`) and why leaving comes first and the
+            two sit next to each other. Disbanding is a third, different act:
+            it takes the conversation away from every member, so only the creator
+            is offered it. All three are the same questions the thread header
+            asks, so a row need not be opened to answer them, and the rule above
+            them is drawn only when at least one of them is. */}
+        {endingActions && <ContextMenuSeparator />}
+        {/* A group already left keeps its history and its row, so there is
+            nothing more to leave — only to get rid of. */}
+        {chat.type === 'group' && !chat.self.hasLeft && (
+          <ContextMenuItem variant="destructive" onSelect={() => onLeaveGroup(chat)}>
+            <LogOut />
+            Leave group
+          </ContextMenuItem>
+        )}
+        {canHideChat(chat) && (
+          <ContextMenuItem variant="destructive" onSelect={() => onDelete(chat.id)}>
+            <Trash2 />
+            Delete
+          </ContextMenuItem>
+        )}
+        {chat.type === 'group' && canEditGroup(chat.self.memberRole) && (
+          <ContextMenuItem variant="destructive" onSelect={() => onDisbandGroup(chat)}>
+            <Trash2 />
+            Delete for everyone
+          </ContextMenuItem>
         )}
       </ContextMenuContent>
     </ContextMenu>

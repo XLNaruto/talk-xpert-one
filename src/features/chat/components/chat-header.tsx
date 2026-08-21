@@ -16,7 +16,12 @@ import { useChatStore } from '@/stores/chat-store'
 import { useUiStore } from '@/stores/ui-store'
 import { cn } from '@/lib/utils'
 import { keyOf } from '@/types/api'
-import { chatLabel, leaveGroupCopy } from '../lib/chat-labels'
+import {
+  canHideChat,
+  chatLabel,
+  leaveGroupCopy,
+  removeChatCopy,
+} from '../lib/chat-labels'
 import { canEditGroup } from '../lib/member-roles'
 import { formatLastSeen, formatTypingLine } from '../lib/message-formatters'
 import { useChatHeaderActions } from '../hooks/use-chat-header-actions'
@@ -62,9 +67,11 @@ export function ChatHeader({
   // inherit — while leaving is now open to everybody, the creator included.
   const canDisband = canEditGroup(chat.self.memberRole)
   const canLeave = !chat.self.hasLeft
-  // A group you have already LEFT offers neither leave nor disband, so the menu
-  // would otherwise draw a separator with nothing under it.
-  const hasEndingAction = chat.type !== 'group' || canDisband || canLeave
+  // Hiding the row is a DIRECT chat's ending, and a left group's second one —
+  // leaving freezes the row on the list, and this is what gets rid of it.
+  const canRemove = canHideChat(chat)
+  // Nothing to end means no separator with nothing under it.
+  const hasEndingAction = canRemove || canDisband || canLeave
   const counterpartId = chat.counterpartTalkUserId
   const isBlockedByMe = counterpartId !== null && blockedIds.includes(counterpartId)
 
@@ -235,6 +242,14 @@ export function ChatHeader({
                   Leave group
                 </DropdownMenuItem>
               )}
+              {/* Only once you are OUT. Until then the server refuses it, and
+                  the row is still a live conversation to you anyway. */}
+              {canRemove && (
+                <DropdownMenuItem variant="destructive" onSelect={() => confirm.ask('remove')}>
+                  <Trash2 />
+                  Remove from your list
+                </DropdownMenuItem>
+              )}
               {canDisband && (
                 <DropdownMenuItem variant="destructive" onSelect={() => confirm.ask('disband')}>
                   <Trash2 />
@@ -264,11 +279,7 @@ export function ChatHeader({
                 // obvious nor reversible — so the copy names the heir, resolved
                 // by the same rule the server uses.
                 leaveGroupCopy(label.title, canDisband, confirm.successorName)
-              : {
-                  title: 'Remove this conversation?',
-                  message: `${label.title} leaves your list and its messages are hidden from you. The conversation comes back if they message you again.`,
-                  confirmLabel: 'Remove',
-                })}
+              : removeChatCopy(label.title, chat.type === 'group'))}
           tone="destructive"
           isPending={confirm.isPending}
           onConfirm={() => void confirm.run()}

@@ -37,7 +37,10 @@ export const ENDPOINTS = {
     /** Idempotent — opening the same direct chat twice returns the same id. */
     direct: '/talk/chats/direct',
     group: '/talk/chats/group',
-    /** Hide direct chats from MY list. Groups are refused with a 400. */
+    /**
+     * Hide chats from MY list: direct ones, and groups I have already LEFT.
+     * A group I am still in is refused with a 400 naming the ids.
+     */
     delete: '/talk/chats/delete',
     read: '/talk/chats/read',
     detail: (chatId: Id) => `/talk/chats/${chatId}`,

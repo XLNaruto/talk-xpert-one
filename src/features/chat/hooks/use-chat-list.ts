@@ -4,12 +4,15 @@ import { useChatListStore } from '@/stores/chat-list-store'
 import { useChatStore } from '@/stores/chat-store'
 import { useUiStore } from '@/stores/ui-store'
 import type { Id } from '@/types/api'
+import { canHideChat } from '../lib/chat-labels'
 import { deriveUnreadSummary } from '../lib/unread-badges'
 import { useChats } from '../api/use-chats'
 import { useContacts } from '../api/use-contacts'
 import { useChatActions } from '../api/use-chat-actions'
 import { useMessageActions } from '../api/use-message-actions'
 import { usePresence, useBlockList } from '../api/use-presence'
+import { useChatConfirmActions } from './use-chat-header-actions'
+import { useSearchCursor } from './use-search-cursor'
 import type { ChatFilter, ChatType, Contact } from '../types'
 
 export type { ChatFilter }
@@ -91,6 +94,11 @@ export function useChatList() {
       setSidebarOpen(false)
       // Whoever was typing in the last thread is not typing in this one.
       clearTyping()
+      // Picking a result ENDS the search — by arrow-and-Enter or by click. The
+      // term has done its job, and a field left open behind the thread keeps the
+      // list filtered by something the reader has stopped thinking about.
+      setSearchOpen(false)
+      setSearch('')
       // OPENING is not reading. Marking the whole chat read here cleared the
       // badge before the thread had even mounted — so `use-thread-scroll` found
       // no unread count to anchor on, skipped the divider, dropped the reader at
@@ -110,33 +118,30 @@ export function useChatList() {
   const clearSelection = useCallback(() => setSelectedIds([]), [])
 
   /**
-   * A bulk delete only ever offers direct chats, because the API refuses a group
-   * with a 400 naming the offending ids — so the count shown must match what will
-   * actually go.
+   * What a bulk delete would actually take: direct chats, and groups already
+   * LEFT. The API refuses a group you are still in with a 400 naming the ids, so
+   * the count shown has to match what will really go.
    */
-  const selectedDirectIds = useMemo(
+  const selectedRemovableIds = useMemo(
     () =>
-      selectedIds.filter((id) => chats.find((chat) => chat.id === id)?.type === 'direct'),
+      selectedIds.filter((id) => {
+        const chat = chats.find((candidate) => candidate.id === id)
+        return chat !== undefined && canHideChat(chat)
+      }),
     [selectedIds, chats],
   )
 
   const deleteSelected = useCallback(async () => {
-    if (selectedDirectIds.length === 0) return
-    const ok = await deleteForMe(selectedDirectIds)
+    if (selectedRemovableIds.length === 0) return
+    const ok = await deleteForMe(selectedRemovableIds)
     if (ok) clearSelection()
-  }, [selectedDirectIds, deleteForMe, clearSelection])
+  }, [selectedRemovableIds, deleteForMe, clearSelection])
 
   /**
-   * The row's own actions, behind a right-click. Each takes one id, where the
-   * selection bar's versions take the ticked set.
+   * The row's own action, behind a right-click. Removing a row is asked about
+   * through `rowConfirm` below instead — hiding a group you have left cannot be
+   * undone, so it is never one click away.
    */
-  const deleteChat = useCallback(
-    async (chatId: Id) => {
-      await deleteForMe([chatId])
-    },
-    [deleteForMe],
-  )
-
   const markChatRead = useCallback((chatId: Id) => markRead([chatId]), [markRead])
 
   /**
@@ -167,6 +172,25 @@ export function useChatList() {
     },
     [openDirect, selectChat],
   )
+
+  /**
+   * Leaving and disbanding, asked about whichever ROW was right-clicked — the
+   * same question the thread header asks, so the copy and the succession read
+   * are shared rather than written twice.
+   */
+  const rowConfirm = useChatConfirmActions()
+
+  /**
+   * Up/down/Enter over the two result lists. Mounted here rather than in the
+   * sidebar because it drives the same two picks the rest of this hook owns.
+   */
+  const { cursorKey, setCursorKey, onKeyDown: onSearchKeyDown } = useSearchCursor({
+    chats,
+    contacts,
+    enabled: isSearchOpen && searchTerm.length > 0,
+    onPickChat: selectChat,
+    onPickContact: openContact,
+  })
 
   /**
    * Closing search clears the term, so the list is never left filtered by a
@@ -209,12 +233,11 @@ export function useChatList() {
     selectChat,
     setChatPinned,
     selectedIds,
-    selectedDirectIds,
+    selectedRemovableIds,
     toggleSelected,
     clearSelection,
     deleteSelected,
     markAllRead,
-    deleteChat,
     markChatRead,
     hasSelection: selectedIds.length > 0,
     contacts,
@@ -222,5 +245,10 @@ export function useChatList() {
     isDirectoryLoading: isDirectoryLoading || isDirectorySearching,
     openContact,
     isOpeningContact,
+    /** Which result row the keyboard is on — `null` until an arrow is pressed. */
+    cursorKey,
+    setCursorKey,
+    onSearchKeyDown,
+    rowConfirm,
   }
 }

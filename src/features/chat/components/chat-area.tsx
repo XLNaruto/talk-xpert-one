@@ -17,6 +17,7 @@ import { ChatDetailsSheet } from './chat-details-sheet'
 import { ForwardDialog } from './forward-dialog'
 import { MessageInfoDialog } from './message-info-dialog'
 import { MessageInput } from './message-input'
+import { traceRender } from '../lib/thread-trace'
 import { MessageList } from './message-list'
 import { MessageListSkeleton } from './message-list-skeleton'
 import { PinnedBar } from './pinned-bar'
@@ -85,11 +86,15 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
    * Every "put that message on screen" goes through here: the pinned bar, a row
    * in the pinned sheet, a reply quote.
    */
+  // On `jump.jumpTo`, not on `jump` — the hook hands back a fresh object every
+  // render, so depending on the whole thing gave this a new identity every time,
+  // which is a changed prop on the message list and a render it cannot skip.
+  const jumpTo = jump.jumpTo
   const jumpToMessage = useCallback(
     (messageId: Id) => {
-      void jump.jumpTo(messageId)
+      void jumpTo(messageId)
     },
-    [jump],
+    [jumpTo],
   )
 
   const { retry } = useSendMessage()
@@ -132,6 +137,23 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
   const onForwardMessage = useCallback((message: ChatMessage) => setForwarding([message.id]), [])
   const onShowMessageInfo = useCallback((message: ChatMessage) => setInfoMessageId(message.id), [])
   const onRetryMessage = useCallback((message: ChatMessage) => void retry(message), [retry])
+
+  // Every prop the thread is redrawn from, so a render that changed nothing is
+  // told apart from one the data forced.
+  traceRender('ChatArea', {
+    chat,
+    rows,
+    scroll,
+    selfId,
+    selectedIds,
+    isLoadingMore,
+    hasEarlier,
+    pinnedMessages,
+    jumpTarget: jump.target,
+    jumpHighlightId: jump.highlightedId,
+    searchHits: search.hitMessageIds,
+    activeSearchMessageId: search.activeMessageId,
+  })
 
   if (!chat) {
     return <ChatEmpty />

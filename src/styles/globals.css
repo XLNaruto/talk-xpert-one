@@ -557,20 +557,26 @@
   --emoji-rgb-accent: 180, 83, 9;
 }
 
+/* Amber's 400/500 siblings (#fbbf24 / #f59e0b) are the ones a dark theme would
+   normally reach for, but at that lightness amber has turned YELLOW — it stops
+   reading as autumn and it collides with nothing else in the ramp. Amber 600
+   holds the hue and still clears 4.5:1 on the dark page (~5.7:1), which is what
+   `--primary` needs as it also draws icons, links, rings and borders. It stays
+   clear of Sunset's #fb923c, a lighter, purer orange. */
 .dark[data-accent="autumn"],
 .dark [data-accent="autumn"] {
-  --primary: #f59e0b;
-  --tint: #f59e0b;
-  --primary-hover: #fbbf24;
+  --primary: #d97706;
+  --tint: #d97706;
+  --primary-hover: #eb8f11;
   --primary-foreground: #0f1a23;
-  --ring: #f59e0b;
-  --info: #f59e0b;
-  --sidebar-primary: #f59e0b;
+  --ring: #d97706;
+  --info: #d97706;
+  --sidebar-primary: #d97706;
   --sidebar-primary-foreground: #0f1a23;
-  --sidebar-ring: #f59e0b;
+  --sidebar-ring: #d97706;
   --bubble-out: #92400e;
   --bubble-out-foreground: #f0f9ff;
-  --emoji-rgb-accent: 245, 158, 11;
+  --emoji-rgb-accent: 217, 119, 6;
 }
 
 
@@ -666,26 +672,39 @@
 /* ------------------------------------------------------------------ */
 /* Deep fills                                                         */
 /* ------------------------------------------------------------------ */
-/* A dark theme normally paints its accent BRIGHT — the 400/500-level sibling —
-   because `--primary` also draws icons, links and borders, and a 700-level
-   brown is invisible on a #10161c page. The cost is that the FILLED surfaces
-   read as the lightened hue rather than the themed one: dark Autumn's amber
-   `#f59e0b` is yellow, not autumn.
+/* A dark theme paints its accent BRIGHT — the 400/500-level sibling — because
+   `--primary` also draws icons, links, rings and borders, and a 700-level shade
+   is invisible on a #10161c page. The cost lands on the FILLED surfaces: at that
+   lightness the only legible ink is DARK, so a button, a filter chip, an unread
+   badge and the Apply bar all came out pale with near-black text, while the
+   outgoing bubble beside them was deep with white text. One accent, two looks.
 
-   `--primary-fill` is the way out. Lines and text keep the bright `--primary`;
-   only the filled surfaces take the deeper shade, with light ink on top. The
-   two ends of a ramp are the only ones a filled control can use — every
-   mid-tone orange between them fails 4.5:1 against BOTH white and dark ink —
-   so this is a choice of end, not a free hue.
+   `--primary-fill` is the split. Lines and text keep the bright `--primary`;
+   every filled surface takes the deep shade the outgoing bubble already uses —
+   `--bubble-out`, per accent, so buttons and bubbles are the same colour — and
+   carries WHITE ink, which every one of those 600/700-level shades clears 4.5:1
+   against. The two ends of a ramp are the only ones a filled control can use:
+   every mid-tone between them fails against BOTH white and dark ink.
 
-   Declared after the surfaces blocks on purpose: `.dark [data-accent]` and
-   `.dark [data-accent="autumn"]` have the SAME specificity, so source order is
-   what makes the override win. */
+   Declared after the surfaces blocks on purpose: `.dark [data-accent]` and this
+   rule have the SAME specificity, so source order is what makes it win. */
 
-.dark[data-accent="autumn"],
-.dark [data-accent="autumn"] {
-  --primary-fill: #92400e;
-  --primary-fill-hover: #b45309;
+.dark,
+.dark [data-accent],
+.dark[data-accent] {
+  --primary-fill: var(--bubble-out);
+  --primary-fill-hover: color-mix(in srgb, var(--bubble-out) 84%, #ffffff);
+  --primary-fill-foreground: #f0f9ff;
+}
+
+/* Shadow is the one accent whose deep end is a NEUTRAL, and #334155 sits close
+   enough to the dark surfaces (#253340 borders, #1e2a34 accent) that a filled
+   button stopped reading as filled at all — 1.8:1 against the page. One step up
+   the slate ramp separates it while white ink still clears 7:1. */
+.dark[data-accent="shadow"],
+.dark [data-accent="shadow"] {
+  --primary-fill: #475569;
+  --primary-fill-hover: #64748b;
   --primary-fill-foreground: #f0f9ff;
 }
 

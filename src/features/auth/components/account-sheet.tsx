@@ -1,11 +1,14 @@
+import { useState } from 'react'
 import { Globe, Loader2, LogOut, Monitor, Smartphone } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { ConfirmDialog } from '@/components/common/confirm-dialog'
 import { Modal } from '@/components/common/modal'
 import { useMediaUrl } from '@/hooks/use-app-config'
 import { CLIENT_PLATFORM, type TalkPlatform } from '@/lib/platform'
 import { useAuthStore } from '@/stores/auth-store'
 import { useActiveSessions, useLogout } from '../api/use-auth'
+import { logoutCopy, logoutEverywhereCopy } from '../lib/logout-copy'
 import { emailInitials, platformIconKind, platformLabel } from '../lib/platform-display'
 
 /**
@@ -24,6 +27,25 @@ export function AccountSheet({ onClose }: { onClose: () => void }) {
   const photo = mediaUrl(identity?.photo)
   const { mutate: logout, isPending } = useLogout()
   const { platforms, isLoading, failed } = useActiveSessions()
+  // Which sign-out was asked for, and is therefore waiting on an answer. Both
+  // ways out end a session the user cannot get back without their password, so
+  // neither fires on the first tap.
+  const [confirming, setConfirming] = useState<'this' | 'everywhere' | null>(null)
+  const otherPlatforms = (platforms ?? []).filter((p) => p !== CLIENT_PLATFORM).length
+
+  // One panel at a time: the question REPLACES the sheet rather than stacking on
+  // it, so the decision is the only thing on screen and Cancel comes straight
+  // back to the account.
+  if (confirming !== null) {
+    return (
+      <ConfirmDialog
+        {...(confirming === 'everywhere' ? logoutEverywhereCopy(otherPlatforms) : logoutCopy())}
+        isPending={isPending}
+        onConfirm={() => void logout(confirming === 'everywhere')}
+        onCancel={() => setConfirming(null)}
+      />
+    )
+  }
 
   return (
     <Modal
@@ -39,11 +61,11 @@ export function AccountSheet({ onClose }: { onClose: () => void }) {
             size="sm"
             disabled={isPending}
             className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-            onClick={() => void logout(true)}
+            onClick={() => setConfirming('everywhere')}
           >
             Sign out everywhere
           </Button>
-          <Button disabled={isPending} onClick={() => void logout(false)}>
+          <Button disabled={isPending} onClick={() => setConfirming('this')}>
             {isPending ? <Loader2 className="animate-spin" /> : <LogOut />}
             Sign out
           </Button>

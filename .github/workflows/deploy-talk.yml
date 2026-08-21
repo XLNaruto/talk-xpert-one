@@ -1,0 +1,209 @@
+# Deploy workflow for the XpertOne Talk SPA (talk.xpertoneindia.com).
+#
+# Mirrors app-xpert-one/.github/workflows/deploy-app.yml — same OIDC role per
+# environment, same "hashed assets first, shell second" upload order. What
+# differs is the env var set: Talk reads only the five vars in src/config/env.ts,
+# there is no Firebase and no mock API, and this repo's default branch is master.
+#
+# ONE-TIME SETUP IN THIS REPO
+#   1. Settings -> Environments, create two:
+#        dev   Deployment branches: Selected branches -> master
+#        prod  Deployment branches: master, plus REQUIRED REVIEWERS
+#
+#   2. In EACH environment add the secret AWS_DEPLOY_ROLE_ARN with the full ARN
+#      of that stage's deploy role. The two roles are deliberately different:
+#      the dev role cannot write to prod buckets, so a mistake in this file
+#      cannot reach production — the environment selects the credentials, and
+#      prod's also needs approval.
+#
+#   3. In EACH environment add the build VARIABLES. These are compiled into the
+#      PUBLIC bundle — nothing secret belongs here. Names must match what
+#      src/config/env.ts and vite.config.ts read:
+#          VITE_APP_API_URL         dev: https://api.dev.xpertoneindia.com
+#          VITE_APP_SOCKET_URL      dev: wss://ws.dev.xpertoneindia.com
+#                                   FALLBACK ONLY — the live origin/path come
+#                                   from GET /config. Safe to leave blank.
+#          VITE_APP_COOKIE_PREFIX   xotk   <- MUST differ from the admin app's
+#          VITE_APP_ENCRYPT_KEY     key used to encrypt persisted client storage
+#                                   (read from secrets OR vars, either works)
+#          VITE_APP_BASE_URL        /      (optional; vite.config.ts `base`)
+#      VITE_APP_API_TARGET is deliberately NOT written — it is the dev-server
+#      reverse proxy only, and setting it in a build would point axios at a
+#      same-origin /api that nothing serves.
+#
+#   4. In EACH environment add the deploy TARGET. Either point at CloudFormation:
+#          CFN_STACK_NAME            e.g. XpertOne-Dev-Assets
+#          BUCKET_OUTPUT_KEY         e.g. talkWebBucketName
+#          DISTRIBUTION_OUTPUT_KEY   e.g. talkWebDistributionId
+#      or skip the lookup and name the resources directly:
+#          S3_BUCKET
+#          CLOUDFRONT_DISTRIBUTION_ID
+#      The direct values win when both are present. Nothing account-specific is
+#      hardcoded in this file either way.
+#
+# WHAT IT DOES
+#   push to master    -> deploys to dev
+#   workflow_dispatch -> deploys to dev or prod (prod waits for approval)
+
+name: Deploy Talk
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        required: true
+        default: dev
+        options: [dev, prod]
+
+concurrency:
+  group: deploy-talk-${{ github.event.inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write # REQUIRED: mints the OIDC token. Without it, the AWS step fails.
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to ${{ github.event.inputs.environment || 'dev' }}
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    timeout-minutes: 15
+
+    env:
+      AWS_REGION: ap-south-1
+      TARGET_ENV: ${{ github.event.inputs.environment || 'dev' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 24 -> npm 11, which is what package-lock.json was generated with.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      # .env.* is gitignored, so CI has no env at all unless we write one.
+      # Without this step the bundle falls back to every default in
+      # src/config/env.ts — localhost:4000 API and the sample encrypt key.
+      - name: Generate .env file
+        env:
+          VITE_APP_API_URL: ${{ vars.VITE_APP_API_URL }}
+          VITE_APP_SOCKET_URL: ${{ vars.VITE_APP_SOCKET_URL }}
+          VITE_APP_BASE_URL: ${{ vars.VITE_APP_BASE_URL }}
+          VITE_APP_COOKIE_PREFIX: ${{ vars.VITE_APP_COOKIE_PREFIX }}
+          # Read from both, so the key works whether it was added as an
+          # environment secret or an environment variable.
+          VITE_APP_ENCRYPT_KEY: ${{ secrets.VITE_APP_ENCRYPT_KEY || vars.VITE_APP_ENCRYPT_KEY }}
+        run: |
+          set -euo pipefail
+          if [ "$TARGET_ENV" = prod ]; then MODE=production; else MODE=development; fi
+
+          if [ -z "${VITE_APP_API_URL}" ]; then
+            echo "::error::VITE_APP_API_URL is not set in the '$TARGET_ENV' environment."
+            exit 1
+          fi
+          # A missing encrypt key would silently fall back to the sample key in
+          # src/config/env.ts, making every persisted session decryptable.
+          if [ -z "${VITE_APP_ENCRYPT_KEY}" ]; then
+            echo "::error::VITE_APP_ENCRYPT_KEY is not set in the '$TARGET_ENV' environment (secret or variable)."
+            exit 1
+          fi
+          # A shared prefix would let Talk and the admin app clobber each other's
+          # cookies and IndexedDB when served from the same origin.
+          if [ -z "${VITE_APP_COOKIE_PREFIX}" ]; then
+            echo "::error::VITE_APP_COOKIE_PREFIX is not set in the '$TARGET_ENV' environment."
+            exit 1
+          fi
+
+          {
+            echo "VITE_APP_API_URL=${VITE_APP_API_URL}"
+            echo "VITE_APP_SOCKET_URL=${VITE_APP_SOCKET_URL}"
+            echo "VITE_APP_BASE_URL=${VITE_APP_BASE_URL:-/}"
+            echo "VITE_APP_COOKIE_PREFIX=${VITE_APP_COOKIE_PREFIX}"
+            echo "VITE_APP_ENCRYPT_KEY=${VITE_APP_ENCRYPT_KEY}"
+            echo "VITE_APP_API_TARGET="
+          } > ".env.${MODE}"
+          echo "Wrote .env.${MODE} for $TARGET_ENV (values hidden)."
+
+      # `npm run build` is --mode development; prod must use build:prod so it
+      # reads .env.production and builds with production defines. Both run
+      # oxlint and tsc -b first, so a type error fails the deploy.
+      - name: Build
+        run: |
+          if [ "$TARGET_ENV" = prod ]; then npm run build:prod; else npm run build; fi
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          # Default is 12 attempts with backoff — a trust-policy mismatch then
+          # takes ~2.5 min to surface. A real STS failure will not fix itself.
+          retry-max-attempts: 3
+
+      - name: Resolve bucket and distribution
+        id: target
+        env:
+          S3_BUCKET: ${{ vars.S3_BUCKET }}
+          CLOUDFRONT_DISTRIBUTION_ID: ${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}
+          CFN_STACK_NAME: ${{ vars.CFN_STACK_NAME }}
+          BUCKET_OUTPUT_KEY: ${{ vars.BUCKET_OUTPUT_KEY }}
+          DISTRIBUTION_OUTPUT_KEY: ${{ vars.DISTRIBUTION_OUTPUT_KEY }}
+        run: |
+          set -euo pipefail
+          BUCKET="${S3_BUCKET}"
+          DIST="${CLOUDFRONT_DISTRIBUTION_ID}"
+
+          # Fall back to CloudFormation outputs when the ids were not given
+          # directly, so this file never hardcodes an account-specific value.
+          if [ -z "$BUCKET" ] || [ -z "$DIST" ]; then
+            STACK="${CFN_STACK_NAME:-XpertOne-$([ "$TARGET_ENV" = prod ] && echo Prod || echo Dev)-Assets}"
+            get() {
+              aws cloudformation describe-stacks --stack-name "$STACK" \
+                --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text
+            }
+            [ -n "$BUCKET" ] || BUCKET="$(get "${BUCKET_OUTPUT_KEY:-talkWebBucketName}")"
+            [ -n "$DIST" ] || DIST="$(get "${DISTRIBUTION_OUTPUT_KEY:-talkWebDistributionId}")"
+          fi
+
+          if [ -z "$BUCKET" ] || [ "$BUCKET" = "None" ]; then
+            echo "::error::Could not resolve the S3 bucket. Set S3_BUCKET, or CFN_STACK_NAME + BUCKET_OUTPUT_KEY, in the '$TARGET_ENV' environment."
+            exit 1
+          fi
+          if [ -z "$DIST" ] || [ "$DIST" = "None" ]; then
+            echo "::error::Could not resolve the CloudFront distribution. Set CLOUDFRONT_DISTRIBUTION_ID, or CFN_STACK_NAME + DISTRIBUTION_OUTPUT_KEY, in the '$TARGET_ENV' environment."
+            exit 1
+          fi
+          echo "bucket=$BUCKET" >> "$GITHUB_OUTPUT"
+          echo "distribution=$DIST" >> "$GITHUB_OUTPUT"
+          echo "Bucket: $BUCKET / Distribution: $DIST"
+
+      # Hashed filenames first, cached forever. Uploading these BEFORE the shell
+      # means a visitor never gets a new index.html pointing at assets that have
+      # not landed yet.
+      - name: Upload hashed assets
+        run: |
+          aws s3 sync dist/assets/ "s3://${{ steps.target.outputs.bucket }}/assets/" \
+            --cache-control "public, max-age=31536000, immutable"
+
+      # Then everything else, with --delete to drop removed files. index.html
+      # must not be cached, or the CDN keeps serving a shell that references
+      # assets from the previous build.
+      - name: Upload shell
+        run: |
+          aws s3 sync dist/ "s3://${{ steps.target.outputs.bucket }}/" \
+            --delete --exclude "assets/*" \
+            --cache-control "public, max-age=0, must-revalidate"
+
+      - name: Invalidate CloudFront
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ steps.target.outputs.distribution }}" \
+            --paths "/" "/index.html"
