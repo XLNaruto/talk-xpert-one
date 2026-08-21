@@ -39,7 +39,10 @@
 #          S3_BUCKET
 #          CLOUDFRONT_DISTRIBUTION_ID
 #      The direct values win when both are present. Nothing account-specific is
-#      hardcoded in this file either way.
+#      hardcoded in this file either way. If neither resolves, the deploy fails
+#      AFTER printing the stack's real outputs, the stacks in the account, the
+#      buckets the role can list and the CloudFront ids with their aliases —
+#      configure the environment from that log rather than guessing.
 #
 # WHAT IT DOES
 #   push to master    -> deploys to dev
@@ -157,30 +160,56 @@ jobs:
           BUCKET_OUTPUT_KEY: ${{ vars.BUCKET_OUTPUT_KEY }}
           DISTRIBUTION_OUTPUT_KEY: ${{ vars.DISTRIBUTION_OUTPUT_KEY }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           BUCKET="${S3_BUCKET}"
           DIST="${CLOUDFRONT_DISTRIBUTION_ID}"
+          STACK="${CFN_STACK_NAME:-XpertOne-$([ "$TARGET_ENV" = prod ] && echo Prod || echo Dev)-Assets}"
+          BUCKET_KEY="${BUCKET_OUTPUT_KEY:-talkWebBucketName}"
+          DIST_KEY="${DISTRIBUTION_OUTPUT_KEY:-talkWebDistributionId}"
 
           # Fall back to CloudFormation outputs when the ids were not given
           # directly, so this file never hardcodes an account-specific value.
+          # `set -e` is off here on purpose: a missing stack or a key that is not
+          # an output must reach the diagnostics below, not abort the step with
+          # a bare aws traceback.
           if [ -z "$BUCKET" ] || [ -z "$DIST" ]; then
-            STACK="${CFN_STACK_NAME:-XpertOne-$([ "$TARGET_ENV" = prod ] && echo Prod || echo Dev)-Assets}"
             get() {
               aws cloudformation describe-stacks --stack-name "$STACK" \
-                --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text
+                --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text 2>/dev/null
             }
-            [ -n "$BUCKET" ] || BUCKET="$(get "${BUCKET_OUTPUT_KEY:-talkWebBucketName}")"
-            [ -n "$DIST" ] || DIST="$(get "${DISTRIBUTION_OUTPUT_KEY:-talkWebDistributionId}")"
+            [ -n "$BUCKET" ] || BUCKET="$(get "$BUCKET_KEY")"
+            [ -n "$DIST" ] || DIST="$(get "$DIST_KEY")"
           fi
 
-          if [ -z "$BUCKET" ] || [ "$BUCKET" = "None" ]; then
-            echo "::error::Could not resolve the S3 bucket. Set S3_BUCKET, or CFN_STACK_NAME + BUCKET_OUTPUT_KEY, in the '$TARGET_ENV' environment."
+          # Print what this account/region actually offers, so the very next run
+          # can be configured from the log instead of another guess.
+          diagnose() {
+            echo "--- Looked in stack: $STACK (region $AWS_REGION)"
+            echo "--- Wanted outputs: $BUCKET_KEY / $DIST_KEY"
+            echo "--- Outputs that stack DOES have:"
+            aws cloudformation describe-stacks --stack-name "$STACK" \
+              --query "Stacks[0].Outputs[].[OutputKey,OutputValue]" --output text 2>&1 \
+              | sed 's/^/      /' || true
+            echo "--- Stacks in this account/region:"
+            aws cloudformation list-stacks \
+              --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE UPDATE_ROLLBACK_COMPLETE \
+              --query "StackSummaries[].StackName" --output text 2>&1 \
+              | tr '\t' '\n' | sed 's/^/      /' || true
+            echo "--- Buckets this role can list:"
+            aws s3api list-buckets --query "Buckets[].Name" --output text 2>&1 \
+              | tr '\t' '\n' | sed 's/^/      /' || true
+            echo "--- CloudFront distributions (id / aliases):"
+            aws cloudfront list-distributions \
+              --query "DistributionList.Items[].[Id,Aliases.Items[0]]" --output text 2>&1 \
+              | sed 's/^/      /' || true
+          }
+
+          if [ -z "$BUCKET" ] || [ "$BUCKET" = "None" ] || [ -z "$DIST" ] || [ "$DIST" = "None" ]; then
+            diagnose
+            echo "::error::Could not resolve the Talk deploy target. Pick the bucket and distribution from the listings above, then set S3_BUCKET + CLOUDFRONT_DISTRIBUTION_ID (or CFN_STACK_NAME + BUCKET_OUTPUT_KEY + DISTRIBUTION_OUTPUT_KEY) as variables in the '$TARGET_ENV' environment."
             exit 1
           fi
-          if [ -z "$DIST" ] || [ "$DIST" = "None" ]; then
-            echo "::error::Could not resolve the CloudFront distribution. Set CLOUDFRONT_DISTRIBUTION_ID, or CFN_STACK_NAME + DISTRIBUTION_OUTPUT_KEY, in the '$TARGET_ENV' environment."
-            exit 1
-          fi
+          set -e
           echo "bucket=$BUCKET" >> "$GITHUB_OUTPUT"
           echo "distribution=$DIST" >> "$GITHUB_OUTPUT"
           echo "Bucket: $BUCKET / Distribution: $DIST"
