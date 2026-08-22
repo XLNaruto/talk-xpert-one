@@ -335,18 +335,40 @@ export function useThreadScroll({
     [isAtEnd, scrollToEnd],
   )
 
+  /**
+   * Is the end within a screenful — i.e. are the last rows already mounted?
+   *
+   * The question `jumpToBottom` needs, and it is NOT `isAtEnd`. `scrollToIndex`
+   * is only worth calling when the last row is out of play entirely: it aligns
+   * the ITEM, which sits a footer short of the true bottom, and Virtuoso keeps
+   * re-asserting that position for a few frames after the call. Fire it while
+   * the end is already rendered and it drags the view back UP off the bottom,
+   * and the settle timer below pushes it back down — the small bounce after
+   * every arrival and every send. Within a viewport of the end, the plain
+   * `scrollTo` past the end is exact on its own, so the index scroll is skipped.
+   */
+  const isNearEnd = useCallback(() => {
+    const element = scrollerRef.current
+    if (!element || element instanceof Window) return false
+    const gap = element.scrollHeight - element.scrollTop - element.clientHeight
+    return gap <= element.clientHeight
+  }, [])
+
   const jumpToBottom = useCallback(
     (behavior: 'smooth' | 'auto' = 'auto', why = 'jump') => {
       parkedRef.current = false
       for (const timer of settleTimersRef.current) clearTimeout(timer)
 
-      virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior })
+      // Only when the end is genuinely out of play — see `isNearEnd`.
+      if (!isNearEnd()) {
+        virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior })
+      }
       scrollToEnd(behavior, why)
       settleTimersRef.current = [120, 320, 600].map((delay) =>
         setTimeout(() => scrollToEndIfNeeded(`${why}:settle`), delay),
       )
     },
-    [scrollToEnd, scrollToEndIfNeeded],
+    [isNearEnd, scrollToEnd, scrollToEndIfNeeded],
   )
 
   useEffect(

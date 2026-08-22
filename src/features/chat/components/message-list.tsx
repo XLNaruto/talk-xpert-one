@@ -314,18 +314,6 @@ function MessageListInner({
     ],
   )
 
-  const components = useMemo(
-    () => ({
-      Header: () =>
-        isLoadingMore ? (
-          <div className="flex justify-center py-3">
-            <Loader2 className="size-4 animate-spin text-muted-foreground" />
-          </div>
-        ) : null,
-      Footer: ListFooter,
-    }),
-    [isLoadingMore],
-  )
 
   // The four props Virtuoso rebuilds its list state from. `ΔfirstItemIndex`
   // means a page prepended; `Δdata` on its own means the rows were rebuilt.
@@ -333,7 +321,6 @@ function MessageListInner({
     data: rows,
     firstItemIndex,
     itemContent,
-    components,
     followOutput,
     initialTopMostItemIndex,
   })
@@ -372,9 +359,28 @@ function MessageListInner({
         rangeChanged={onRangeChanged}
         startReached={hasEarlier ? onLoadEarlier : undefined}
         computeItemKey={computeItemKey}
-        components={components}
+        components={LIST_COMPONENTS}
         itemContent={itemContent}
       />
+
+      {/* The history spinner FLOATS over the top of the log rather than riding
+          in Virtuoso's `Header`.
+          A header is content: it appears the moment `startReached` fires and
+          disappears when the page has landed, and both take height from ABOVE
+          the reader — so the thread shifted down by the spinner's height, was
+          compensated for the prepend, then shifted back up when it went. Two
+          visible jumps per page, exactly while a flick to the top is pulling
+          several. Overlaid, it takes no height from anything and the only thing
+          that moves the view is the page itself. It is also what lets
+          `components` be a module constant: a fresh object there remounts the
+          header and footer on every render that changes the loading flag. */}
+      {isLoadingMore && (
+        <div className="pointer-events-none absolute inset-x-0 top-2 flex justify-center">
+          <span className="rounded-full bg-card/90 p-1.5 shadow-xs">
+            <Loader2 className="size-4 animate-spin text-muted-foreground" />
+          </span>
+        </div>
+      )}
 
       <ScrollToBottomButton
         isVisible={!isAtBottom}
@@ -437,3 +443,11 @@ function computeItemKey(_index: number, row: ThreadRow): Id | string {
 }
 
 const ListFooter = () => <div className="h-2" />
+
+/**
+ * Module-level, so the list's `components` prop never changes identity —
+ * anything in it is a component TYPE, and a new object remounts every one of
+ * them. The only thing here is the footer's bottom spacing; the history spinner
+ * is overlaid on the pane instead (see above).
+ */
+const LIST_COMPONENTS = { Footer: ListFooter }
