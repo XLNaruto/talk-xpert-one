@@ -61,6 +61,26 @@ export function useThreadSearch({ chatId, loadEarlier, hasEarlier }: UseThreadSe
   }, [chatId, reset])
 
   /**
+   * Ctrl+F — ⌘F on a Mac — toggles the bar, and SUPPRESSES the browser's own.
+   *
+   * The native find bar would only ever match the pages currently in the DOM,
+   * which is a fraction of the thread and silently so. Ours asks the server, so
+   * taking the shortcut is the honest answer rather than a hijack.
+   */
+  useEffect(() => {
+    if (chatId == null) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'f' && event.key !== 'F') return
+      if (event.altKey || !(event.ctrlKey || event.metaKey)) return
+      event.preventDefault()
+      if (isOpen) close()
+      else open()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [chatId, isOpen, open, close])
+
+  /**
    * Every match, not just the first page.
    *
    * The bar offers prev/next over a numbered set, so a set that stops at 50 while

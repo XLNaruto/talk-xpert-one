@@ -65,7 +65,7 @@ export function ChatHeader({
 
   // Disbanding stays OWNER-ONLY — it is one of the two powers an admin does not
   // inherit — while leaving is now open to everybody, the creator included.
-  const canDisband = canEditGroup(chat.self.memberRole)
+  const canDisband = canEditGroup(chat.self)
   const canLeave = !chat.self.hasLeft
   // Hiding the row is a DIRECT chat's ending, and a left group's second one —
   // leaving freezes the row on the list, and this is what gets rid of it.
@@ -149,7 +149,7 @@ export function ChatHeader({
           the chat's pins — and everything that changes or ends the conversation
           moves behind one overflow menu, where a destructive item can be
           labelled in words instead of guessed from a glyph. */}
-      <Tip label={isSearchOpen ? 'Close search' : 'Search this conversation'}>
+      <Tip label={isSearchOpen ? 'Close search (Esc)' : 'Search this conversation (Ctrl+F)'}>
         <Button
           variant="ghost"
           size="icon"
@@ -200,9 +200,11 @@ export function ChatHeader({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-56">
+          {/* Named after the sheet it opens, which titles itself by the KIND of
+              conversation — "Conversation details" matched neither. */}
           <DropdownMenuItem onSelect={onOpenDetails}>
             <Info />
-            Conversation details
+            {chat.type === 'group' ? 'Group info' : 'Contact info'}
           </DropdownMenuItem>
 
           {chat.type === 'direct' && counterpartId !== null && (

@@ -1,5 +1,5 @@
 import type { Id } from '@/types/api'
-import type { ChatMember, MemberRole } from '../types'
+import type { ChatMember, ChatSelf, MemberRole } from '../types'
 
 /**
  * Who may do what to a group's membership.
@@ -8,17 +8,27 @@ import type { ChatMember, MemberRole } from '../types'
  * produce a toast: `owner` and `admin` hold the same powers, and the `owner`
  * row is untouchable by everybody — the owner included, on their own row.
  *
+ * Both gates read the WHOLE `self` row rather than the role alone, because a
+ * left group keeps the role it was frozen at: an owner who leaves still reads
+ * `member_role: 'owner'` on their own copy of the chat, while the server refuses
+ * every write on it. So `hasLeft` is the first question both of them ask.
+ *
  * Pure derivations only. No React, no store reads.
  */
 
+/** What either gate needs: the role I hold, and whether I am still in the group. */
+type SelfGate = Pick<ChatSelf, 'memberRole' | 'hasLeft'>
+
 /** Add, remove, mute, and appoint further admins. NOT rename and NOT disband. */
-export function canManageMembers(role: MemberRole): boolean {
-  return role === 'owner' || role === 'admin'
+export function canManageMembers(self: SelfGate): boolean {
+  if (self.hasLeft) return false
+  return self.memberRole === 'owner' || self.memberRole === 'admin'
 }
 
 /** Rename, re-picture and disband — the two powers succession does not share. */
-export function canEditGroup(role: MemberRole): boolean {
-  return role === 'owner'
+export function canEditGroup(self: SelfGate): boolean {
+  if (self.hasLeft) return false
+  return self.memberRole === 'owner'
 }
 
 /**
@@ -30,11 +40,11 @@ export function canEditGroup(role: MemberRole): boolean {
  * and a plain member holds none of the powers.
  */
 export function canActOnMember(
-  selfRole: MemberRole,
+  self: SelfGate,
   member: Pick<ChatMember, 'talkUserId' | 'memberRole'>,
   selfTalkUserId: Id | null,
 ): boolean {
-  if (!canManageMembers(selfRole)) return false
+  if (!canManageMembers(self)) return false
   if (member.memberRole === 'owner') return false
   return member.talkUserId !== selfTalkUserId
 }

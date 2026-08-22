@@ -48,6 +48,7 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
     selectedIds,
     hasSelection,
     canDeleteForEveryone,
+    canForwardSelection,
     toggleSelected,
     clearSelection,
     deleteSelected,
@@ -116,7 +117,10 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
     disabled: Boolean(editingHere) || composerBlockedReason(chat, blockedIds) !== null,
   })
 
-  const [showDetails, setShowDetails] = useState(false)
+  // In the store, not here: the sidebar's row menu opens this sheet too, and a
+  // row cannot reach this component's state.
+  const showDetails = useChatStore((s) => s.isDetailsOpen)
+  const setShowDetails = useChatStore((s) => s.setDetailsOpen)
   const [showPins, setShowPins] = useState(false)
   const [forwarding, setForwarding] = useState<Id[] | null>(null)
   const [infoMessageId, setInfoMessageId] = useState<Id | null>(null)
@@ -202,7 +206,11 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
       />
 
       {/* The selection bar offers "for everyone" only when every ticked message
-          is mine — anyone may hide anything, but only the sender may withdraw. */}
+          is mine AND still standing — anyone may hide anything, but only the
+          sender may withdraw, and a withdrawn message has nothing left to
+          withdraw. Forward goes the same way over a tombstone, since there is no
+          body to carry. So a ticked "This message was deleted" is left with the
+          one action that still means something: delete for me. */}
       {hasSelection && (
         // Cancel leads, the way it does in every selection mode — the way out is
         // the first thing found. The band itself is NEUTRAL: three tinted
@@ -240,15 +248,17 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
               two buttons beside it go red on hover, so a grey lift read as the
               same family one shade weaker. Brand says "this one is not a
               delete" before the label is read. */}
-          <Button
-            variant="outline"
-            size="sm"
-            className="bg-card hover:border-primary/40 hover:bg-primary/10 hover:text-primary"
-            onClick={() => setForwarding(selectedIds)}
-          >
-            <Forward />
-            Forward
-          </Button>
+          {canForwardSelection && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="bg-card hover:border-primary/40 hover:bg-primary/10 hover:text-primary"
+              onClick={() => setForwarding(selectedIds)}
+            >
+              <Forward />
+              Forward
+            </Button>
+          )}
 
           {/* "For me" is a HIDE, not a withdrawal — the eye says that where a
               second bin beside the real delete would have said the opposite. */}

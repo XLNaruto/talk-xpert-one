@@ -21,10 +21,13 @@ export function useAttachments(chatId: Id | null) {
   const setAttachments = useChatStore((s) => s.setAttachments)
   const clearAttachments = useChatStore((s) => s.clearAttachments)
 
+  // Async because the intake reads the first bytes of each pick to check it is
+  // the kind of file it claims to be. Callers that care about the count await
+  // it; the ones that only want the files in the strip can let it run.
   const addFiles = useCallback(
-    (picked: FileList | File[] | null) => {
+    async (picked: FileList | File[] | null) => {
       if (chatId == null) return 0
-      const { accepted, rejected } = intakeAttachments(picked, files.length)
+      const { accepted, rejected } = await intakeAttachments(picked, files.length)
       if (accepted.length > 0) setAttachments(chatId, [...files, ...accepted])
       // One toast for the batch: fifteen rejections would be fifteen toasts.
       // Only the first few are named, and the count of the rest is still stated.

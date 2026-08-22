@@ -44,7 +44,7 @@ export function useChatConfirmActions() {
       setSuccessorName(null)
       // Only the creator's leave hands the group on, so nobody else's question
       // costs a request.
-      if (kind !== 'leave' || chat.type !== 'group' || !canEditGroup(chat.self.memberRole)) return
+      if (kind !== 'leave' || chat.type !== 'group' || !canEditGroup(chat.self)) return
       void (async () => {
         try {
           const members = await chatApi.fetchMembers(chat.id)

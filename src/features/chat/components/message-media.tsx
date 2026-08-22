@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Download, FileText, ImageOff, Music, Play } from 'lucide-react'
 import { useMediaUrl } from '@/hooks/use-app-config'
 import { cn } from '@/lib/utils'
@@ -189,22 +189,46 @@ function evictOldest(store: Map<string, unknown> | Set<string>, cap: number): vo
   if (!oldest.done) store.delete(oldest.value as string)
 }
 
-const isLandscape = (size: MediaSize) => !!size && size.w > size.h
-
 /**
- * A LONE attachment is sized by its OWN orientation — one frame in a bubble has
- * nothing to line up with, so cropping it to a shape is pure loss.
+ * A LONE attachment is sized by its OWN frame — one photo in a bubble has
+ * nothing to line up with, so neither cropping it nor padding it out to a
+ * guessed shape is right.
  *
- * Landscape keeps its natural proportions out to the bubble's cap. Portrait and
- * square go in ONE fixed 4:5 box, fitted WHOLE: a box matched to each photo's
- * exact ratio makes every bubble a different width, and filling it cuts the
- * edges off the frame. Whatever is left over shows the bubble behind it, and an
- * unknown size falls to the box, being the shape that cannot overflow.
+ * There is no fallback BOX any more, and that is the point. A fixed portrait box
+ * for an unmeasured tile letterboxes every landscape photo the API did not
+ * measure: on the first paint after a reload the frame flowed into a 4:5 well
+ * and sat in the middle of it with a band of bubble above and below. The size
+ * WAS learnt on decode, but applying it was deferred while the tile was on
+ * screen — so the well only cleared on the tile's next mount, which is why
+ * re-entering the chat drew the same photo correctly.
+ *
+ * So an unmeasured tile flows at its own proportions instead (`SOLO_FLUID`,
+ * height from the picture, both axes capped) — right for a landscape frame and
+ * for a portrait one, with nothing left over in either. A measured tile gets an
+ * exact box from `soloBox()`, which is the SAME shape the fluid one settles
+ * into, so learning a size never moves anything and the second visit matches the
+ * first.
  *
  * An album keeps its squares — a grid wants them.
  */
-const SOLO_LANDSCAPE = 'w-full max-w-[360px]'
-const SOLO_PORTRAIT = 'aspect-[4/5] w-60'
+const SOLO_MAX_WIDTH = 360
+const SOLO_MAX_HEIGHT = 420
+
+/** Shrink-to-fit around the picture, capped on both axes. */
+const SOLO_FLUID = 'w-fit max-w-[360px] min-h-24 min-w-24'
+
+/**
+ * The exact box for a frame whose real proportions are known.
+ *
+ * A width plus the ratio rather than a width and a height: the bubble can be
+ * narrower than the cap on a small screen, and an `aspect-ratio` keeps the box
+ * matched to the photo as it clamps, where a fixed height would start
+ * letterboxing again.
+ */
+function soloBox(size: { w: number; h: number }) {
+  const scale = Math.min(1, SOLO_MAX_WIDTH / size.w, SOLO_MAX_HEIGHT / size.h)
+  return { width: Math.round(size.w * scale), aspectRatio: `${size.w} / ${size.h}` }
+}
 
 /**
  * The album.
@@ -293,28 +317,19 @@ function AlbumTile({
       null,
   )
 
-  /** The tile itself — asked below whether the reader is looking at it. */
-  const frameRef = useRef<HTMLButtonElement>(null)
-
   /**
-   * A measured frame: always remembered, applied only when it is safe to move.
+   * A measured frame, remembered and applied at once.
    *
-   * Knowing the shape is what lets a landscape photo out of the portrait
-   * fallback box — but applying it CHANGES THE ROW'S HEIGHT, and a row that
-   * changes height under the reader is the blink: the thread twitches and the
-   * scroll is corrected beneath a picture they had already started looking at.
+   * Applying it used to be deferred while the tile was on screen, to keep a row
+   * from changing height under the reader. That was protecting the wrong thing:
+   * the height it was holding still was the WRONG height — the fallback box's —
+   * so the cost of the deferral was a letterboxed photo until the next mount.
    *
-   * So the rule is that nothing moves in the viewport. Off screen — which, with
-   * a screenful of overscan, is where most frames decode — the box is corrected
-   * immediately and the reader arrives to a tile that is already the right
-   * shape. On screen, the measurement is banked and nothing is touched; the
-   * picture stays whole inside the fallback box (`object-contain`, so nothing is
-   * cropped) and the NEXT mount opens at the exact shape, because
-   * `naturalSizes` seeded it.
-   *
-   * The way to have both, for the record, is `width`/`height` in the payload:
-   * the box is then exact on the first paint with nothing to measure and nothing
-   * to correct. This is the fallback for attachments the API did not measure.
+   * Nothing needs holding still now, because the box it moves FROM is already
+   * the right shape: an unmeasured tile flows at the picture's own proportions,
+   * and `soloBox()` reproduces exactly those. The measurement buys the SECOND
+   * paint a reserved box rather than the first paint a correction, which is why
+   * it is still banked in `naturalSizes`.
    */
   const learnSize = useCallback(
     (next: MediaSize) => {
@@ -325,52 +340,36 @@ function AlbumTile({
       // forgetting its shape between mounts, which is the loop above.
       traceCount('media:size-learned')
       rememberNaturalSize(sizeKey, next)
-
-      const frame = frameRef.current
-      if (!frame) {
-        setSize(next)
-        return
-      }
-      // Its own box against the window's: cheap, one read per attachment, and
-      // it needs no knowledge of which element happens to be scrolling.
-      const box = frame.getBoundingClientRect()
-      const onScreen = box.bottom > 0 && box.top < window.innerHeight
-      if (onScreen) {
-        traceCount('media:size-deferred')
-        return
-      }
       setSize(next)
     },
     [sizeKey],
   )
-  const wide = solo && isLandscape(size)
-  // A landscape frame drives its own height, so it is a full-width block with
-  // an auto height rather than a picture fitted into a box.
-  const fitClass = solo
-    ? wide
-      ? 'h-auto w-full'
-      : 'size-full object-contain'
-    : 'size-full object-cover'
+
+  // A solo tile with a known frame is an exact box, so the picture fills it and
+  // `contain` never has anything to letterbox. Unmeasured, the picture IS the
+  // box: it keeps its own height and the caps stop it running away.
+  const fitClass = !solo
+    ? 'size-full object-cover'
+    : size
+      ? 'size-full object-contain'
+      : 'block h-auto w-auto max-h-[420px] max-w-full'
 
   return (
     <button
-      ref={frameRef}
       type="button"
       onClick={() => openViewer(siblings, media)}
       aria-label={
         extraCount > 0 ? `Open ${label} and ${extraCount} more` : `Open ${label}`
       }
+      style={solo && size ? { ...soloBox(size), maxWidth: '100%' } : undefined}
       className={cn(
         'relative block cursor-zoom-in overflow-hidden',
         // A grid tile fills its square, so its backdrop only ever shows while
-        // the picture loads — black is fine there. A fitted solo frame does NOT
-        // fill its box, so that backdrop is permanently on screen beside the
-        // photo: black made it read as a void the picture had been sunk into.
-        // A `--foreground` tint is a light plate on the dark bubble and a soft
-        // grey one on the light bubble, without naming either theme's colour.
-        solo
-          ? cn(wide ? SOLO_LANDSCAPE : SOLO_PORTRAIT, 'bg-foreground/10')
-          : 'bg-black/15',
+        // the picture loads — black is fine there. A solo frame's box is the
+        // photo's own shape, so its backdrop is only ever the loading plate: a
+        // `--foreground` tint, which is a light plate on the dark bubble and a
+        // soft grey one on the light bubble without naming either theme's colour.
+        solo ? cn(!size && SOLO_FLUID, 'bg-foreground/10') : 'bg-black/15',
         className,
       )}
     >

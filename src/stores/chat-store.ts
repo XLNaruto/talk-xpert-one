@@ -80,8 +80,18 @@ interface ChatState {
    * beat later.
    */
   isThreadAtBottom: boolean
+  /**
+   * Whether the open thread's info sheet is showing.
+   *
+   * Here rather than in `chat-area`'s `useState` because the SIDEBAR opens it
+   * too — a row's context menu picks the chat and asks for its info in one go,
+   * and a row cannot reach the thread pane's local state. Switching threads
+   * closes it: the sheet is about one conversation.
+   */
+  isDetailsOpen: boolean
 
   setActiveChat: (chatId: Id | null) => void
+  setDetailsOpen: (open: boolean) => void
   setDraft: (chatId: Id, text: string) => void
   clearDraft: (chatId: Id) => void
   setAttachments: (chatId: Id, files: File[]) => void
@@ -129,8 +139,15 @@ export const useChatStore = create<ChatState>((set) => ({
   memberRevision: {},
   receiptRevision: {},
   isThreadAtBottom: true,
+  isDetailsOpen: false,
 
-  setActiveChat: (chatId) => set({ activeChatId: chatId }),
+  setActiveChat: (chatId) =>
+    set((s) => ({
+      activeChatId: chatId,
+      isDetailsOpen: chatId === s.activeChatId ? s.isDetailsOpen : false,
+    })),
+
+  setDetailsOpen: (isDetailsOpen) => set({ isDetailsOpen }),
 
   setDraft: (chatId, text) =>
     set((s) => ({ drafts: { ...s.drafts, [keyOf(chatId)]: text } })),
@@ -267,6 +284,7 @@ export const useChatStore = create<ChatState>((set) => ({
       memberRevision: {},
       receiptRevision: {},
       isThreadAtBottom: true,
+      isDetailsOpen: false,
     }),
 }))
 

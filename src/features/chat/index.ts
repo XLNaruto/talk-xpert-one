@@ -8,6 +8,8 @@ export { MediaLightbox } from './components/media-lightbox'
 export { useChatList } from './hooks/use-chat-list'
 export { useActiveChatRoute } from './hooks/use-active-chat-route'
 export { useMessageStream } from './hooks/use-message-stream'
+export { usePushOpenChat } from './hooks/use-push-open-chat'
+export { clearTalkEventDedupe } from './lib/talk-event-dedupe'
 export { useUnreadTitle } from './hooks/use-unread-title'
 export type {
   Chat,

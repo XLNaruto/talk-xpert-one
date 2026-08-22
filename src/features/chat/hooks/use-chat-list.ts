@@ -72,6 +72,7 @@ export function useChatList() {
   const activeChatId = useChatStore((s) => s.activeChatId)
   const setActiveChat = useChatStore((s) => s.setActiveChat)
   const clearTyping = useChatStore((s) => s.clearTyping)
+  const setDetailsOpen = useChatStore((s) => s.setDetailsOpen)
   /**
    * The tab pills, counted from the rows themselves.
    *
@@ -107,6 +108,19 @@ export function useChatList() {
       // time; the badge walks down with the reader instead of vanishing.
     },
     [setActiveChat, setSidebarOpen, clearTyping],
+  )
+
+  /**
+   * A row's "Group info". The sheet belongs to the OPEN thread, so this opens
+   * the chat first and then the sheet — the store carries the second half,
+   * because the sidebar cannot reach the thread pane's own state.
+   */
+  const openChatInfo = useCallback(
+    (chatId: Id) => {
+      selectChat(chatId)
+      setDetailsOpen(true)
+    },
+    [selectChat, setDetailsOpen],
   )
 
   const toggleSelected = useCallback((chatId: Id) => {
@@ -231,6 +245,7 @@ export function useChatList() {
     totalUnread: unreadSummary.totalUnread,
     activeChatId,
     selectChat,
+    openChatInfo,
     setChatPinned,
     selectedIds,
     selectedRemovableIds,

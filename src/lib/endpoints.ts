@@ -97,6 +97,20 @@ export const ENDPOINTS = {
     search: '/talk/messages/search',
   },
 
+  /**
+   * The PUSH DEVICE REGISTRY — where a notification can land, one slot per
+   * operating system, exactly like the session slots behind `auth.sessions`.
+   *
+   * One path, three verbs. `POST` is an UPSERT and is meant to be called on
+   * every launch, every token rotation and after every login: it is how the
+   * server knows the handset is still alive, so never cache "already
+   * registered" and skip it. `DELETE` takes the token in the BODY and is only
+   * needed when local state is cleared WITHOUT hitting `auth.logout` — a normal
+   * logout drops this platform's registration itself. `GET` lists the handsets,
+   * never the tokens.
+   */
+  devices: '/talk/devices',
+
   /** MY private, account-wide block list for direct chats. Never announced. */
   blocks: '/talk/blocks',
 

@@ -1,6 +1,7 @@
 import axios from 'axios'
 import { apiClient } from './api-client'
 import { toApiError } from './api-error'
+import { fileSignatureProblem } from './file-signature'
 
 /**
  * Presigned direct-to-storage uploads — the three-step send from §7.
@@ -115,6 +116,11 @@ export async function uploadFile(
   if (withSize && file.size > MAX_ATTACHMENT_BYTES) {
     throw new Error('Attachments must be under 25 MB.')
   }
+  // The backstop for the check the pickers already ran: `type` comes from the
+  // extension, so it agrees with a renamed file and the bytes do not. Nothing
+  // reaches the presign without this, whichever screen chose the file.
+  const misnamed = await fileSignatureProblem(file)
+  if (misnamed) throw new Error(`${misnamed}.`)
 
   const { uploadUrl, key } = await presignUpload(endpoint, file, { withSize })
 

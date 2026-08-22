@@ -1,3 +1,4 @@
+import { fileSignatureProblems } from '@/lib/file-signature'
 import { ATTACHMENT_CONTENT_TYPES, MAX_ATTACHMENT_BYTES } from '@/lib/uploads'
 import { MAX_ATTACHMENTS } from '../constants'
 
@@ -14,15 +15,21 @@ export interface AttachmentIntake {
 /**
  * Decide which of a picked or dropped batch can actually be sent.
  *
- * Pure, because both the file picker and the thread-wide drop target run it and
- * neither should own the rules. The presign signs a content type from a fixed
- * enum and caps the size, so both checks happen here rather than as a 400 after
- * the upload wait.
+ * Shared, because both the file picker and the thread-wide drop target run it
+ * and neither should own the rules. The presign signs a content type from a
+ * fixed enum and caps the size, so both checks happen here rather than as a 400
+ * after the upload wait.
+ *
+ * Async only because of the last check: the name and the `type` a browser
+ * derives from it are both free to lie, so the HEAD of each file is read and
+ * matched against the container it claims to be. That is a `File.slice()` read,
+ * so it is cheap even for a 25 MB video — the bytes past the first 64 are never
+ * touched.
  */
-export function intakeAttachments(
+export async function intakeAttachments(
   picked: FileList | File[] | null,
   heldCount: number,
-): AttachmentIntake {
+): Promise<AttachmentIntake> {
   if (!picked) return { accepted: [], rejected: [] }
 
   // An iPhone photo often arrives with an empty `type`, which would then be
@@ -51,12 +58,22 @@ export function intakeAttachments(
     return true
   })
 
+  // Only now, on the files that got past the cheap checks: what the bytes say.
+  // A `.exe` renamed to `.png` arrives here as a perfectly valid `image/png`
+  // pick, and this is the only test it fails.
+  const misnamed = await fileSignatureProblems(sendable)
+  const genuine = sendable.filter((file) => {
+    const problem = misnamed.get(file)
+    if (problem) rejected.push(problem)
+    return !problem
+  })
+
   // Each file is a separate presign and PUT, so the cap is a real limit on how
   // long the send takes. The first ones in fill the room that is left and the
   // rest are named, never dropped silently.
   const room = Math.max(0, MAX_ATTACHMENTS - heldCount)
-  const accepted = sendable.slice(0, room)
-  const overflow = sendable.length - accepted.length
+  const accepted = genuine.slice(0, room)
+  const overflow = genuine.length - accepted.length
   if (overflow > 0) {
     rejected.push(
       `${overflow} more didn't fit — ${MAX_ATTACHMENTS} files is the most one message can carry`,

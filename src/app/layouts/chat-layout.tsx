@@ -5,8 +5,10 @@ import {
   MediaLightbox,
   useActiveChatRoute,
   useMessageStream,
+  usePushOpenChat,
   useUnreadTitle,
 } from '@/features/chat'
+import { PushPermissionPrompt, usePushNotifications } from '@/features/notifications'
 import { useRefreshIdentity } from '@/features/auth'
 import { useUiStore } from '@/stores/ui-store'
 import { cn } from '@/lib/utils'
@@ -33,6 +35,14 @@ export function ChatLayout() {
   // count conversations. Mounted here so it follows the signed-in app rather
   // than whichever thread is open.
   useUnreadTitle()
+  // Push: register this browser's FCM token, and hand every delivered event to
+  // the stream's own handlers. Mounted here for the same reason as the stream —
+  // the service worker talks to the TAB, not to a screen, so a second mount
+  // would apply every background push twice.
+  const push = usePushNotifications()
+  // A tapped banner opens its conversation. Chat-side, because it is the chat
+  // list and the active-chat token that decide what "open" means.
+  usePushOpenChat()
 
   // Confirm the restored `talk_user_id` once per launch: every "is this mine?"
   // comparison depends on it, and a stale one would misalign every bubble.
@@ -65,6 +75,10 @@ export function ChatLayout() {
           virtualised thread and one in the details sheet open the SAME viewer, and
           it has to outlive both. */}
       <MediaLightbox />
+
+      {/* Shown only when the browser has never been asked. `denied` is final,
+          and an unconfigured or unsupported build offers nothing. */}
+      <PushPermissionPrompt status={push.status} onEnable={() => void push.enable()} />
     </div>
   )
 }

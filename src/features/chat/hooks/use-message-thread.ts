@@ -348,17 +348,55 @@ export function useMessageThread(chat: Chat | null) {
   )
 
   /**
+   * The ticked rows themselves, and only the ones actually loaded.
+   *
+   * A selected id with no message behind it — a row paged out from under the
+   * selection — is dropped, and the count no longer matching `selectedIds` is
+   * what makes both gates below refuse: neither action may be offered over a row
+   * nobody can inspect.
+   */
+  const selectedMessages = useMemo(() => {
+    if (selectedIds.length === 0) return []
+    const byId = new Map(messages.map((m) => [m.id, m]))
+    return selectedIds.map((id) => byId.get(id)).filter((m): m is ChatMessage => !!m)
+  }, [selectedIds, messages])
+
+  const isWholeSelectionLoaded =
+    selectedMessages.length > 0 && selectedMessages.length === selectedIds.length
+
+  /**
    * Whether "delete for everyone" may be offered.
    *
    * Anyone may hide anything they can see, but only the sender can withdraw a
-   * message from other people — so a mixed selection gets the "for me" option
-   * alone rather than a button that would half fail.
+   * message from other people — so a selection holding somebody ELSE's message
+   * gets the "for me" option alone rather than a button that would half fail.
+   *
+   * A tombstone is refused for a second reason: the message is already withdrawn
+   * from everyone, so there is nothing left to withdraw. What remains is the row
+   * in MY list, and hiding that is exactly "delete for me" — which is why a
+   * ticked "This message was deleted" is left with that one action, the same as
+   * its own context menu offers.
    */
-  const canDeleteForEveryone = useMemo(() => {
-    if (selectedIds.length === 0) return false
-    const byId = new Map(messages.map((m) => [m.id, m]))
-    return selectedIds.every((id) => byId.get(id)?.senderTalkUserId === selfId)
-  }, [selectedIds, messages, selfId])
+  const canDeleteForEveryone = useMemo(
+    () =>
+      isWholeSelectionLoaded &&
+      selectedMessages.every(
+        (m) => m.senderTalkUserId === selfId && !m.isDeletedForEveryone,
+      ),
+    [isWholeSelectionLoaded, selectedMessages, selfId],
+  )
+
+  /**
+   * Whether the selection can be forwarded.
+   *
+   * A withdrawn message has no body and no attachments to carry anywhere, so
+   * forwarding one would send an empty message. The bubble's own menu already
+   * withholds Forward over a tombstone; the bar agrees.
+   */
+  const canForwardSelection = useMemo(
+    () => isWholeSelectionLoaded && selectedMessages.every((m) => !m.isDeletedForEveryone),
+    [isWholeSelectionLoaded, selectedMessages],
+  )
 
   return {
     rows,
@@ -382,6 +420,7 @@ export function useMessageThread(chat: Chat | null) {
     selectedIds,
     hasSelection: selectedIds.length > 0,
     canDeleteForEveryone,
+    canForwardSelection,
     deleteMessage,
     toggleSelected,
     clearSelection,

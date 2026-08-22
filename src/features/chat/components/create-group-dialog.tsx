@@ -58,7 +58,7 @@ export function CreateGroupDialog({ onClose }: { onClose: () => void }) {
             accept={AVATAR_CONTENT_TYPES.join(',')}
             className="hidden"
             onChange={(e) => {
-              form.choosePhoto(e.target.files?.[0] ?? null)
+              void form.choosePhoto(e.target.files?.[0] ?? null)
               // Let the same file be re-picked after a rejected type.
               e.target.value = ''
             }}

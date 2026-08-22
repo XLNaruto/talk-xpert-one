@@ -1,5 +1,15 @@
 import { useEffect, useRef } from 'react'
-import { Check, CheckCheck, LogOut, Pin, PinOff, SquareCheck, Trash2, Users } from 'lucide-react'
+import {
+  Check,
+  CheckCheck,
+  Info,
+  LogOut,
+  Pin,
+  PinOff,
+  SquareCheck,
+  Trash2,
+  Users,
+} from 'lucide-react'
 import { Avatar } from '@/components/ui/avatar'
 import {
   ContextMenu,
@@ -49,6 +59,8 @@ interface ChatListItemProps {
   onPin: (chatId: Id, pinned: boolean) => void
   onMarkRead: (chatId: Id) => void
   onDelete: (chatId: Id) => void
+  /** Opens the row's info sheet — picking the chat is part of the act. */
+  onOpenInfo: (chatId: Id) => void
   /** Group only — both ask before they run, in the sidebar's own dialog. */
   onLeaveGroup: (chat: Chat) => void
   onDisbandGroup: (chat: Chat) => void
@@ -65,6 +77,7 @@ export function ChatListItem({
   onPin,
   onMarkRead,
   onDelete,
+  onOpenInfo,
   onLeaveGroup,
   onDisbandGroup,
 }: ChatListItemProps) {
@@ -87,7 +100,7 @@ export function ChatListItem({
   const selecting = isSelected !== null
   // Is there anything at the foot of the menu at all — see the note there.
   const endingActions =
-    canHideChat(chat) || !chat.self.hasLeft || canEditGroup(chat.self.memberRole)
+    canHideChat(chat) || !chat.self.hasLeft || canEditGroup(chat.self)
   // Someone typing is more useful than the last message, so it wins the line.
   const secondLine =
     typingNames.length > 0
@@ -275,7 +288,10 @@ export function ChatListItem({
 
       {/* Radix anchors this to the pointer, so it opens on the row that was
           clicked and flips itself away from the sidebar's edges. */}
-      <ContextMenuContent className="w-44">
+      {/* Wide enough for the longest label to stay on ONE line — "Delete for
+          everyone" wrapped at w-44, and a wrapped destructive item reads as two
+          separate ones. */}
+      <ContextMenuContent className="w-52">
         <ContextMenuItem onSelect={() => onPin(chat.id, !chat.self.isPinned)}>
           {chat.self.isPinned ? <PinOff /> : <Pin />}
           {chat.self.isPinned ? 'Unpin' : 'Pin'}
@@ -289,6 +305,14 @@ export function ChatListItem({
         <ContextMenuItem onSelect={() => onToggleSelected(chat.id)}>
           <SquareCheck />
           Select
+        </ContextMenuItem>
+        {/* Named after the sheet it opens, which titles itself by the KIND of
+            conversation. Opening it OPENS the chat as well — the sheet is the
+            thread pane's, so there is no way to show one for a row that is not
+            the open one, and half-opening would be the surprise. */}
+        <ContextMenuItem onSelect={() => onOpenInfo(chat.id)}>
+          <Info />
+          {chat.type === 'group' ? 'Group info' : 'Contact info'}
         </ContextMenuItem>
         {/* Deleting is HIDING — it takes the row off MY list only. A direct chat
             can always be hidden; a GROUP only once I have left it, which is the
@@ -313,7 +337,7 @@ export function ChatListItem({
             Delete
           </ContextMenuItem>
         )}
-        {chat.type === 'group' && canEditGroup(chat.self.memberRole) && (
+        {chat.type === 'group' && canEditGroup(chat.self) && (
           <ContextMenuItem variant="destructive" onSelect={() => onDisbandGroup(chat)}>
             <Trash2 />
             Delete for everyone

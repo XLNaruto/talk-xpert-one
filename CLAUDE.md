@@ -62,6 +62,9 @@ document, `TALK-IMPLEMENTATION.md` for the rules behind it):
 | `/login` | `features/auth/` | email + password + mandatory `platform` |
 | `/chat` | `features/chat/` | list, thread, composer, groups, media, search |
 
+Push notifications are a feature without a route — `features/notifications/`,
+mounted by `chat-layout.tsx`. See "Push is the same events, delivered twice".
+
 ### People come with names and photos, and there is now a directory
 
 Every person-shaped field carries a `name` and a `photo` **beside** its integer
@@ -247,6 +250,57 @@ row from the RECIPIENT'S side, so it is inserted straight in; `adoptChat` is onl
 the fallback for the null-`chat` race. A creator needs no read-back at all: the
 grant is issued at creation.
 
+### Push is the same events, delivered twice
+
+Every Talk event that reaches the socket ALSO reaches the browser as an FCM
+push, carrying **the same object**. So there is no second set of handlers: a
+push is parsed once and run through the handlers `use-message-stream.ts` already
+binds to the socket.
+
+What makes that safe is **not** suppressing every repeat.
+`lib/talk-event-dedupe.ts` guards exactly two events — `talk.message.new` (keyed
+on the message id) and `talk.chat.created` (on the chat id) — because only those
+two are non-idempotent AND carry an identity that is minted once: one increments
+an unread count, the other inserts a row and joins a room. **Everything else is
+applied every time it arrives.** An edit writes the same body, a delete sets the
+same tombstone, a receipt re-adds a reader already in the set — all harmless
+twice — while the pins and the roles TOGGLE, and pin → unpin → pin is three real
+events whose first and third are indistinguishable. Suppress on type and id and
+the third one vanishes, so the message quietly stops being pinned. Never key on
+FCM's own message id: it differs from the socket's every time.
+
+FCM flattens `data` to a STRING map (`data.chat_id` is `"7"`), which is why only
+`data.payload` is read — the whole event as one JSON string, byte-identical to
+the socket frame. `lib/push-payload.ts` is the only place that parses it.
+
+**Loud or silent is decided by `notification.body`, never by a list of event
+names.** Loud: `talk.message.new` (membership sentences included — they are
+system messages), `talk.chat.created`, `talk.message.pinned`. Everything else is
+data-only and exists so a backgrounded client stays correct without buzzing.
+`talk.typing.*` is never pushed. An event the socket handlers do not know
+(`talk.unread.updated`, or anything added later) is treated as a NUDGE to
+re-read: REST is the source of truth and both delivery paths are best-effort.
+
+`POST /talk/devices` is an UPSERT and is how the server knows the browser is
+still alive — it is called on every launch, after every login and on every token
+rotation, and a cached "already registered" must never skip it. `platform` is
+the same slot the login claimed (`WEB`): it is a SLOT, not a label, so saving a
+token retires whatever token held it. A normal `POST /talk/auth/logout` already
+drops this platform's registration, so `DELETE /talk/devices` is only for
+clearing local state without hitting that route.
+
+`public/firebase-messaging-sw.js` is a static asset and cannot import from
+`src/` — its Firebase config is handed to it in the REGISTRATION QUERY STRING so
+those values live only in `.env`, and the two message names it shares with the
+page are duplicated in `features/notifications/constants.ts`. It never routes a
+tap itself: a record id never goes in a path here, so it opens `/chat`, posts
+the event to the page, and `use-push-open-chat.ts` sets the active chat, which
+is what writes the encrypted `?data=` token.
+
+The whole subsystem is dormant until all seven `VITE_APP_FIREBASE_*` values are
+filled in — `isPushConfigured()` in `config/env.ts` is all-or-nothing, and the
+SDK itself is dynamically imported so an unconfigured build never loads it.
+
 ### Things the API cannot do, so the UI does not offer them
 
 - **Reaching outside your grants.** `GET /talk/contacts` lists only the companies
@@ -260,6 +314,9 @@ grant is issued at creation.
   failed media send asks for the file again; a failed text send replays as-is.
 - **Telling who blocked me.** Nothing fails and no event fires, by design — the
   old 403 on a send was a reliable probe and it is gone.
+- **Re-asking for notification permission.** A `denied` answer is final — the
+  browser will not show the prompt again from script — so the offer is shown for
+  `prompt` only, and a "not now" is remembered in `ui-store`.
 - **Reading what arrived while I had somebody blocked.** It is hidden for good;
   an "unblock to catch up" affordance would promise something that cannot happen.
 
@@ -357,6 +414,12 @@ grant is issued at creation.
     expired on a ~5 s timer rather than trusting `talk.typing.stop`.
 21. **`talk.presence` is broadcast to the whole account** and must be filtered to
     the people actually on screen.
+22. **Firebase is only imported in `lib/firebase-messaging.ts`**, and only
+    dynamically — a build with no Firebase config must not carry the SDK. A push
+    is never handled on its own: it is parsed in
+    `features/notifications/lib/push-payload.ts`, published on the push bus, and
+    applied by the SOCKET handler for the same event, once `admitTalkEvent` has
+    ruled out the copy that already arrived the other way.
 
 ## Feature folder shape
 
@@ -385,11 +448,13 @@ src/
 ├── routes/         route objects, guards (PrivateRoute / PublicRoute), 404
 ├── features/
 │   ├── auth/         email + password sign-in
-│   └── chat/         conversation list, thread, composer, realtime stream
+│   ├── chat/         conversation list, thread, composer, realtime stream
+│   └── notifications/  FCM device registry, push delivery, permission prompt
 ├── components/     ui/ (shadcn), common/ (shared app pieces)
 ├── lib/            api-client, api-error, api-toast, auth-refresh, socket-client,
-│                   uploads, platform, cookie, crypto, idb-storage, endpoints,
-│                   config-api/-mappers, logger, utils, validation
+│                   firebase-messaging, uploads, platform, cookie, crypto,
+│                   idb-storage, endpoints, config-api/-mappers, logger, utils,
+│                   validation
 ├── stores/         GLOBAL zustand: auth, chat, chat-list, message-cache,
 │                   talk-directory, config, media-viewer, ui
 ├── hooks/          app-wide: use-app-config, use-debounced-value, use-is-mobile,
@@ -397,6 +462,9 @@ src/
 ├── config/         env.ts (zod), api-proxy.ts
 ├── types/          api.ts (Id, ListPage, MessagePage), config.ts
 └── styles/         globals.css — the design tokens
+
+public/
+└── firebase-messaging-sw.js   the push service worker (static, no src/ imports)
 ```
 
 ## Where a new file goes
@@ -419,6 +487,8 @@ src/
 | A shared app component | `components/common/` |
 | A component used by one feature | `features/<f>/components/` |
 | A new global store | `stores/<name>-store.ts` + `main.tsx` rehydrate list if persisted |
+| Anything touching the Firebase SDK | `lib/firebase-messaging.ts` — nowhere else, exactly like socket.io |
+| Handling a NEW pushed event | nothing, if the socket already handles it — the bridge in `use-message-stream.ts` runs the same handler |
 | A new env var | `config/env.ts` schema **and** `.env.sample` |
 | A colour or radius | `styles/globals.css` — a token, never a hard-coded hex in a component |
 
@@ -460,6 +530,9 @@ npm run typecheck  # tsc -b
 - No TanStack Query or TanStack Router added.
 - No `talk.`/`talk:` event string outside `features/chat/constants.ts` and
   `lib/socket-client.ts`; no `/talk/...` path outside `lib/endpoints.ts`.
+- No `firebase` import outside `lib/firebase-messaging.ts`.
+- A new pushed event is handled by the SOCKET handler, through the bridge — not
+  by a second handler that will drift from it.
 - A new `*_url` field from the API is rendered through `useMediaUrl()`, not raw.
 - A new `photo` field is treated the same way — it is a storage key, not a URL.
 - A new read that carries `name`/`photo` calls `rememberPeople` in its

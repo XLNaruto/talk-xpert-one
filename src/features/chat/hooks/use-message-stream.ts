@@ -5,7 +5,7 @@ import { logger } from '@/lib/logger'
 import { useAuthStore } from '@/stores/auth-store'
 import { useChatListStore, cachedChat } from '@/stores/chat-list-store'
 import { useChatStore, activeChatId } from '@/stores/chat-store'
-import { useMessageCacheStore } from '@/stores/message-cache-store'
+import { hasPinnedMessages, useMessageCacheStore } from '@/stores/message-cache-store'
 import { knownPerson, rememberPeople } from '@/stores/talk-directory-store'
 import type { Id } from '@/types/api'
 import { SOCKET_EVENTS, TYPING_EXPIRY_MS, ADOPT_RETRY_COOLDOWN_MS } from '../constants'
@@ -20,6 +20,8 @@ import {
 import { peopleInChat, peopleInMessage } from '../lib/talk-directory'
 import { systemActor } from '../lib/system-messages'
 import { traceCount } from '../lib/thread-trace'
+import { onPushEvent } from '@/features/notifications'
+import { admitTalkEvent } from '../lib/talk-event-dedupe'
 import { catchUpMessages } from '../api/use-messages'
 import * as chatApi from '../api/chat-api'
 import { joinAll } from '../api/use-chats'
@@ -187,9 +189,15 @@ export function useMessageStream() {
 
     const onMessageDeleted = (payload: { chat_id: number; message_ids: number[] }) => {
       const ids = payload.message_ids ?? []
+      // Asked BEFORE the tombstone, which clears both pin flags on the row.
+      const wasPinned = hasPinnedMessages(payload.chat_id, ids)
       // Delete for EVERYONE keeps the bubble as a tombstone — replies point at it.
       cache().applyDeleteForEveryone(payload.chat_id, ids)
       resyncPreview(payload.chat_id)
+      // A deleted message cannot still be the chat's announcement, and my own
+      // private bookmark on it goes too. Neither list can be patched from here —
+      // pins expire and are filtered at read time — so both re-read.
+      if (wasPinned) ui().bumpPins(payload.chat_id)
     }
 
     const onMessageRead = (payload: {
@@ -584,46 +592,74 @@ export function useMessageStream() {
     const countEvent = (event: string) => traceCount(`socket:${event}`)
     socket.onAny(countEvent)
 
-    socket.on(SOCKET_EVENTS.messageNew, onMessageNew)
-    socket.on(SOCKET_EVENTS.messageEdited, onMessageEdited)
-    socket.on(SOCKET_EVENTS.messageDeleted, onMessageDeleted)
-    socket.on(SOCKET_EVENTS.messageRead, onMessageRead)
-    socket.on(SOCKET_EVENTS.messagePinned, onMessagePinned)
-    socket.on(SOCKET_EVENTS.messageUnpinned, onMessageUnpinned)
-    socket.on(SOCKET_EVENTS.messageSelfPinned, onMessageSelfPinned)
-    socket.on(SOCKET_EVENTS.messageSelfUnpinned, onMessageSelfUnpinned)
-    socket.on(SOCKET_EVENTS.chatCreated, onChatCreated)
-    socket.on(SOCKET_EVENTS.chatUpdated, onChatUpdated)
-    socket.on(SOCKET_EVENTS.chatDeleted, onChatDeleted)
-    socket.on(SOCKET_EVENTS.memberAdded, onMemberAdded)
-    socket.on(SOCKET_EVENTS.memberLeft, onMemberLeft)
-    socket.on(SOCKET_EVENTS.memberRemoved, onMemberRemoved)
-    socket.on(SOCKET_EVENTS.memberBlocked, onMemberBlocked)
-    socket.on(SOCKET_EVENTS.memberRoleChanged, onMemberRoleChanged)
-    socket.on(SOCKET_EVENTS.typingStart, onTypingStart)
-    socket.on(SOCKET_EVENTS.typingStop, onTypingStop)
-    socket.on(SOCKET_EVENTS.presence, onPresence)
+    /**
+     * Every handler, by the event that feeds it — because the SOCKET is no
+     * longer the only thing that feeds them.
+     *
+     * A push carries the same object the socket publishes (`data.payload` is
+     * byte-identical), so a background push is applied by running the handler
+     * that already exists rather than by a second set of handlers that would
+     * drift from these. Both paths go through `admitTalkEvent` first: a
+     * connected client receives every event twice, once each way.
+     */
+    const handlers: Record<string, (payload: never) => void> = {
+      [SOCKET_EVENTS.messageNew]: onMessageNew,
+      [SOCKET_EVENTS.messageEdited]: onMessageEdited,
+      [SOCKET_EVENTS.messageDeleted]: onMessageDeleted,
+      [SOCKET_EVENTS.messageRead]: onMessageRead,
+      [SOCKET_EVENTS.messagePinned]: onMessagePinned,
+      [SOCKET_EVENTS.messageUnpinned]: onMessageUnpinned,
+      [SOCKET_EVENTS.messageSelfPinned]: onMessageSelfPinned,
+      [SOCKET_EVENTS.messageSelfUnpinned]: onMessageSelfUnpinned,
+      [SOCKET_EVENTS.chatCreated]: onChatCreated,
+      [SOCKET_EVENTS.chatUpdated]: onChatUpdated,
+      [SOCKET_EVENTS.chatDeleted]: onChatDeleted,
+      [SOCKET_EVENTS.memberAdded]: onMemberAdded,
+      [SOCKET_EVENTS.memberLeft]: onMemberLeft,
+      [SOCKET_EVENTS.memberRemoved]: onMemberRemoved,
+      [SOCKET_EVENTS.memberBlocked]: onMemberBlocked,
+      [SOCKET_EVENTS.memberRoleChanged]: onMemberRoleChanged,
+      [SOCKET_EVENTS.typingStart]: onTypingStart,
+      [SOCKET_EVENTS.typingStop]: onTypingStop,
+      [SOCKET_EVENTS.presence]: onPresence,
+    }
+
+    /** Run one event through its handler, if it is one we know and have not seen. */
+    const dispatch = (type: string, payload: unknown) => {
+      const handler = handlers[type]
+      if (!handler) return
+      if (!admitTalkEvent(type, payload)) return
+      ;(handler as (value: unknown) => void)(payload)
+    }
+
+    const socketBindings = Object.entries(handlers).map(([type]) => {
+      const listener = (payload: unknown) => dispatch(type, payload)
+      socket.on(type, listener)
+      return [type, listener] as const
+    })
+
+    /**
+     * The push path.
+     *
+     * A push reaches us three ways — a foreground `onMessage`, a background one
+     * forwarded by the service worker, and a tapped banner — and all three
+     * arrive here as the same object. Events the socket handles are applied;
+     * anything else (`talk.unread.updated`, or something the server adds later)
+     * is a NUDGE, and the honest response to a nudge is to re-read, because REST
+     * is the source of truth and both delivery paths are best-effort.
+     */
+    const stopPushBridge = onPushEvent((event) => {
+      traceCount(`push:${event.type}`)
+      if (handlers[event.type]) {
+        dispatch(event.type, event)
+        return
+      }
+      void refreshList()
+    })
 
     return () => {
-      socket.off(SOCKET_EVENTS.messageNew, onMessageNew)
-      socket.off(SOCKET_EVENTS.messageEdited, onMessageEdited)
-      socket.off(SOCKET_EVENTS.messageDeleted, onMessageDeleted)
-      socket.off(SOCKET_EVENTS.messageRead, onMessageRead)
-      socket.off(SOCKET_EVENTS.messagePinned, onMessagePinned)
-      socket.off(SOCKET_EVENTS.messageUnpinned, onMessageUnpinned)
-      socket.off(SOCKET_EVENTS.messageSelfPinned, onMessageSelfPinned)
-      socket.off(SOCKET_EVENTS.messageSelfUnpinned, onMessageSelfUnpinned)
-      socket.off(SOCKET_EVENTS.chatCreated, onChatCreated)
-      socket.off(SOCKET_EVENTS.chatUpdated, onChatUpdated)
-      socket.off(SOCKET_EVENTS.chatDeleted, onChatDeleted)
-      socket.off(SOCKET_EVENTS.memberAdded, onMemberAdded)
-      socket.off(SOCKET_EVENTS.memberLeft, onMemberLeft)
-      socket.off(SOCKET_EVENTS.memberRemoved, onMemberRemoved)
-      socket.off(SOCKET_EVENTS.memberBlocked, onMemberBlocked)
-      socket.off(SOCKET_EVENTS.memberRoleChanged, onMemberRoleChanged)
-      socket.off(SOCKET_EVENTS.typingStart, onTypingStart)
-      socket.off(SOCKET_EVENTS.typingStop, onTypingStop)
-      socket.off(SOCKET_EVENTS.presence, onPresence)
+      for (const [type, listener] of socketBindings) socket.off(type, listener)
+      stopPushBridge()
       socket.offAny(countEvent)
     }
   }, [talkUserId])

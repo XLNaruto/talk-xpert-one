@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { fileSignatureProblem } from '@/lib/file-signature'
 import { AVATAR_CONTENT_TYPES } from '@/lib/uploads'
 import { fieldErrors } from '@/lib/validation'
 import { useAuthStore } from '@/stores/auth-store'
@@ -85,12 +86,20 @@ export function useCreateGroupForm(onDone: () => void) {
   )
 
   const choosePhoto = useCallback(
-    (file: File | null) => {
+    async (file: File | null) => {
       if (
         file &&
         !AVATAR_CONTENT_TYPES.includes(file.type as (typeof AVATAR_CONTENT_TYPES)[number])
       ) {
         setErrors((current) => ({ ...current, photo: 'Choose a JPEG, PNG or WebP image' }))
+        return
+      }
+      // The extension said JPEG; the bytes get the last word. Checked here so
+      // the message appears under the field on the pick, rather than as a
+      // failed upload after the group has already been created.
+      const misnamed = file ? await fileSignatureProblem(file) : null
+      if (misnamed) {
+        setErrors((current) => ({ ...current, photo: 'Choose a real JPEG, PNG or WebP image' }))
         return
       }
       clear('photo')

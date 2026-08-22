@@ -379,12 +379,18 @@ export const useMessageCacheStore = create<MessageCacheState>()((set) => ({
           (m) => ids.has(m.id),
           // The tombstone keeps the row and its attachments' absence: the
           // body goes, the bubble stays, replies still resolve against it.
+          // BOTH pins go with it, and the private one is the easy half to
+          // forget: a tombstone is not something anybody can still be
+          // announcing, and it is not a bookmark worth keeping either. Left
+          // set, `isPinnedForMe` keeps the pin mark on the corner of a message
+          // whose body is gone.
           (m) => ({
             ...m,
             body: null,
             media: [],
             isDeletedForEveryone: true,
             isPinned: false,
+            isPinnedForMe: false,
           }),
         ),
       )
@@ -481,4 +487,19 @@ export function oldestMessageId(chatId: Id): Id | null {
     if (row.id > 0) return row.id
   }
   return null
+}
+
+/**
+ * Whether any of these messages carries a pin, EITHER scope.
+ *
+ * Asked before a delete, because a delete is the one write that can invalidate
+ * the pin bar and the pin sheet without either of them being touched — and only
+ * `GET /talk/chats/:id/pins` knows what is left, since pins expire and are
+ * filtered at read time rather than swept.
+ */
+export function hasPinnedMessages(chatId: Id, messageIds: Id[]): boolean {
+  const ids = new Set(messageIds.map(String))
+  return cachedMessages(chatId).some(
+    (message) => ids.has(String(message.id)) && (message.isPinned || message.isPinnedForMe),
+  )
 }

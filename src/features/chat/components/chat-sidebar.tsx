@@ -62,6 +62,7 @@ export function ChatSidebar() {
     cursorKey,
     onSearchKeyDown,
     rowConfirm,
+    openChatInfo,
   } = useChatList()
 
   const selfTalkUserId = useAuthStore((s) => s.identity?.talkUserId ?? null)
@@ -90,10 +91,18 @@ export function ChatSidebar() {
       onPin={setChatPinned}
       onMarkRead={markChatRead}
       onDelete={() => rowConfirm.ask('remove', chat)}
+      onOpenInfo={openChatInfo}
       onLeaveGroup={(target) => rowConfirm.ask('leave', target)}
       onDisbandGroup={(target) => rowConfirm.ask('disband', target)}
     />
   )
+
+  // The selection bar's line, held once: it is both the visible (truncating)
+  // text and the tooltip that says the whole sentence.
+  const selectionNote =
+    selectedRemovableIds.length === 0
+      ? 'Leave a group before removing it'
+      : `selected of ${chats.length}`
 
   return (
     // `relative` so the account card can float over the list — see the note on
@@ -261,12 +270,12 @@ export function ChatSidebar() {
           {/* A group you are still IN can't be hidden — you leave it first — so
               when the selection holds nothing removable the line says WHY the
               action is dimmed. A disabled button takes no pointer events, so a
-              tooltip would never be read here. */}
-          <span className="min-w-0 flex-1 truncate text-xs font-medium">
-            {selectedRemovableIds.length === 0
-              ? 'Leave a group before removing it'
-              : `selected of ${chats.length}`}
-          </span>
+              tooltip on the Remove button would never be read — it goes on this
+              line instead, which is also where the sentence gets truncated in a
+              narrow sidebar. */}
+          <Tip label={selectionNote}>
+            <span className="min-w-0 flex-1 truncate text-xs font-medium">{selectionNote}</span>
+          </Tip>
           <Button
             variant="ghost"
             size="sm"
@@ -382,7 +391,7 @@ export function ChatSidebar() {
             : rowConfirm.confirmKind === 'leave'
               ? leaveGroupCopy(
                   chatLabel(rowConfirm.confirmChat).title,
-                  canEditGroup(rowConfirm.confirmChat.self.memberRole),
+                  canEditGroup(rowConfirm.confirmChat.self),
                   rowConfirm.successorName,
                 )
               : removeChatCopy(

@@ -36,7 +36,11 @@ export function useFileDrop(
       try {
         const file = await fileFromMediaUrl(url)
         if (!file) {
-          toastProblem("That image couldn't be read from its link. Save it, then attach it.")
+          // The drop carried a link, not bytes, and the media host is a
+          // different origin with no CORS header — so the read behind that link
+          // is refused and nothing here can recover it. Name the one route that
+          // does work rather than implying the drag might succeed on a retry.
+          toastProblem('That drop carried only a link, and the file behind it is out of reach. Download it, then attach the file.')
           return
         }
         onFiles([file])

@@ -3,14 +3,17 @@ import {
   Ban,
   Camera,
   Loader2,
+  LogOut,
   MoreVertical,
   Search,
   Shield,
   ShieldMinus,
   ShieldOff,
+  Trash2,
   UserMinus,
   UserPlus,
   Users,
+  X,
 } from 'lucide-react'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
@@ -27,6 +30,7 @@ import { Field } from '@/components/common/form-field'
 import { ConfirmDialog } from '@/components/common/confirm-dialog'
 import { Modal } from '@/components/common/modal'
 import { OnlineBadge } from '@/components/common/online-badge'
+import { Tip } from '@/components/common/tip'
 import { useMediaUrl } from '@/hooks/use-app-config'
 import { AVATAR_CONTENT_TYPES } from '@/lib/uploads'
 import { cn } from '@/lib/utils'
@@ -37,19 +41,23 @@ import { useChatActions } from '../api/use-chat-actions'
 import { useChatPresence } from '../api/use-presence'
 import { useGroupDetailsForm } from '../hooks/use-group-details-form'
 import { useGroupInfo, type GroupInfoTab, type MemberConfirm } from '../hooks/use-group-info'
+import { useChatHeaderActions } from '../hooks/use-chat-header-actions'
 import {
+  canHideChat,
   chatLabel,
   formatBytes,
+  leaveGroupCopy,
   mediaLabel,
   memberBlockCopy,
   memberRoleCopy,
+  removeChatCopy,
 } from '../lib/chat-labels'
 import { canActOnMember, canEditGroup, canManageMembers, roleLabel } from '../lib/member-roles'
 import { resolveTalkUser } from '../lib/talk-directory'
 import * as chatApi from '../api/chat-api'
 import { MediaThumb } from './message-media'
 import { PeoplePicker } from './people-picker'
-import type { Chat, ChatMember, MemberRole, MessageMedia } from '../types'
+import type { Chat, ChatMember, ChatSelf, MemberRole, MessageMedia } from '../types'
 
 /**
  * Group info: the group's picture and name on one pane, everybody in it — and
@@ -74,8 +82,11 @@ export function ChatDetailsSheet({ chat, onClose }: { chat: Chat; onClose: () =>
   // `canEdit` is the rename form and the photo, which succession does not share;
   // `canManage` is everything about WHO IS IN the group, which an admin holds in
   // full.
-  const canEdit = canEditGroup(chat.self.memberRole)
-  const canManage = canManageMembers(chat.self.memberRole)
+  // Both also go false once I have LEFT: the row keeps the role it was frozen
+  // at, so an owner who left still reads `owner` here while the server refuses
+  // every write on that group.
+  const canEdit = canEditGroup(chat.self)
+  const canManage = canManageMembers(chat.self)
 
   const group = useGroupInfo(chat.id, isGroup)
   // The rename lives in `useGroupDetailsForm`; only the picture is saved from here.
@@ -85,12 +96,24 @@ export function ChatDetailsSheet({ chat, onClose }: { chat: Chat; onClose: () =>
   const details = useGroupDetailsForm(chat)
   const avatarInput = useRef<HTMLInputElement>(null)
 
+  // The same three endings the header's overflow menu offers, on the sheet that
+  // is already open — the questions and their copy come from the one hook, so
+  // the owner's leave still names the heir here.
+  const ending = useChatHeaderActions(chat)
+  const canLeave = isGroup && !chat.self.hasLeft
+  // A left group's second step: leaving freezes the row, this is what removes it.
+  const canRemove = isGroup && canHideChat(chat)
+
   const media = useChatMedia(chat.id)
   const memberCount = group.members.length || chat.memberCount
 
   const manageProps = {
     selfId,
-    selfRole: chat.self.memberRole,
+    self: chat.self,
+    // My own row holds no management verbs — they all refuse against me — but it
+    // does hold the one thing only I can do, so the menu there is my exit.
+    canLeave,
+    onLeave: () => ending.ask('leave'),
     onRemove: group.askRemove,
     onToggleBlocked: group.askToggleBlocked,
     onSetRole: group.askSetRole,
@@ -169,6 +192,15 @@ export function ChatDetailsSheet({ chat, onClose }: { chat: Chat; onClose: () =>
                       ? `${memberCount} ${memberCount === 1 ? 'participant' : 'participants'}`
                       : 'Direct message'}
                   </p>
+                  {/* What the group is FOR. The owner reads it out of the edit
+                      box below; everybody else had nowhere to read it at all,
+                      so a description was written and never seen. Straight off
+                      the chat row, which `talk.chat.updated` patches in place. */}
+                  {isGroup && chat.description && (
+                    <p className="max-w-[42ch] text-center text-xs whitespace-pre-wrap text-muted-foreground">
+                      {chat.description}
+                    </p>
+                  )}
                 </>
               )}
             </div>
@@ -225,10 +257,34 @@ export function ChatDetailsSheet({ chat, onClose }: { chat: Chat; onClose: () =>
                   <Input
                     value={group.memberQuery}
                     onChange={(e) => group.setMemberQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      // Esc clears the filter rather than closing the sheet —
+                      // the field is inside a dialog, so the key has to be
+                      // stopped or the whole panel goes with it.
+                      if (e.key === 'Escape' && group.memberQuery.length > 0) {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        group.setMemberQuery('')
+                      }
+                    }}
                     placeholder="Search members…"
                     aria-label="Search members"
-                    className="pl-9"
+                    className={cn('pl-9', group.memberQuery.length > 0 && 'pr-9')}
                   />
+                  {/* The field is always open here, so the clear button only
+                      appears once there is something to clear. */}
+                  {group.memberQuery.length > 0 && (
+                    <Tip label="Clear search (Esc)">
+                      <button
+                        type="button"
+                        onClick={() => group.setMemberQuery('')}
+                        aria-label="Clear member search"
+                        className="absolute top-1/2 right-1.5 -translate-y-1/2 rounded-md p-1 text-muted-foreground transition-colors hover:text-foreground"
+                      >
+                        <X className="size-4" />
+                      </button>
+                    </Tip>
+                  )}
                 </div>
 
                 <MemberList
@@ -276,6 +332,29 @@ export function ChatDetailsSheet({ chat, onClose }: { chat: Chat; onClose: () =>
                 </>
               )}
             </section>
+
+            {isGroup && (canLeave || canRemove || canEdit) && (
+              <section className="grid gap-2 border-t border-border pt-4">
+                <SectionHeading>Leave or delete</SectionHeading>
+                {canLeave && (
+                  <DangerButton icon={<LogOut />} onClick={() => ending.ask('leave')}>
+                    Leave group
+                  </DangerButton>
+                )}
+                {canRemove && (
+                  <DangerButton icon={<Trash2 />} onClick={() => ending.ask('remove')}>
+                    Remove from your list
+                  </DangerButton>
+                )}
+                {/* Owner-only, and never inherited by an admin: this one takes
+                    the conversation away from every member. */}
+                {canEdit && (
+                  <DangerButton icon={<Trash2 />} onClick={() => ending.ask('disband')}>
+                    Delete for everyone
+                  </DangerButton>
+                )}
+              </section>
+            )}
           </>
         )}
 
@@ -322,6 +401,24 @@ export function ChatDetailsSheet({ chat, onClose }: { chat: Chat; onClose: () =>
 
       {/* Both membership writes come through here, so the wording and the button
           order are the same whichever way the group is changing. */}
+      {ending.confirmKind !== null && (
+        <ConfirmDialog
+          {...(ending.confirmKind === 'disband'
+            ? {
+                title: 'Delete this group for everyone?',
+                message: `${label.title} and its messages go away for every member. This cannot be undone.`,
+                confirmLabel: 'Delete for everyone',
+              }
+            : ending.confirmKind === 'leave'
+              ? leaveGroupCopy(label.title, canEdit, ending.successorName)
+              : removeChatCopy(label.title, isGroup))}
+          tone="destructive"
+          isPending={ending.isPending}
+          onConfirm={() => void ending.run()}
+          onCancel={ending.cancel}
+        />
+      )}
+
       {group.confirm && (
         <MemberConfirmDialog
           confirm={group.confirm}
@@ -427,6 +524,33 @@ function TabButton({
   )
 }
 
+/**
+ * One ending, as a full-width row. The header offers these in a dropdown, where
+ * a menu item is the shape; here there is no menu to open, so they are buttons
+ * that read as a list — quiet until hovered, destructive on the way in.
+ */
+function DangerButton({
+  icon,
+  onClick,
+  children,
+}: {
+  icon: ReactNode
+  onClick: () => void
+  children: ReactNode
+}) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      onClick={onClick}
+      className="h-9 w-full justify-start gap-2 px-2 text-destructive hover:bg-destructive/10 hover:text-destructive"
+    >
+      {icon}
+      {children}
+    </Button>
+  )
+}
+
 function SectionHeading({ children, count }: { children: ReactNode; count?: number }) {
   return (
     <div className="flex items-center justify-between">
@@ -445,7 +569,9 @@ function MemberList({
   isLoading,
   isFiltered,
   selfId,
-  selfRole,
+  self,
+  canLeave,
+  onLeave,
   onRemove,
   onToggleBlocked,
   onSetRole,
@@ -454,7 +580,9 @@ function MemberList({
   isLoading: boolean
   isFiltered: boolean
   selfId: Id | null
-  selfRole: MemberRole
+  self: ChatSelf
+  canLeave: boolean
+  onLeave: () => void
   onRemove: (id: Id) => void
   onToggleBlocked: (id: Id, blocked: boolean) => void
   onSetRole: (id: Id, promote: boolean) => void
@@ -487,7 +615,9 @@ function MemberList({
           // One answer for all three verbs, because they refuse together: the
           // creator's row is untouchable by everybody, my own row refuses on
           // mute, remove AND role, and a plain member holds none of them.
-          canManage={canActOnMember(selfRole, member, selfId)}
+          canManage={canActOnMember(self, member, selfId)}
+          canLeave={canLeave && member.talkUserId === selfId}
+          onLeave={onLeave}
           onRemove={() => onRemove(member.talkUserId)}
           onToggleBlocked={() => onToggleBlocked(member.talkUserId, !member.isBlocked)}
           onSetRole={() => onSetRole(member.talkUserId, member.memberRole !== 'admin')}
@@ -503,6 +633,8 @@ function MemberRow({
   isBlocked,
   isSelf,
   canManage,
+  canLeave,
+  onLeave,
   onRemove,
   onToggleBlocked,
   onSetRole,
@@ -512,6 +644,9 @@ function MemberRow({
   isBlocked: boolean
   isSelf: boolean
   canManage: boolean
+  /** Only ever true on MY row, and only while I am still in the group. */
+  canLeave: boolean
+  onLeave: () => void
   onRemove: () => void
   onToggleBlocked: () => void
   onSetRole: () => void
@@ -556,6 +691,23 @@ function MemberRow({
           <span className="block text-[11px] text-destructive">Muted — cannot post</span>
         )}
       </span>
+
+      {/* My own row: nothing can be done TO me here — mute, demote and remove all
+          refuse against myself — so there is no menu to open. The one act that
+          IS mine is a door of its own, named by its tooltip. */}
+      {canLeave && (
+        <Tip label="Leave group">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onLeave}
+            aria-label="Leave group"
+            className="size-8 shrink-0 rounded-full text-destructive hover:bg-destructive/10 hover:text-destructive"
+          >
+            <LogOut />
+          </Button>
+        </Tip>
+      )}
 
       {canManage && (
         <>

@@ -10,6 +10,7 @@ import { useChatListStore } from '@/stores/chat-list-store'
 import { useChatStore } from '@/stores/chat-store'
 import { useMessageCacheStore } from '@/stores/message-cache-store'
 import { useTalkDirectoryStore } from '@/stores/talk-directory-store'
+import { clearTalkEventDedupe } from '@/features/chat'
 import * as authApi from './auth-api'
 import type { LoginValues } from '../types'
 
@@ -95,6 +96,10 @@ export function useLogout() {
         // Names and avatars belong to the signed-in account; the next person to
         // use this browser must not see them.
         clearDirectory()
+        // The socket-vs-push de-duplication cache is keyed on event identity,
+        // not on the account — the next person to sign in here must not have
+        // their first events swallowed as "already seen".
+        clearTalkEventDedupe()
         clearCookies()
         logoutLocal('user')
         setPending(false)

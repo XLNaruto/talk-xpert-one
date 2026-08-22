@@ -121,7 +121,9 @@ export function useMessageInput(chat: Chat | null) {
    *  the caption for what just landed. */
   const addFiles = useCallback(
     (picked: FileList | File[] | null) => {
-      if (takeFiles(picked) > 0) textareaRef.current?.focus()
+      void takeFiles(picked).then((count) => {
+        if (count > 0) textareaRef.current?.focus()
+      })
     },
     [takeFiles],
   )

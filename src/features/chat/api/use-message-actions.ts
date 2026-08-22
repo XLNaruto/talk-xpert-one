@@ -1,7 +1,8 @@
 import { useCallback } from 'react'
 import { toastApiError, toastSuccess } from '@/lib/api-toast'
 import { useChatListStore } from '@/stores/chat-list-store'
-import { useMessageCacheStore } from '@/stores/message-cache-store'
+import { useChatStore } from '@/stores/chat-store'
+import { hasPinnedMessages, useMessageCacheStore } from '@/stores/message-cache-store'
 import type { Id } from '@/types/api'
 import { resyncPreview } from '../hooks/use-message-stream'
 import * as chatApi from './chat-api'
@@ -18,6 +19,7 @@ export function useMessageActions() {
   const applyDeleteForEveryone = useMessageCacheStore((s) => s.applyDeleteForEveryone)
   const removeMany = useMessageCacheStore((s) => s.removeMany)
   const applyPinned = useMessageCacheStore((s) => s.applyPinned)
+  const bumpPins = useChatStore((s) => s.bumpPins)
   const clearUnread = useChatListStore((s) => s.clearUnread)
   const setUnreadCount = useChatListStore((s) => s.setUnread)
 
@@ -47,9 +49,15 @@ export function useMessageActions() {
    */
   const deleteForMe = useCallback(
     async (chatId: Id, messageIds: Id[]): Promise<boolean> => {
+      // Asked BEFORE the rows go: afterwards there is nothing left to ask.
+      const wasPinned = hasPinnedMessages(chatId, messageIds)
       try {
         await chatApi.deleteMessages(chatId, messageIds, false)
         removeMany(chatId, messageIds)
+        // A pinned message that has just left my view cannot go on being
+        // announced in my pin bar. Only the endpoint knows what is left, so the
+        // bar and the sheet are asked to re-read rather than patched.
+        if (wasPinned) bumpPins(chatId)
         // Deleting FOR ME drops the row, so the message BEFORE it becomes the
         // sidebar's preview. Nothing is broadcast for this one, by design.
         resyncPreview(chatId)
@@ -59,15 +67,20 @@ export function useMessageActions() {
         return false
       }
     },
-    [removeMany],
+    [removeMany, bumpPins],
   )
 
   /** Delete FOR EVERYONE — a tombstone, because replies still point at it. */
   const deleteForEveryone = useCallback(
     async (chatId: Id, messageIds: Id[]): Promise<boolean> => {
+      const wasPinned = hasPinnedMessages(chatId, messageIds)
       try {
         await chatApi.deleteMessages(chatId, messageIds, true)
         applyDeleteForEveryone(chatId, messageIds)
+        // The tombstone drops both pins on the row; the lists above it have to
+        // be told, or the bar keeps announcing a message that says only "this
+        // message was deleted".
+        if (wasPinned) bumpPins(chatId)
         // The tombstone stays the newest row, so the preview becomes "This
         // message was deleted" rather than the blank that read as "Attachment".
         resyncPreview(chatId)
@@ -77,7 +90,7 @@ export function useMessageActions() {
         return false
       }
     },
-    [applyDeleteForEveryone],
+    [applyDeleteForEveryone, bumpPins],
   )
 
   /**

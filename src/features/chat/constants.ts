@@ -220,6 +220,25 @@ export const THREAD_SEARCH_HIT_CAP = 300
 export const THREAD_SEARCH_MAX_HISTORY_PAGES = 25
 
 /**
+ * How long a GUARDED event is remembered, so it is applied exactly once.
+ *
+ * A connected client receives every Talk event TWICE — once on the socket, once
+ * as a push — because the push is the offline path and cannot know whether the
+ * socket happened to be up. The two land within a second or so of each other,
+ * and this only has to outlast that gap.
+ *
+ * Only `talk.message.new` and `talk.chat.created` are guarded, because only they
+ * carry an identity that cannot legitimately repeat. Everything else is applied
+ * every time — a pin toggled off and on again is two real events that look
+ * identical, and suppressing the second one is how a message quietly stops being
+ * pinned. See `lib/talk-event-dedupe.ts`.
+ */
+export const TALK_EVENT_DEDUPE_TTL_MS = 120_000
+
+/** How many event keys that cache holds before it evicts the expired ones. */
+export const TALK_EVENT_DEDUPE_MAX_KEYS = 500
+
+/**
  * The single search param the chat screen uses. It holds the ENCRYPTED id of the
  * open conversation — a record id never appears in a path, and never in the
  * clear. See `use-active-chat-route.ts`.
