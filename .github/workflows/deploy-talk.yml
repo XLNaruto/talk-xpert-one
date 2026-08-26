@@ -27,6 +27,10 @@
 #          VITE_APP_ENCRYPT_KEY     key used to encrypt persisted client storage
 #                                   (read from secrets OR vars, either works)
 #          VITE_APP_BASE_URL        /      (optional; vite.config.ts `base`)
+#          VITE_APP_FIREBASE_CONFIG the console's firebaseConfig object as ONE
+#                                   line of JSON (optional; blank = no push)
+#          VITE_APP_FIREBASE_VAPID_KEY  Web Push certificate (optional, pairs
+#                                   with the line above — both or neither)
 #      VITE_APP_API_TARGET is deliberately NOT written — it is the dev-server
 #      reverse proxy only, and setting it in a build would point axios at a
 #      same-origin /api that nothing serves.
@@ -104,6 +108,14 @@ jobs:
           # Read from both, so the key works whether it was added as an
           # environment secret or an environment variable.
           VITE_APP_ENCRYPT_KEY: ${{ secrets.VITE_APP_ENCRYPT_KEY || vars.VITE_APP_ENCRYPT_KEY }}
+          # Firebase Cloud Messaging. Public by design (the sending service
+          # account lives on the server), so plain environment variables. The
+          # web app config travels as ONE line of JSON — the object the Firebase
+          # console shows — and both it and the VAPID key must be set or none:
+          # isPushConfigured() in src/config/env.ts is all-or-nothing, and a
+          # half-filled config fails inside the SDK.
+          VITE_APP_FIREBASE_CONFIG: ${{ vars.VITE_APP_FIREBASE_CONFIG }}
+          VITE_APP_FIREBASE_VAPID_KEY: ${{ vars.VITE_APP_FIREBASE_VAPID_KEY }}
         run: |
           set -euo pipefail
           if [ "$TARGET_ENV" = prod ]; then MODE=production; else MODE=development; fi
@@ -132,8 +144,16 @@ jobs:
             echo "VITE_APP_COOKIE_PREFIX=${VITE_APP_COOKIE_PREFIX}"
             echo "VITE_APP_ENCRYPT_KEY=${VITE_APP_ENCRYPT_KEY}"
             echo "VITE_APP_API_TARGET="
+            echo "VITE_APP_FIREBASE_CONFIG=${VITE_APP_FIREBASE_CONFIG}"
+            echo "VITE_APP_FIREBASE_VAPID_KEY=${VITE_APP_FIREBASE_VAPID_KEY}"
           } > ".env.${MODE}"
           echo "Wrote .env.${MODE} for $TARGET_ENV (values hidden)."
+
+          # Not fatal: a deployment with no Firebase project is a supported
+          # build, it just never asks for push permission.
+          if [ -z "${VITE_APP_FIREBASE_VAPID_KEY}" ] || [ -z "${VITE_APP_FIREBASE_CONFIG}" ]; then
+            echo "::warning::Firebase vars are not fully set in the '$TARGET_ENV' environment - push notifications will be disabled in this build."
+          fi
 
       # `npm run build` is --mode development; prod must use build:prod so it
       # reads .env.production and builds with production defines. Both run

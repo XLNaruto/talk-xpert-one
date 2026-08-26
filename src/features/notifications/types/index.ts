@@ -27,6 +27,14 @@ export interface TalkPushEvent {
 
 /** What the permission flow can currently do, for the UI that offers it. */
 export type PushStatus =
+  /**
+   * The browser has not been asked yet — support and permission are both still
+   * unknown. The STARTING status of every configured build, and it exists so the
+   * offer is never drawn on a guess: assuming `prompt` here painted the card on
+   * every refresh and then pulled it away a second later, once the real answer
+   * (usually `granted`) arrived.
+   */
+  | 'checking'
   /** No Firebase config in this build — nothing to offer. */
   | 'unconfigured'
   /** No service worker / Notification API here (Safari < 16.4, private windows). */

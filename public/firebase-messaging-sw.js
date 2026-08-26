@@ -49,6 +49,15 @@ function readConfig() {
 
 const firebaseConfig = readConfig()
 
+/** Worker-side tracing. The worker has its own console — DevTools → Application
+ *  → Service workers → inspect — so a push that never reaches a tab is still
+ *  visible here. */
+function log(...args) {
+  console.log('[talk-sw]', ...args)
+}
+
+log(firebaseConfig ? 'firebase config loaded' : 'NO firebase config in worker URL')
+
 /**
  * A tap that had to COLD-START the app has no page to hand the event to yet, so
  * it is held here until the new tab asks for it. Best effort by nature: a worker
@@ -82,6 +91,12 @@ if (firebaseConfig) {
 
   messaging.onBackgroundMessage(async (payload) => {
     const data = payload.data || {}
+    log('background push', {
+      type: data.type || null,
+      chat_id: data.chat_id || null,
+      loud: Boolean(payload.notification && payload.notification.body),
+      data,
+    })
     // Forward FIRST. A hidden tab holds the live stores, and applying the event
     // is worth doing whether or not a banner is drawn for it.
     await broadcast({ type: PUSH_EVENT_MESSAGE, data })
@@ -89,7 +104,10 @@ if (firebaseConfig) {
     const notification = payload.notification || {}
     // SILENT: the event exists to keep a backgrounded client correct, not to
     // buzz. `notification` absent, or present with a null body.
-    if (!notification.body) return
+    if (!notification.body) {
+      log('silent push — forwarded, no banner')
+      return
+    }
 
     const chatId = data.chat_id ? String(data.chat_id) : 'talk'
     await self.registration.showNotification(notification.title || 'Talk', {
@@ -103,11 +121,13 @@ if (firebaseConfig) {
       renotify: true,
       data: { talkData: data },
     })
+    log('banner shown', notification.title, notification.body)
   })
 }
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
+  log('banner tapped')
   const data = (event.notification.data && event.notification.data.talkData) || null
 
   event.waitUntil(

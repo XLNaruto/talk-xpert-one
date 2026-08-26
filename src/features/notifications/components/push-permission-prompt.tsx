@@ -13,8 +13,12 @@ interface PushPermissionPromptProps {
  *
  * Shown for EXACTLY one status. `granted` needs nothing, `denied` is final and a
  * button that cannot work is worse than no button, and `unsupported` /
- * `unconfigured` are not the user's to fix. Waving it away is remembered, because
- * re-offering on every launch is what teaches people to click Block.
+ * `unconfigured` are not the user's to fix.
+ *
+ * The close icon and "Not now" are the SAME action, and both are "ask me again
+ * later": the dismissal lives in memory only, so a refresh offers again while the
+ * browser's permission is still unanswered. Answering it either way — Allow or
+ * Block — is what ends the offer for good.
  */
 export function PushPermissionPrompt({ status, onEnable }: PushPermissionPromptProps) {
   const dismissed = useUiStore((s) => s.pushPromptDismissed)

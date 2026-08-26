@@ -35,8 +35,11 @@ import type { PushStatus } from '../types'
  */
 export function usePushNotifications() {
   const talkUserId = useAuthStore((s) => s.identity?.talkUserId)
+  // Starts at `checking`, never at `prompt`: the permission answer is only known
+  // after the delayed effect below has run, and a card that appears on every
+  // refresh and disappears a second later reads as a glitch.
   const [status, setStatus] = useState<PushStatus>(() =>
-    isPushConfigured() ? 'prompt' : 'unconfigured',
+    isPushConfigured() ? 'checking' : 'unconfigured',
   )
   const register = useRegisterPushDevice().mutate
 
@@ -48,6 +51,10 @@ export function usePushNotifications() {
   /** Ask for a token and save it. Silent on every refusal — see `isPushSupported`. */
   const syncToken = useCallback(async () => {
     const token = await requestPushToken()
+    // Dev-only, and only the ends of the token: it is the address a push is sent
+    // to, so "did this browser even get one" is the first question when nothing
+    // arrives, and the full string in a console is a credential.
+    logger.debug('push token', token ? `${token.slice(0, 12)}…${token.slice(-6)}` : null)
     if (!token) return false
     return registerRef.current(token)
   }, [])
@@ -72,6 +79,7 @@ export function usePushNotifications() {
           return
         }
         const permission = pushPermission()
+        logger.debug('push permission', permission)
         if (cancelled) return
         if (permission !== 'granted') {
           // `denied` is FINAL — the browser will not show the prompt again from
@@ -99,6 +107,12 @@ export function usePushNotifications() {
       // No banner: this tab is the one being looked at, and the thread it
       // belongs to may already be open. The event still has to be applied.
       const event = parsePushEvent(payload.data as PushData | undefined)
+      logger.debug('push received (foreground)', {
+        type: event?.type ?? null,
+        chatId: event?.chat_id ?? null,
+        loud: Boolean(payload.notification?.body),
+        raw: payload.data,
+      })
       if (event) publishPushEvent(event)
     })
   }, [talkUserId])
@@ -117,12 +131,22 @@ export function usePushNotifications() {
 
       if (body.type === PUSH_CLIENT_MESSAGES.event) {
         const event = parsePushEvent(body.data)
+        logger.debug('push received (background, via worker)', {
+          type: event?.type ?? null,
+          chatId: event?.chat_id ?? null,
+          raw: body.data,
+        })
         if (event) publishPushEvent(event)
         return
       }
 
       if (body.type === PUSH_CLIENT_MESSAGES.click) {
         const event = parsePushEvent(body.payload)
+        // Nothing to claim is the ORDINARY answer on a launch that wasn't
+        // started by a tap — not worth a line in the console.
+        if (event) {
+          logger.debug('push tapped', { type: event.type, chatId: event.chat_id ?? null })
+        }
         // The event is applied AS WELL as opened: a tap from a cold start is
         // often the first this client has heard of the message.
         if (event) {

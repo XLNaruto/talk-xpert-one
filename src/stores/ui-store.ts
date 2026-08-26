@@ -14,9 +14,11 @@ interface UiState {
   /**
    * Whether the "turn on notifications" offer has been waved away.
    *
-   * Persisted, because the browser's own permission state cannot record a "no
-   * thanks" — it stays `default` — and re-offering on every launch is the
-   * behaviour that teaches people to click Block, which IS final.
+   * Deliberately NOT persisted (see `partialize`): the dismissal lasts for this
+   * tab only, and a refresh offers again as long as the browser's permission is
+   * still `default`. Once it is `granted` or `denied` the offer stops on its own
+   * — `use-push-notifications.ts` reports a status the prompt refuses to draw —
+   * so nothing here has to remember a refusal for that.
    */
   pushPromptDismissed: boolean
   setTheme: (theme: Theme) => void
@@ -43,11 +45,19 @@ export const useUiStore = create<UiState>()(
       name: 'xpertone-talk-ui',
       storage: createJSONStorage(createIdbStorage),
       skipHydration: true,
+      // The push offer's dismissal is session-scoped on purpose — persisting it
+      // hid the card for good after one tap, on a browser that had never been
+      // asked for permission.
+      partialize: ({ pushPromptDismissed: _dismissed, ...rest }) => rest,
       // An accent that no longer exists would leave the app unpainted, so a
       // stale persisted id is dropped rather than written to <html>.
       merge: (persisted, current) => {
         const next = { ...current, ...(persisted as Partial<UiState>) }
         if (!isAccentTheme(next.accent)) next.accent = 'default'
+        // A blob written before `partialize` existed still carries a `true`
+        // here, which would keep the offer hidden on a browser that has never
+        // been asked. It is session state now, so it always starts fresh.
+        next.pushPromptDismissed = false
         return next
       },
     },

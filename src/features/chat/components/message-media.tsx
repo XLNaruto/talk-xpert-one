@@ -5,7 +5,6 @@ import { cn } from '@/lib/utils'
 import { useMediaViewer } from '../hooks/use-media-viewer'
 import { formatBytes, formatDuration, mediaLabel } from '../lib/chat-labels'
 import { isPreviewable } from '../lib/media-slides'
-import { traceCount } from '../lib/thread-trace'
 import type { MessageMedia } from '../types'
 import { Tip } from '@/components/common/tip'
 
@@ -336,9 +335,6 @@ function AlbumTile({
       if (!next) return
       const held = naturalSizes.get(sizeKey)
       if (held && held.w === next.w && held.h === next.h) return
-      // Should fire ONCE per attachment. Repeatedly means a tile is still
-      // forgetting its shape between mounts, which is the loop above.
-      traceCount('media:size-learned')
       rememberNaturalSize(sizeKey, next)
       setSize(next)
     },

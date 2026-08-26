@@ -2,7 +2,6 @@ import { memo, useCallback, useEffect, useMemo, useRef } from 'react'
 import { Loader2 } from 'lucide-react'
 import { Virtuoso } from 'react-virtuoso'
 import { EmptyState } from '@/components/common/empty-state'
-import { logger } from '@/lib/logger'
 import { cn } from '@/lib/utils'
 import type { Id } from '@/types/api'
 import {
@@ -13,7 +12,6 @@ import {
   THREAD_OVERSCAN_PX,
 } from '../constants'
 import { formatDayDivider } from '../lib/message-formatters'
-import { traceCount, traceRender } from '../lib/thread-trace'
 import type { ThreadRow } from '../hooks/use-message-thread'
 import type { JumpTarget } from '../hooks/use-message-jump'
 import type { useThreadScroll } from '../hooks/use-thread-scroll'
@@ -179,10 +177,6 @@ function MessageListInner({
          * the last word belongs to the row's own rectangle, which cannot be
          * approximate.
          */
-        // Dev-only: the jump ticker is the other thing in the thread that can
-        // move the view on a timer, so it says so too — see `scrollToEnd` in
-        // `use-thread-scroll.ts`.
-        logger.debug('thread scroll → row', { messageId, index })
         const element = rowElement(stamped)
         if (element) element.scrollIntoView({ block: 'center' })
         else virtuosoRef.current?.scrollToIndex({ index, align: 'center' })
@@ -315,18 +309,7 @@ function MessageListInner({
   )
 
 
-  // The four props Virtuoso rebuilds its list state from. `ΔfirstItemIndex`
-  // means a page prepended; `Δdata` on its own means the rows were rebuilt.
-  traceRender('MessageList', {
-    data: rows,
-    firstItemIndex,
-    itemContent,
-    followOutput,
-    initialTopMostItemIndex,
-  })
-
   if (rows.length === 0) {
-    traceCount('MessageList:empty')
     return (
       <EmptyState
         title="No messages yet"

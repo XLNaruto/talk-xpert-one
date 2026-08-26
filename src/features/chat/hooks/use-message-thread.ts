@@ -6,7 +6,6 @@ import { useMessages } from '../api/use-messages'
 import { useMessageActions } from '../api/use-message-actions'
 import { usePins } from '../api/use-pins'
 import { startsNewDay, startsNewGroup } from '../lib/message-formatters'
-import { traceCount, traceMs } from '../lib/thread-trace'
 import { withQuoteMedia, quoteMedia } from '../lib/quote-preview'
 import { useTypingNames } from './use-typing'
 import { useThreadScroll } from './use-thread-scroll'
@@ -110,8 +109,6 @@ export function useMessageThread(chat: Chat | null) {
    * is memo'd on it, so a row that comes back identical re-renders nothing.
    */
   const rows = useMemo<ThreadRow[]>(() => {
-    const startedAt = performance.now()
-    let rebuilt = 0
     // The server's `reply_to` is a summary with no attachments, so a reply's
     // quote is filled in from the message it points at where the thread holds
     // it. Built once per change rather than per row: a chat of five hundred
@@ -138,7 +135,6 @@ export function useMessageThread(chat: Chat | null) {
         return cached.row
       }
 
-      rebuilt += 1
       const row: ThreadRow = {
         message,
         // Kept beside the message rather than merged into it: cloning the
@@ -160,13 +156,6 @@ export function useMessageThread(chat: Chat | null) {
     // Only what this pass actually holds, so a chat that is paged away or a
     // message deleted for me takes its entry with it.
     rowCache.current = fresh
-    // `rows-build` is the whole pass; `rows:rebuilt` is how much of it was work
-    // that the incremental cache could not avoid. A rebuilt count near the row
-    // count on an ordinary arrival means the cache is missing for a reason
-    // worth finding.
-    traceMs('rows-build', performance.now() - startedAt)
-    traceCount('rows:pass')
-    traceCount('rows:rebuilt', rebuilt)
     return built
   }, [messages, selfId])
 

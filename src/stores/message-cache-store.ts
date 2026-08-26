@@ -1,5 +1,4 @@
 import { create } from 'zustand'
-import { traceCount } from '@/features/chat/lib/thread-trace'
 import { keyOf, type Id } from '@/types/api'
 import type { ChatMessage } from '@/features/chat/types'
 
@@ -223,11 +222,6 @@ function patchChat(
   const key = keyOf(chatId)
   const held = state.byChat[key] ?? []
   const next = patch(held)
-  // Every write here hands the thread a new array, and a new array is a full
-  // rebuild downstream — so a write that changed NOTHING is pure cost, and worth
-  // counting separately from one that did.
-  traceCount(next === held ? 'cache:write-noop' : 'cache:write')
-  if (next.length !== held.length) traceCount('cache:length-changed')
   return { byChat: { ...state.byChat, [key]: next } }
 }
 

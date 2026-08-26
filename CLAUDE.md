@@ -297,9 +297,11 @@ tap itself: a record id never goes in a path here, so it opens `/chat`, posts
 the event to the page, and `use-push-open-chat.ts` sets the active chat, which
 is what writes the encrypted `?data=` token.
 
-The whole subsystem is dormant until all seven `VITE_APP_FIREBASE_*` values are
-filled in — `isPushConfigured()` in `config/env.ts` is all-or-nothing, and the
-SDK itself is dynamically imported so an unconfigured build never loads it.
+The whole subsystem is dormant until `VITE_APP_FIREBASE_CONFIG` — the console's
+web-app config object as ONE line of JSON, parsed in `config/env.ts` — and
+`VITE_APP_FIREBASE_VAPID_KEY` are both filled in. `isPushConfigured()` is
+all-or-nothing across every field of that object, and the SDK itself is
+dynamically imported so an unconfigured build never loads it.
 
 ### Things the API cannot do, so the UI does not offer them
 

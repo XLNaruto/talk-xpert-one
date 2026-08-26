@@ -1,6 +1,33 @@
 import { z } from 'zod'
 import { API_PROXY_PREFIX } from './api-proxy'
 
+/**
+ * Shape of the Firebase web-app config carried in `VITE_APP_FIREBASE_CONFIG`.
+ * The four the SDK cannot start without are required; the two Cloud Messaging
+ * fills in are optional so a config copied from a console tab that omits them
+ * still parses (and `isPushConfigured` is what refuses to use it).
+ */
+const firebaseConfigSchema = z.object({
+  apiKey: z.string(),
+  authDomain: z.string(),
+  projectId: z.string(),
+  storageBucket: z.string().default(''),
+  messagingSenderId: z.string().default(''),
+  appId: z.string(),
+})
+
+type FirebaseConfig = z.infer<typeof firebaseConfigSchema>
+
+/** What an unconfigured build gets — every field blank, nothing thrown. */
+const EMPTY_FIREBASE_CONFIG: FirebaseConfig = {
+  apiKey: '',
+  authDomain: '',
+  projectId: '',
+  storageBucket: '',
+  messagingSenderId: '',
+  appId: '',
+}
+
 /** All environment access flows through here (zod-parsed, fail-fast). */
 const envSchema = z.object({
   VITE_APP_API_URL: z
@@ -24,22 +51,30 @@ const envSchema = z.object({
   VITE_APP_COOKIE_PREFIX: z.string().default('xtk'),
 
   /**
-   * Firebase Cloud Messaging — the push transport. ALL SEVEN are blank by
-   * default and push stays switched off until every one of them is filled in;
-   * see `isPushConfigured` below. Nothing else in the app depends on them, so a
-   * deployment with no Firebase project runs exactly as it did before.
+   * Firebase Cloud Messaging — the push transport. The web app config from the
+   * Firebase console travels as ONE JSON object, exactly as the console hands
+   * it over, so a new deployment pastes a single value instead of splitting it
+   * into six. Blank by default, and push stays switched off until it and the
+   * VAPID key are both filled in; see `isPushConfigured` below. Nothing else in
+   * the app depends on them, so a deployment with no Firebase project runs
+   * exactly as it did before.
    *
-   * They are the web app's config from the Firebase console, plus the Web Push
-   * certificate ("VAPID key") that `getToken` is called with. The values are
-   * PUBLIC by design — a registration token is worthless without the service
-   * account that sends to it, which lives on the server and never ships here.
+   * The values are PUBLIC by design — a registration token is worthless without
+   * the service account that sends to it, which lives on the server and never
+   * ships here.
    */
-  VITE_APP_FIREBASE_API_KEY: z.string().default(''),
-  VITE_APP_FIREBASE_AUTH_DOMAIN: z.string().default(''),
-  VITE_APP_FIREBASE_PROJECT_ID: z.string().default(''),
-  VITE_APP_FIREBASE_STORAGE_BUCKET: z.string().default(''),
-  VITE_APP_FIREBASE_MESSAGING_SENDER_ID: z.string().default(''),
-  VITE_APP_FIREBASE_APP_ID: z.string().default(''),
+  VITE_APP_FIREBASE_CONFIG: z
+    .string()
+    .default('')
+    .transform((value, ctx) => {
+      if (!value.trim()) return EMPTY_FIREBASE_CONFIG
+      try {
+        return firebaseConfigSchema.parse(JSON.parse(value))
+      } catch {
+        ctx.addIssue({ code: 'custom', message: 'Invalid VITE_APP_FIREBASE_CONFIG JSON' })
+        return z.NEVER
+      }
+    }),
   /** Web Push certificate key pair — passed to `getToken({ vapidKey })`. */
   VITE_APP_FIREBASE_VAPID_KEY: z.string().default(''),
 })
@@ -85,14 +120,7 @@ export const appBasePath = import.meta.env.BASE_URL || '/'
  * The Firebase web app config, shaped as the SDK (and the service worker) take
  * it. Read it through `isPushConfigured()` first — every field can be blank.
  */
-export const firebaseConfig = {
-  apiKey: env.VITE_APP_FIREBASE_API_KEY,
-  authDomain: env.VITE_APP_FIREBASE_AUTH_DOMAIN,
-  projectId: env.VITE_APP_FIREBASE_PROJECT_ID,
-  storageBucket: env.VITE_APP_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: env.VITE_APP_FIREBASE_MESSAGING_SENDER_ID,
-  appId: env.VITE_APP_FIREBASE_APP_ID,
-}
+export const firebaseConfig = env.VITE_APP_FIREBASE_CONFIG
 
 /** The Web Push certificate `getToken` is called with. Blank until configured. */
 export const firebaseVapidKey = env.VITE_APP_FIREBASE_VAPID_KEY

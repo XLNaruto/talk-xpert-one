@@ -89,6 +89,7 @@ async function ensureServiceWorker(): Promise<ServiceWorkerRegistration | null> 
     // `getToken` subscribes through this registration, and a worker still in
     // `installing` cannot take a subscription.
     await navigator.serviceWorker.ready
+    logger.debug('push service worker ready', registration.scope)
     return registration
   } catch (error) {
     logger.warn('push service worker registration failed', error)
@@ -183,6 +184,9 @@ export function onForegroundPush(handler: (payload: MessagePayload) => void): ()
     const { onMessage } = await import('firebase/messaging')
     if (cancelled) return
     stop = onMessage(instance, handler)
+    // The last client-side link. With this line present and no `push received`
+    // after it, the browser is listening and nothing is being SENT.
+    logger.debug('push foreground listener bound')
   })
 
   return () => {

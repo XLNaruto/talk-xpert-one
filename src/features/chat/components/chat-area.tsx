@@ -17,7 +17,6 @@ import { ChatDetailsSheet } from './chat-details-sheet'
 import { ForwardDialog } from './forward-dialog'
 import { MessageInfoDialog } from './message-info-dialog'
 import { MessageInput } from './message-input'
-import { traceRender } from '../lib/thread-trace'
 import { MessageList } from './message-list'
 import { MessageListSkeleton } from './message-list-skeleton'
 import { PinnedBar } from './pinned-bar'
@@ -141,23 +140,6 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
   const onForwardMessage = useCallback((message: ChatMessage) => setForwarding([message.id]), [])
   const onShowMessageInfo = useCallback((message: ChatMessage) => setInfoMessageId(message.id), [])
   const onRetryMessage = useCallback((message: ChatMessage) => void retry(message), [retry])
-
-  // Every prop the thread is redrawn from, so a render that changed nothing is
-  // told apart from one the data forced.
-  traceRender('ChatArea', {
-    chat,
-    rows,
-    scroll,
-    selfId,
-    selectedIds,
-    isLoadingMore,
-    hasEarlier,
-    pinnedMessages,
-    jumpTarget: jump.target,
-    jumpHighlightId: jump.highlightedId,
-    searchHits: search.hitMessageIds,
-    activeSearchMessageId: search.activeMessageId,
-  })
 
   if (!chat) {
     return <ChatEmpty />

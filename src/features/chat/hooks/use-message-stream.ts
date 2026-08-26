@@ -19,7 +19,6 @@ import {
 } from '../lib/chat-mappers'
 import { peopleInChat, peopleInMessage } from '../lib/talk-directory'
 import { systemActor } from '../lib/system-messages'
-import { traceCount } from '../lib/thread-trace'
 import { onPushEvent } from '@/features/notifications'
 import { admitTalkEvent } from '../lib/talk-event-dedupe'
 import { catchUpMessages } from '../api/use-messages'
@@ -586,12 +585,6 @@ export function useMessageStream() {
       ])
     }
 
-    // Counts what the gateway is actually SENDING, by name — a flood of one
-    // event looks the same from inside a handler as a single one. `onAny` sees
-    // every inbound frame, including the ones nothing here subscribes to.
-    const countEvent = (event: string) => traceCount(`socket:${event}`)
-    socket.onAny(countEvent)
-
     /**
      * Every handler, by the event that feeds it — because the SOCKET is no
      * longer the only thing that feeds them.
@@ -649,8 +642,9 @@ export function useMessageStream() {
      * is the source of truth and both delivery paths are best-effort.
      */
     const stopPushBridge = onPushEvent((event) => {
-      traceCount(`push:${event.type}`)
-      if (handlers[event.type]) {
+      const known = Boolean(handlers[event.type])
+      logger.debug('push → handler', { type: event.type, known, chatId: event.chat_id ?? null })
+      if (known) {
         dispatch(event.type, event)
         return
       }
@@ -660,7 +654,6 @@ export function useMessageStream() {
     return () => {
       for (const [type, listener] of socketBindings) socket.off(type, listener)
       stopPushBridge()
-      socket.offAny(countEvent)
     }
   }, [talkUserId])
 

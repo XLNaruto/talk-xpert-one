@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { VirtuosoHandle } from 'react-virtuoso'
 import { isPageActive, subscribePageActive } from '@/hooks/use-page-active'
-import { logger } from '@/lib/logger'
 import { useChatStore } from '@/stores/chat-store'
 import type { Id } from '@/types/api'
 import {
@@ -11,7 +10,6 @@ import {
   THREAD_OPEN_SETTLE_TICK_MS,
   THREAD_READ_SETTLE_MS,
 } from '../constants'
-import { traceCount } from '../lib/thread-trace'
 import type { ThreadRow } from './use-message-thread'
 
 /** What Virtuoso hands back on `rangeChanged` — the rows currently rendered. */
@@ -191,7 +189,6 @@ export function useThreadScroll({
       // Virtuoso's index base is then out of step with the data, which is the
       // one thing that would make it draw rows at the wrong offsets.
       if (prepended > 0) firstItemIndexRef.current -= prepended
-      else if (prepended < 0) traceCount('rows:top-row-vanished')
     }
     topRowIdRef.current = topRowId
   }
@@ -297,12 +294,7 @@ export function useThreadScroll({
    * browser clamp. Independent of item heights, footers and estimates.
    */
   const scrollToEnd = useCallback(
-    (behavior: 'smooth' | 'auto', why = 'unknown') => {
-      // Dev-only, and it earns its keep: every flicker in this hook is two of
-      // these fighting, and the console is the only place that can say WHICH
-      // two. Silent in a production build — see `lib/logger.ts`.
-      traceCount(`scroll:${why}`)
-      logger.debug('thread scroll → end', { why, behavior })
+    (behavior: 'smooth' | 'auto') => {
       virtuosoRef.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior })
     },
     [],
@@ -328,9 +320,9 @@ export function useThreadScroll({
 
   /** A correction that costs nothing when there is nothing to correct. */
   const scrollToEndIfNeeded = useCallback(
-    (why = 'correction') => {
+    () => {
       if (isAtEnd()) return
-      scrollToEnd('auto', why)
+      scrollToEnd('auto')
     },
     [isAtEnd, scrollToEnd],
   )
@@ -355,7 +347,7 @@ export function useThreadScroll({
   }, [])
 
   const jumpToBottom = useCallback(
-    (behavior: 'smooth' | 'auto' = 'auto', why = 'jump') => {
+    (behavior: 'smooth' | 'auto' = 'auto') => {
       parkedRef.current = false
       for (const timer of settleTimersRef.current) clearTimeout(timer)
 
@@ -363,9 +355,9 @@ export function useThreadScroll({
       if (!isNearEnd()) {
         virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior })
       }
-      scrollToEnd(behavior, why)
+      scrollToEnd(behavior)
       settleTimersRef.current = [120, 320, 600].map((delay) =>
-        setTimeout(() => scrollToEndIfNeeded(`${why}:settle`), delay),
+        setTimeout(() => scrollToEndIfNeeded(), delay),
       )
     },
     [isNearEnd, scrollToEnd, scrollToEndIfNeeded],
@@ -387,7 +379,7 @@ export function useThreadScroll({
    * sending is motion instead of your own message. Both are deliberate acts with
    * a known destination, so they cut straight to it.
    */
-  const scrollToBottom = useCallback(() => jumpToBottom('auto', 'button'), [jumpToBottom])
+  const scrollToBottom = useCallback(() => jumpToBottom('auto'), [jumpToBottom])
 
   /**
    * A jump to a specific message is starting — stop everything that pulls the
@@ -476,15 +468,9 @@ export function useThreadScroll({
    * is what makes the bar push the thread rather than scroll it.
    */
   const onScrollerResize = useCallback(() => {
-    // Counted before the guards: this fires whenever the scroller's own box
-    // changes, and a box that changes size on a ticker would move the rendered
-    // range exactly as much as a row that changes height. The two are the only
-    // candidates left for a range that will not settle, and this tells them
-    // apart — a high count here means the VIEWPORT is oscillating, not the rows.
-    traceCount('resize:scroller')
     if (parkedRef.current) return
     if (!atBottomRef.current) return
-    scrollToEnd('auto', 'scroller-resize')
+    scrollToEnd('auto')
   }, [scrollToEnd])
 
   const onScrollerRef = useCallback(
@@ -684,7 +670,6 @@ export function useThreadScroll({
 
   const onRangeChanged = useCallback(
     (range: VisibleRange) => {
-      traceCount('rangeChanged')
       pendingRangeRef.current = range
       if (rangeFrameRef.current !== null) return
       rangeFrameRef.current = requestAnimationFrame(measurePendingRange)
@@ -703,7 +688,6 @@ export function useThreadScroll({
 
   const onAtBottomChange = useCallback(
     (atBottom: boolean) => {
-      traceCount(`atBottom:${atBottom}`)
       setAtBottom(atBottom)
       atBottomRef.current = atBottom
       // The socket handler needs this to decide whether an arriving message
@@ -751,7 +735,6 @@ export function useThreadScroll({
     // was actually asked, and it does not move with the gesture, so the two have
     // to agree before the view is allowed to jump to the end.
     if (!atBottomRef.current) return false
-    if (atBottom) logger.debug('thread scroll → end', { why: 'follow-output' })
     // `true` is Virtuoso's instant follow. Deliberately NOT 'smooth': an arrival
     // while you sit at the bottom is a one-row nudge, and animating it competes
     // with the instant jump the send below has already started.
@@ -821,7 +804,7 @@ export function useThreadScroll({
     if (previousKey === '') return
     if (newestIsMine) {
       showUnreadBelow(0)
-      jumpToBottom('auto', 'own-send')
+      jumpToBottom('auto')
       return
     }
 
@@ -837,7 +820,7 @@ export function useThreadScroll({
     if (parkedRef.current) return
     if (!atBottomRef.current) return
     showUnreadBelow(0)
-    jumpToBottom('auto', 'arrival')
+    jumpToBottom('auto')
     // Watched go past IS read, so the frontier moves with the view rather than
     // waiting for the next `rangeChanged` to notice. Without it the reader could
     // scroll up afterwards and be told those same messages were unread — which
@@ -870,7 +853,7 @@ export function useThreadScroll({
     // lands, and an unconditional scroll there would yank a reader who had
     // already moved. A null scroller reads as "not at the end", so the genuine
     // opening scroll still happens.
-    scrollToEndIfNeeded('open-settle')
+    scrollToEndIfNeeded()
     const ticker = setInterval(() => {
       if (Date.now() > openSettleUntilRef.current) {
         clearInterval(ticker)
@@ -881,7 +864,7 @@ export function useThreadScroll({
       // there is nothing to correct. Each needless scroll re-enters Virtuoso's
       // handler, and twenty-five of them over two and a half seconds is what a
       // freshly-opened thread was doing to itself.
-      scrollToEndIfNeeded('open-settle:tick')
+      scrollToEndIfNeeded()
     }, THREAD_OPEN_SETTLE_TICK_MS)
     return () => clearInterval(ticker)
   }, [chatId, rows.length, unreadAnchorId, scrollToEndIfNeeded])
