@@ -620,8 +620,17 @@ export function useMessageStream() {
     /** Run one event through its handler, if it is one we know and have not seen. */
     const dispatch = (type: string, payload: unknown) => {
       const handler = handlers[type]
-      if (!handler) return
-      if (!admitTalkEvent(type, payload)) return
+      const admitted = Boolean(handler) && admitTalkEvent(type, payload)
+      // The whole arrival, before anything is decided about it. Three different
+      // failures look identical from the UI — the server never sent it, we are
+      // not in the room, or the dedupe swallowed the copy that arrived second —
+      // and this line is what tells them apart.
+      logger.info('talk event', type, {
+        known: Boolean(handler),
+        admitted,
+        chatId: (payload as { chat_id?: unknown } | null)?.chat_id ?? null,
+      })
+      if (!admitted) return
       ;(handler as (value: unknown) => void)(payload)
     }
 

@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { Check, Palette } from 'lucide-react'
+import { Check, CheckCheck, Palette } from 'lucide-react'
+import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Modal } from '@/components/common/modal'
 import { ACCENT_THEMES, type AccentTheme } from '@/lib/themes'
@@ -24,6 +25,32 @@ import { useUiStore } from '@/stores/ui-store'
  * a swatch has to predict the colour the theme will PAINT, and on a theme with
  * a deep fill those two are not the same shade.
  */
+/**
+ * The bubble tail, the same art the thread draws — `currentColor` keeps it in
+ * step with the fill it hangs off, in both themes and under every accent.
+ */
+function PreviewTail({ mine = false }: { mine?: boolean }) {
+  return (
+    <svg
+      viewBox="0 1 8 12"
+      className={cn(
+        'absolute top-0 h-3 w-2',
+        mine ? '-right-1.5 text-bubble-out' : '-left-1.5 text-bubble-in',
+      )}
+      aria-hidden
+    >
+      <path
+        fill="currentColor"
+        d={
+          mine
+            ? 'M6.467 3.568L0 12.193V1h5.188c1.77 0 2.338 1.156 1.279 2.568z'
+            : 'M1.533 3.568L8 12.193V1H2.812C1.042 1 .474 2.156 1.533 3.568z'
+        }
+      />
+    </svg>
+  )
+}
+
 export function ThemePickerDialog({ onClose }: { onClose: () => void }) {
   const accent = useUiStore((s) => s.accent)
   const setAccent = useUiStore((s) => s.setAccent)
@@ -78,23 +105,60 @@ export function ThemePickerDialog({ onClose }: { onClose: () => void }) {
           })}
         </div>
 
-        {/* A column, not a grid: `self-end` in a grid moves a row down the block
-            axis and leaves the bubble stretched full width. In a flex column it
-            does what a chat needs — pushes the reply to the right, at the width
-            of its own text. */}
+        {/* The preview is the real thread in miniature — the same
+            `thread-canvas` surface, the same bubble shapes with their tails, an
+            avatar under the incoming run and a meta line with the read tick —
+            because a colour only tells you what it will look like on the
+            surfaces it will actually be painted on. Static markup on purpose:
+            nothing here reads a message, so it stays in this file rather than
+            pulling the chat feature into a shared dialog. */}
         <section
           data-accent={selected}
-          className="flex flex-col gap-3 rounded-xl border border-border bg-background p-4"
+          className="thread-canvas flex flex-col gap-2 overflow-hidden rounded-xl border border-border p-4"
         >
           <h3 className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
             Preview
           </h3>
-          <p className="max-w-[80%] self-start rounded-2xl bg-bubble-in px-3.5 py-2 text-sm text-bubble-in-foreground">
-            Hey, how are you doing?
-          </p>
-          <p className="max-w-[80%] self-end rounded-2xl bg-bubble-out px-3.5 py-2 text-sm text-bubble-out-foreground">
-            I&apos;m great, thanks! 🎉
-          </p>
+
+          <div className="flex justify-center">
+            <span className="rounded-full border border-border/60 bg-card/85 px-2.5 py-1 text-[10px] font-medium tracking-wide text-muted-foreground uppercase shadow-xs backdrop-blur-sm">
+              Today
+            </span>
+          </div>
+
+          {/* Incoming: avatar, tail on the left, no tick — nobody reports back
+              on somebody else's message. */}
+          <div className="flex items-end gap-2">
+            <Avatar name="Ada Lovelace" className="size-7 shrink-0 self-start text-[10px]" />
+            <div className="relative max-w-[80%]">
+              <PreviewTail />
+              <div className="rounded-lg rounded-tl-none bg-bubble-in px-3 py-2 text-sm text-bubble-in-foreground shadow-xs">
+                <p>Hey, how are you doing?</p>
+                <span className="mt-1 flex justify-end text-[10px] tabular-nums opacity-70">
+                  09:41
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Outgoing: tail on the right, and the read tick in `--tick-read` —
+              the one mark whose colour the accent changes on its own. */}
+          <div className="flex justify-end">
+            <div className="relative max-w-[80%]">
+              <PreviewTail mine />
+              <div className="rounded-lg rounded-tr-none bg-bubble-out px-3 py-2 text-sm text-bubble-out-foreground shadow-xs">
+                <p>I&apos;m great, thanks! 🎉</p>
+                <span className="mt-1 flex items-center justify-end gap-1 text-[10px] tabular-nums">
+                  <span className="opacity-70">09:42</span>
+                  <CheckCheck
+                    className="size-3.5 text-tick-read"
+                    strokeWidth={2.75}
+                    aria-hidden
+                  />
+                </span>
+              </div>
+            </div>
+          </div>
         </section>
       </div>
     </Modal>

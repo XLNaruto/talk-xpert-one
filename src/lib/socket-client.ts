@@ -340,7 +340,11 @@ export function joinChatRoom(chatId: Id, withChat = false): Promise<JoinResult> 
       withChat ? { chat_id: chatId, with_chat: true } : { chat_id: chatId },
       (res: { ok?: boolean; chat?: unknown } | undefined) => {
         const ok = Boolean(res?.ok)
-        if (!ok) logger.warn('talk:join refused', chatId, res)
+        // Both outcomes, not just the refusal. A room we are NOT in is
+        // indistinguishable in the console from one nothing has been sent to,
+        // and that is the first fork when "I get no messages" is reported.
+        if (ok) logger.info('talk:join ok', chatId)
+        else logger.warn('talk:join refused', chatId, res)
         resolve({ ok, chat: res?.chat ?? null })
       },
     )

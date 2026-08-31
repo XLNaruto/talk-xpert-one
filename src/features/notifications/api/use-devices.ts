@@ -22,7 +22,7 @@ export function useRegisterPushDevice() {
       // The link between "this browser has a token" and "the server will send to
       // it". A token with no registration behind it looks identical in the
       // console to a working one, right up until nothing ever arrives.
-      logger.debug('push device registered', device)
+      logger.info('push device registered', device)
       return true
     } catch (error) {
       logger.warn('push device registration failed', error)
