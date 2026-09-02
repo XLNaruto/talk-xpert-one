@@ -354,9 +354,6 @@ export const THREAD_AT_BOTTOM_THRESHOLD_PX = 24
  */
 export const THREAD_OPEN_SETTLE_MS = 2500
 
-/** How often the bottom is re-asserted during that window. */
-export const THREAD_OPEN_SETTLE_TICK_MS = 100
-
 /**
  * How long the thread is held off its own corrections after a jump has landed.
  *
@@ -424,6 +421,30 @@ export const THREAD_FIRST_ITEM_INDEX_BASE = 1_000_000
  * they are still at the top when it expires, the next page is fetched normally.
  */
 export const THREAD_HISTORY_PAGE_COOLDOWN_MS = 400
+
+/**
+ * How long the scroll corrections stand down after a page prepends.
+ *
+ * A prepend is the ONE height change this hook must not react to, because
+ * Virtuoso is already reacting to it. Told that N rows arrived above the top row
+ * (`firstItemIndex`), it holds the view still by translating the list and then
+ * scrolling by the height of those rows — a compensation spread over two
+ * animation frames, during which the scroller reports a position several
+ * thousand pixels from the end.
+ *
+ * Every guard in `use-thread-scroll.ts` reads that as "the view fell off the
+ * end" and scrolls back down, landing between the two halves of the
+ * compensation. Virtuoso then completes it from the position we moved it to, so
+ * the view is thrown to the top of the list; the next correction hauls it back;
+ * and each height that settles afterwards starts the exchange again. Measured on
+ * a 149-row page: four round trips of about 9,400 px each, inside 150 ms.
+ *
+ * So the corrections wait. Longer than the two frames the compensation itself
+ * takes, because the prepended rows are measured for the first time just after
+ * it, and shorter than `THREAD_HISTORY_PAGE_COOLDOWN_MS` so the hold has always
+ * expired before the next page can be asked for.
+ */
+export const THREAD_PREPEND_HOLD_MS = 250
 
 /**
  * How far outside the viewport Virtuoso keeps rows mounted, in pixels.

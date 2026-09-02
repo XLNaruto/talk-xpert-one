@@ -9,8 +9,11 @@
  * the conversation rather than lines in it.
  */
 export function DayDivider({ label }: { label: string }) {
+  // `pt-3`, not `my-3`: a vertical margin inside a virtualised item is measured
+  // wrong — see the note on the run spacing in `message-bubble.tsx`. The air
+  // below comes from the next row's own top padding.
   return (
-    <div className="my-3 flex justify-center px-3">
+    <div className="pt-3 flex justify-center px-3">
       <span className="rounded-full border border-border/60 bg-card/85 px-2.5 py-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase shadow-xs backdrop-blur-sm">
         {label}
       </span>

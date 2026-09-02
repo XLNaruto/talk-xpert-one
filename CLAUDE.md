@@ -289,10 +289,30 @@ token retires whatever token held it. A normal `POST /talk/auth/logout` already
 drops this platform's registration, so `DELETE /talk/devices` is only for
 clearing local state without hitting that route.
 
+The worker draws the banner from the raw **`push`** event, registered ahead of
+the FCM SDK's own listener and stopping it dead — **never from
+`onBackgroundMessage`**. The SDK shows a notification itself whenever the
+payload carries a `notification` block and only then calls that hook, so drawing
+there is the SECOND banner: two identical ones per message, uncollapsed, because
+the SDK's carries no `tag`. Taking the event also means the worker forwards to a
+FOCUSED tab itself; `onMessage` in the page stays bound as the fallback for a
+browser still running a previous worker version, and the dedupe covers the
+overlap. `notification.icon` falls back to `public/talk-icon-192.png` — with no
+fallback the browser draws its OWN logo and every banner reads as Chrome.
+
 `public/firebase-messaging-sw.js` is a static asset and cannot import from
 `src/` — its Firebase config is handed to it in the REGISTRATION QUERY STRING so
 those values live only in `.env`, and the two message names it shares with the
-page are duplicated in `features/notifications/constants.ts`. It never routes a
+page are duplicated in `features/notifications/constants.ts`. `media_path` rides
+in that query string too, because the banner draws the SENDER'S photo and every
+`photo` is a storage key: the worker has no session to read `GET /config` with,
+so `photoKeyOf` picks the person out of `data.payload` and the worker's own
+`mediaUrl` — a mirror of `joinMediaPath` — makes the URL. It then DECODES the
+photo rather than passing the URL on, because a notification icon is drawn
+outside the page's renderer and `<img>`'s `image-orientation: from-image` is the
+only thing that was righting a camera's EXIF tag — the URL alone draws the face
+on its side. `bannerIcon` owns that, on a 1.5 s budget so the icon can never
+hold the banner up. It never routes a
 tap itself: a record id never goes in a path here, so it opens `/chat`, posts
 the event to the page, and `use-push-open-chat.ts` sets the active chat, which
 is what writes the encrypted `?data=` token.

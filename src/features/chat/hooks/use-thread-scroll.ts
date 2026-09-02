@@ -4,12 +4,14 @@ import { isPageActive, subscribePageActive } from '@/hooks/use-page-active'
 import { useChatStore } from '@/stores/chat-store'
 import type { Id } from '@/types/api'
 import {
+  THREAD_AT_BOTTOM_THRESHOLD_PX,
   THREAD_AT_END_TOLERANCE_PX,
   THREAD_FIRST_ITEM_INDEX_BASE,
   THREAD_OPEN_SETTLE_MS,
-  THREAD_OPEN_SETTLE_TICK_MS,
+  THREAD_PREPEND_HOLD_MS,
   THREAD_READ_SETTLE_MS,
 } from '../constants'
+import { traceScroll, traceScroller } from '../lib/thread-scroll-trace'
 import type { ThreadRow } from './use-message-thread'
 
 /** What Virtuoso hands back on `rangeChanged` — the rows currently rendered. */
@@ -78,6 +80,26 @@ export function useThreadScroll({
    * render behind.
    */
   const atBottomRef = useRef(true)
+  /**
+   * Was the view on the end when the reader last touched the scroller?
+   *
+   * The SYNCHRONOUS answer to the question `atBottomRef` answers 50 ms late.
+   * Virtuoso debounces `atBottomStateChange` by 50 ms, so for the first fiftieth
+   * of a second after a flick upwards `atBottomRef` still says "at the bottom" —
+   * and that is exactly the window a history page lands in, because the flick is
+   * what asked for it. Every correction gated on `atBottomRef` alone therefore
+   * fired mid-gesture and hauled the reader back down, one bounce per page.
+   *
+   * A `scroll` listener has no such lag: it runs in the gesture. It reads three
+   * properties off the scroller and nothing else — the same three Virtuoso has
+   * already read that frame — so it forces no layout of its own.
+   *
+   * Measured against the at-bottom THRESHOLD rather than `isAtEnd`'s sub-pixel
+   * tolerance: this one has to survive the browser's own scroll anchoring
+   * nudging the offset a pixel or two, where a reader who is plainly at the
+   * bottom must never read as having left it.
+   */
+  const wasAtEndRef = useRef(true)
   const [unreadBelow, setUnreadBelow] = useState(0)
   /**
    * The badge's number, mirrored in a ref.
@@ -108,6 +130,28 @@ export function useThreadScroll({
   /** True while the view is parked at the divider — auto-follow stays off. */
   const parkedRef = useRef(false)
   /**
+   * Has the READER taken hold of this thread — a wheel, a touch, a key, a drag
+   * of the scrollbar?
+   *
+   * The gate on treating "at the bottom" as consent to leave the unread
+   * divider, and it has to be the reader rather than anything measured off the
+   * list. Every signal the list itself offers is spoofed by its own mount: for
+   * the first frames it has laid out a single screenful of estimated rows, so
+   * Virtuoso reports `atBottom: false` (nothing is rendered yet) and then
+   * `atBottom: true` (there is nothing to scroll) before the reader has seen a
+   * pixel. Both readings are honest and neither is about the reader.
+   *
+   * Taking them as consent unparked the divider, cleared the badge, sent a
+   * receipt for the newest message and let the corrections pin the view to the
+   * end — a chat with 119 unread opening on the newest message with the count
+   * gone. "Was the view somewhere else first" does not survive that sequence
+   * either, because the mount supplies the `false` all by itself.
+   *
+   * So the park is left alone until the reader moves, or until they ask for the
+   * end outright with the jump-to-newest button, which unparks directly.
+   */
+  const readerTookOverRef = useRef(false)
+  /**
    * True from the moment a jump is ASKED FOR until its scroll has landed.
    *
    * Distinct from `parked`, and the distinction is the whole bug: a jump to a
@@ -115,9 +159,9 @@ export function useThreadScroll({
    * which is several requests and several prepends long. The reader is still
    * sitting at the bottom for all of it, so Virtuoso goes on reporting
    * `atBottom: true` — and `onAtBottomChange` reads that as "the reader is
-   * caught up", clears the park, and hands `followOutput` permission to pin the
-   * view to the end again. The jump then landed and was immediately hauled back,
-   * twice, once per page that arrived: the flicker.
+   * caught up", clears the park, and hands every correction below permission to
+   * pin the view to the end again. The jump then landed and was immediately
+   * hauled back, twice, once per page that arrived: the flicker.
    *
    * So while this is set, being at the bottom is NOT taken as consent to follow.
    * It is cleared by `endJump` once the scroll has had its window.
@@ -158,6 +202,20 @@ export function useThreadScroll({
    */
   const firstItemIndexRef = useRef(THREAD_FIRST_ITEM_INDEX_BASE)
   const topRowIdRef = useRef<Id | null>(null)
+  /**
+   * Corrections stand down until this moment — see `THREAD_PREPEND_HOLD_MS`.
+   *
+   * A prepend is the one height change this hook must leave alone: Virtuoso is
+   * already compensating for it, over two frames, and a correction landing
+   * between them throws the view to the top of the list.
+   */
+  const prependHoldUntilRef = useRef(0)
+  /**
+   * Where the view was when the page landed, taken BEFORE the compensation
+   * starts moving it — the position to restore once the hold expires. Read from
+   * `wasAtEndRef` because that is the answer that has no 50 ms lag.
+   */
+  const prependWasAtEndRef = useRef(false)
 
   // Reset during render rather than in an effect: the anchor decides Virtuoso's
   // `initialTopMostItemIndex`, which is read on mount — an effect would run a
@@ -174,6 +232,11 @@ export function useThreadScroll({
     openSettleUntilRef.current = Date.now() + THREAD_OPEN_SETTLE_MS
     firstItemIndexRef.current = THREAD_FIRST_ITEM_INDEX_BASE
     topRowIdRef.current = null
+    prependHoldUntilRef.current = 0
+    prependWasAtEndRef.current = false
+    atBottomRef.current = true
+    wasAtEndRef.current = true
+    readerTookOverRef.current = false
   }
 
   // Count what arrived ABOVE the row that used to be first, in render rather
@@ -188,10 +251,31 @@ export function useThreadScroll({
       // A NEGATIVE find means the row that was top has gone from the array —
       // Virtuoso's index base is then out of step with the data, which is the
       // one thing that would make it draw rows at the wrong offsets.
-      if (prepended > 0) firstItemIndexRef.current -= prepended
+      if (prepended > 0) {
+        firstItemIndexRef.current -= prepended
+        // Armed HERE rather than in an effect, for the same reason the index is
+        // adjusted here: Virtuoso begins compensating in the pass that receives
+        // the longer `data`, so a hold that starts a beat later starts after the
+        // corrections it exists to hold back have already fired.
+        // While the thread is still OPENING, "were we on the end" is the wrong
+        // question and the deadline is the licence — the same rule
+        // `onContentResize` follows. The first page is often a single screenful,
+        // so `startReached` fires before the opening correction has even landed:
+        // the view is legitimately several hundred pixels short at that moment,
+        // and reading that as "the reader is up in history" left the release
+        // with nothing to do and the thread parked a bubble short of the newest
+        // message, jump-to-newest button and all.
+        prependWasAtEndRef.current =
+          wasAtEndRef.current || Date.now() <= openSettleUntilRef.current
+        prependHoldUntilRef.current = Date.now() + THREAD_PREPEND_HOLD_MS
+      }
     }
     topRowIdRef.current = topRowId
   }
+
+  // Read once, here, because two things downstream need the same value: the
+  // release effect below keys on it, and the list is handed it at the bottom.
+  const firstItemIndexValue = firstItemIndexRef.current
 
   if (!anchorRef.current.taken && rows.length > 0) {
     // Two ways to find where reading stopped, and the SECOND is what makes this
@@ -249,6 +333,20 @@ export function useThreadScroll({
     // Park only when there is something to park at. A read chat opens at the
     // bottom and follows arrivals from the first frame.
     parkedRef.current = anchorRef.current.messageId !== null
+    // The decision, once per visit, with every input to it. Where a thread
+    // OPENS is decided here and nowhere else: if this says the anchor is null
+    // then nothing scrolled the view to the bottom — the list mounted there.
+    traceScroll('anchor taken', {
+      unreadCount,
+      lastReadMessageId,
+      rows: rows.length,
+      anchorIndex,
+      anchorId: anchorRef.current.messageId,
+      parked: parkedRef.current,
+      mineAtEnd: rows[rows.length - 1]?.isMine ?? null,
+      oldestId: rows[0]?.message.id ?? null,
+      newestId: rows[rows.length - 1]?.message.id ?? null,
+    })
   }
 
   const unreadAnchorId = anchorRef.current.messageId
@@ -257,6 +355,20 @@ export function useThreadScroll({
     if (unreadAnchorId === null) return -1
     return rows.findIndex((row) => row.message.id === unreadAnchorId)
   }, [rows, unreadAnchorId])
+
+  /**
+   * Leave the divider — and say who decided to.
+   *
+   * The park is what keeps a thread on its unread divider, so every correction
+   * in this hook reads it and a stray clear is invisible until the view is
+   * already at the bottom. Routing all three releases through one function means
+   * the trace names the culprit instead of the next reader inferring it.
+   */
+  const unpark = useCallback((reason: string) => {
+    if (!parkedRef.current) return
+    traceScroll(`unparked — ${reason}`)
+    parkedRef.current = false
+  }, [])
 
   /**
    * Where the list opens: the divider if there is one, otherwise the newest.
@@ -295,6 +407,7 @@ export function useThreadScroll({
    */
   const scrollToEnd = useCallback(
     (behavior: 'smooth' | 'auto') => {
+      traceScroll('scrollToEnd', { behavior })
       virtuosoRef.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior })
     },
     [],
@@ -318,14 +431,56 @@ export function useThreadScroll({
     return gap <= THREAD_AT_END_TOLERANCE_PX
   }, [])
 
+  /**
+   * Is Virtuoso still moving the view to absorb a prepended page?
+   *
+   * While it is, every measurement this hook takes is of a position Virtuoso is
+   * midway through changing, so the honest answer to "are we at the end" is
+   * "ask again shortly".
+   */
+  const isAbsorbingPrepend = useCallback(() => Date.now() < prependHoldUntilRef.current, [])
+
   /** A correction that costs nothing when there is nothing to correct. */
   const scrollToEndIfNeeded = useCallback(
     () => {
-      if (isAtEnd()) return
+      // Parked means the reader is somewhere else ON PURPOSE — at the unread
+      // divider, or at a message they jumped to. Checked here as well as at
+      // every call site, because the settle ladder fires from a timer and a
+      // park that begins between scheduling it and its passes running would
+      // otherwise be overridden by them.
+      if (parkedRef.current) {
+        traceScroll('correction skipped (parked)')
+        return
+      }
+      if (isAtEnd()) {
+        traceScroll('correction skipped (already at end)')
+        return
+      }
       scrollToEnd('auto')
     },
     [isAtEnd, scrollToEnd],
   )
+
+  /**
+   * Re-assert the end a few times while the list settles under it.
+   *
+   * One correction is never enough and the reason is always the same: the rows
+   * are measured for the first time just AFTER whatever moved the view — a page
+   * lands, a picture decodes, the composer regrows — so the end the correction
+   * aimed at has moved by the time it gets there. Each pass costs nothing once
+   * the view is genuinely at rest (`scrollToEndIfNeeded` measures first), and
+   * they share `settleTimersRef` with everything else that schedules them, so a
+   * newer intention always cancels an older one's remaining passes.
+   */
+  const settleToEnd = useCallback(() => {
+    for (const timer of settleTimersRef.current) clearTimeout(timer)
+    settleTimersRef.current = [120, 320, 600].map((delay) =>
+      setTimeout(() => {
+        traceScroll(`settle ${delay}ms`)
+        scrollToEndIfNeeded()
+      }, delay),
+    )
+  }, [scrollToEndIfNeeded])
 
   /**
    * Is the end within a screenful — i.e. are the last rows already mounted?
@@ -348,26 +503,31 @@ export function useThreadScroll({
 
   const jumpToBottom = useCallback(
     (behavior: 'smooth' | 'auto' = 'auto') => {
-      parkedRef.current = false
+      unpark('jump to bottom')
       for (const timer of settleTimersRef.current) clearTimeout(timer)
 
       // Only when the end is genuinely out of play — see `isNearEnd`.
-      if (!isNearEnd()) {
+      const nearEnd = isNearEnd()
+      traceScroll('jumpToBottom', { behavior, nearEnd, indexScroll: !nearEnd })
+      if (!nearEnd) {
         virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior })
       }
       scrollToEnd(behavior)
-      settleTimersRef.current = [120, 320, 600].map((delay) =>
-        setTimeout(() => scrollToEndIfNeeded(), delay),
-      )
+      settleToEnd()
     },
-    [isNearEnd, scrollToEnd, scrollToEndIfNeeded],
+    [isNearEnd, scrollToEnd, settleToEnd],
   )
 
+  // Per chat as well as on unmount: `useThreadScroll` is not remounted when the
+  // reader switches conversation, so a correction scheduled by the thread they
+  // left — up to 600 ms of them — would otherwise land in the one they opened,
+  // on top of that thread's own opening scroll.
   useEffect(
     () => () => {
       for (const timer of settleTimersRef.current) clearTimeout(timer)
+      settleTimersRef.current = []
     },
-    [],
+    [chatId],
   )
 
   /**
@@ -414,7 +574,7 @@ export function useThreadScroll({
    */
   const endJump = useCallback(() => {
     jumpingRef.current = false
-    if (isAtEnd()) parkedRef.current = false
+    if (isAtEnd()) unpark('jump ended on the end')
   }, [isAtEnd])
 
   /**
@@ -430,6 +590,10 @@ export function useThreadScroll({
    */
   const abandonSettle = useCallback(() => {
     openSettleUntilRef.current = 0
+    // The same gesture answers the other question this hook keeps asking: is
+    // the reader driving? Until one of these has fired, every position the list
+    // reports is a consequence of it laying itself out.
+    readerTookOverRef.current = true
   }, [])
 
   /**
@@ -468,10 +632,49 @@ export function useThreadScroll({
    * is what makes the bar push the thread rather than scroll it.
    */
   const onScrollerResize = useCallback(() => {
+    if (isAbsorbingPrepend()) {
+      traceScroll('scroller resized — held (prepend)')
+      return
+    }
+    traceScroll('scroller resized', {
+      parked: parkedRef.current,
+      jumping: jumpingRef.current,
+      atBottom: atBottomRef.current,
+      wasAtEnd: wasAtEndRef.current,
+    })
     if (parkedRef.current) return
+    if (jumpingRef.current) return
+    // Both opinions, and the synchronous one is the tie-breaker — see
+    // `wasAtEndRef`. The composer growing a line while the reader is up in
+    // history must not be read as consent to jump to the newest message.
     if (!atBottomRef.current) return
+    if (!wasAtEndRef.current) return
     scrollToEnd('auto')
-  }, [scrollToEnd])
+  }, [isAbsorbingPrepend, scrollToEnd])
+
+  /**
+   * Record, in the gesture itself, whether the view is on the end.
+   *
+   * Bound to `scroll` rather than derived from Virtuoso's flag because the flag
+   * is 50 ms behind — see `wasAtEndRef`. Our own corrections fire scroll events
+   * too, which is exactly right: a correction that reached the end says so, and
+   * one that was cancelled says that instead.
+   */
+  const rememberEnd = useCallback(() => {
+    const element = scrollerRef.current
+    if (!element || element instanceof Window) return
+    // The compensation scrolls too, thousands of pixels at a time, and those
+    // are not the reader moving: recording them leaves `wasAtEnd` false for a
+    // view that never left the end, which switches off every correction that
+    // depends on it for the rest of the visit.
+    if (isAbsorbingPrepend()) {
+      traceScroll('scroll event — held (prepend)')
+      return
+    }
+    const gap = element.scrollHeight - element.scrollTop - element.clientHeight
+    wasAtEndRef.current = gap <= THREAD_AT_BOTTOM_THRESHOLD_PX
+    traceScroll('scroll event')
+  }, [isAbsorbingPrepend])
 
   const onScrollerRef = useCallback(
     (element: HTMLElement | Window | null) => {
@@ -481,11 +684,13 @@ export function useThreadScroll({
         previous.removeEventListener('touchstart', abandonSettle)
         previous.removeEventListener('keydown', abandonSettle)
         previous.removeEventListener('pointerdown', onPointerDown)
+        previous.removeEventListener('scroll', rememberEnd)
       }
       resizeObserverRef.current?.disconnect()
       resizeObserverRef.current = null
 
       scrollerRef.current = element
+      traceScroller(element)
       if (element && !(element instanceof Window)) {
         if (typeof ResizeObserver !== 'undefined') {
           const observer = new ResizeObserver(onScrollerResize)
@@ -496,15 +701,47 @@ export function useThreadScroll({
         element.addEventListener('touchstart', abandonSettle, { passive: true })
         element.addEventListener('keydown', abandonSettle)
         element.addEventListener('pointerdown', onPointerDown, { passive: true })
+        element.addEventListener('scroll', rememberEnd, { passive: true })
       }
     },
-    [abandonSettle, onPointerDown, onScrollerResize],
+    [abandonSettle, onPointerDown, onScrollerResize, rememberEnd],
   )
 
   // The scroller can go away without Virtuoso handing back a null ref — an
   // unmount takes the whole tree with it — so the observer is disconnected here
   // as well as in the ref callback.
   useEffect(() => () => resizeObserverRef.current?.disconnect(), [])
+
+  /**
+   * The hold expires, and the view goes back where it was.
+   *
+   * Keyed on `firstItemIndex`, which changes only when a page prepends, so this
+   * runs once per page. Nothing is corrected for a reader who was up in history
+   * when it landed — the whole point of the compensation is that they stay put.
+   */
+  useEffect(() => {
+    if (prependHoldUntilRef.current === 0) return
+    const remaining = prependHoldUntilRef.current - Date.now()
+    if (remaining <= 0) return
+    const timer = setTimeout(() => {
+      prependHoldUntilRef.current = 0
+      if (!prependWasAtEndRef.current) return
+      if (parkedRef.current || jumpingRef.current) return
+      // Restored as well as re-scrolled: the gate above skipped every `scroll`
+      // event of the compensation, so this is the first honest reading since
+      // the page landed.
+      wasAtEndRef.current = true
+      traceScroll('prepend hold released')
+      // The ladder, not a single scroll: the 149 rows that just arrived are
+      // being measured for the first time right now, so the end moves for
+      // several frames after the hold expires. One correction lands short of it
+      // — which is the newest bubble half off the bottom of the pane, with the
+      // jump-to-newest button sitting over it.
+      scrollToEndIfNeeded()
+      settleToEnd()
+    }, remaining)
+    return () => clearTimeout(timer)
+  }, [firstItemIndexValue, scrollToEndIfNeeded, settleToEnd])
 
   /** Count what is unread BELOW the last rendered row — the badge's number. */
   const countUnreadBelow = useCallback(
@@ -695,57 +932,27 @@ export function useThreadScroll({
       // counts as read.
       useChatStore.getState().setThreadAtBottom(atBottom)
       if (!atBottom) return
+      // The list reporting the bottom is not the reader asking for it — see
+      // `readerTookOverRef`. Nothing below may run on it: not the un-park, not
+      // the badge, and above all not the receipt.
+      if (parkedRef.current && !readerTookOverRef.current) {
+        traceScroll('at-bottom ignored (reader has not moved yet)')
+        return
+      }
       // Reaching the bottom is the reader saying they are caught up — the park
       // ends and the whole thread counts as read.
       //
       // Unless a jump is on its way somewhere else: then the bottom is not where
       // the reader asked to be, it is only where they still are while the pages
       // between here and their target are fetched. Un-parking on it is what let
-      // `followOutput` pin the view back to the end mid-jump.
-      if (!jumpingRef.current) parkedRef.current = false
+      // the corrections below pin the view back to the end mid-jump.
+      if (!jumpingRef.current) unpark('reader reached the bottom')
       showUnreadBelow(0)
       const newest = rows[rows.length - 1]
       if (readyRef.current && newest && newest.message.id > 0) readUpTo(newest.message.id)
     },
     [rows, readUpTo, showUnreadBelow],
   )
-
-  /**
-   * Auto-follow, but only for a reader who is already at the bottom.
-   *
-   * This is what makes a burst of arrivals survivable: thirty messages landing
-   * while someone reads last week's history move the badge, not the viewport.
-   */
-  const followOutput = useCallback((atBottom: boolean) => {
-    if (parkedRef.current) return false
-    // Belt and braces: a jump in flight never follows, whatever else has
-    // happened to the park in the meantime.
-    if (jumpingRef.current) return false
-    // The argument is NOT "the reader is at the bottom". Virtuoso asks with
-    // `isAtBottom || scrollingInProgress`, and it asks on every change of
-    // `totalCount` — which a history page PREPENDED above the reader changes
-    // exactly as much as an arrival below them. So the one moment this is asked
-    // during a scroll up is the moment a page lands mid-gesture, and the answer
-    // handed in is `true` because the gesture is still running. Following it
-    // scrolls to the last row: the reader is hauled back to the newest message,
-    // scrolls up again, pulls the next page, and is hauled back again — the
-    // up-down-up-down flicker, one bounce per page the flick pulls in.
-    //
-    // `atBottomStateChange` is the same library's answer to the question that
-    // was actually asked, and it does not move with the gesture, so the two have
-    // to agree before the view is allowed to jump to the end.
-    if (!atBottomRef.current) return false
-    // `true` is Virtuoso's instant follow. Deliberately NOT 'smooth': an arrival
-    // while you sit at the bottom is a one-row nudge, and animating it competes
-    // with the instant jump the send below has already started.
-    //
-    // And the scroller is deliberately NOT measured here as a third opinion:
-    // every misread — and there is no shortage of moments when `scrollHeight` is
-    // mid-correction — said "you are at the bottom", which turned every list
-    // change into a scroll to the end: pinning a message, or landing a jump
-    // three screens up.
-    return atBottom
-  }, [])
 
   /**
    * Opening a chat sets the flag from the anchor: a thread parked at an unread
@@ -800,6 +1007,12 @@ export function useThreadScroll({
   useEffect(() => {
     const previousKey = newestKeyRef.current
     newestKeyRef.current = newestKey
+    traceScroll('newest row changed', {
+      from: previousKey,
+      to: newestKey,
+      mine: newestIsMine,
+      rows: rows.length,
+    })
     // Nothing to follow yet — this is the opening page, not a new message.
     if (previousKey === '') return
     if (newestIsMine) {
@@ -808,17 +1021,22 @@ export function useThreadScroll({
       return
     }
 
-    // SOMEBODY ELSE's message, and the reader is watching the end: follow it
-    // here rather than leaving it to Virtuoso's `followOutput`.
+    // SOMEBODY ELSE's message, and the reader is watching the end: followed
+    // here, because Virtuoso's own `followOutput` is off — see the note on the
+    // prop in `message-list.tsx`.
     //
-    // `followOutput` is consulted while the list is being told about the new
-    // row, and what it can measure at that moment is not always what the reader
-    // sees — which is how an arrival ended up behind the scroll-to-bottom badge
-    // for someone sitting at the bottom. This runs AFTER the row is in, asks the
-    // same question, and uses the same corrective jump the send does, so the
-    // answer does not depend on when it was asked.
+    // It was consulted while the list was being TOLD about the new row, and what
+    // it could measure at that moment was not always what the reader saw — which
+    // is how an arrival ended up behind the scroll-to-bottom badge for someone
+    // sitting at the bottom. This runs AFTER the row is in and uses the same
+    // corrective jump the send does, so the answer does not depend on when it
+    // was asked.
     if (parkedRef.current) return
     if (!atBottomRef.current) return
+    // And the un-lagged answer as well. A message landing in the fiftieth of a
+    // second after the reader flicked upwards was still being followed, because
+    // that is how long Virtuoso takes to admit the view has left the bottom.
+    if (!wasAtEndRef.current) return
     showUnreadBelow(0)
     jumpToBottom('auto')
     // Watched go past IS read, so the frontier moves with the view rather than
@@ -832,42 +1050,106 @@ export function useThreadScroll({
   }, [newestKey, newestIsMine, newestId, jumpToBottom, readUpTo, showUnreadBelow])
 
   /**
-   * Hold a caught-up chat at the true bottom while it opens.
+   * Hold the view on the true bottom while the list settles under it.
    *
-   * A ticker rather than a few scheduled corrections, because the things that
-   * move the end of the list after the first scroll do not announce themselves
-   * and do not change anything this hook can watch: the cached page is replaced
-   * by a fetched one of the SAME length, row heights are measured for the first
-   * time, an emoji font swaps in, an image decodes. Re-asserting on a timer for
-   * a moment covers all of them without needing to know which one happened.
+   * This used to be a 100 ms ticker, and the ticker WAS the flicker. A poll can
+   * only ever correct the frame AFTER the wrong one has been painted: the end
+   * moves, the reader sees it move, and up to a tenth of a second later the view
+   * is dragged back. Twenty-five times over the two and a half seconds a thread
+   * takes to open, which is exactly the two-to-three seconds of juddering after
+   * a refresh — and it stopped dead at the deadline because that is when the
+   * ticker stopped, not because anything had settled.
    *
-   * Skipped when there is an unread divider to park at — that one is meant to
-   * stop short of the end.
+   * A `ResizeObserver` is the same correction with the timing fixed. It is
+   * delivered after layout and BEFORE paint, in the frame the list actually
+   * changed height in, so the reader never sees the intermediate position at
+   * all. It also fires only when the end has genuinely moved, where the poll
+   * asked twenty-five times and re-entered Virtuoso's scroll handler on every
+   * answer.
+   *
+   * What it watches is the item list's BORDER box — Virtuoso pads that element
+   * with the height of the rows it has not mounted, so its outer height is the
+   * whole scrollable length. Measured as content instead, the number would
+   * shuffle on every scroll as rows mount and unmount either side of the
+   * viewport; measured as the border box, it moves only when a row is measured
+   * for the first time, a font swaps, a page lands or a picture resolves — the
+   * four things that move the end of a thread out from under the reader.
+   *
+   * It also replaces what Virtuoso's own `SIZE_INCREASED` follow used to do, and
+   * that is deliberate: it does the same job behind the guards below, where the
+   * library's version consulted nothing (see the `followOutput` note in
+   * `message-list.tsx`).
    */
-  useEffect(() => {
-    if (unreadAnchorId !== null) return
-    if (rows.length === 0) return
-    if (Date.now() > openSettleUntilRef.current) return
+  const contentObserverRef = useRef<ResizeObserver | null>(null)
 
-    // Gated from the very first pass too: this effect re-runs whenever a page
-    // lands, and an unconditional scroll there would yank a reader who had
-    // already moved. A null scroller reads as "not at the end", so the genuine
-    // opening scroll still happens.
+  const onContentResize = useCallback(() => {
+    if (isAbsorbingPrepend()) {
+      traceScroll('content resized — held (prepend)')
+      return
+    }
+    traceScroll('content resized', {
+      parked: parkedRef.current,
+      jumping: jumpingRef.current,
+      wasAtEnd: wasAtEndRef.current,
+      opening: Date.now() <= openSettleUntilRef.current,
+    })
+    if (parkedRef.current) return
+    if (jumpingRef.current) return
+    // While the thread is still OPENING, the deadline is the licence and "were
+    // we on the end" is the wrong question — the answer is no, and that is
+    // precisely what is being corrected: the list opened a bubble short because
+    // its rows were estimates. Once the window has closed it becomes the only
+    // question, so a picture resolving three screens up never moves a reader
+    // who is reading history.
+    if (Date.now() > openSettleUntilRef.current && !wasAtEndRef.current) return
     scrollToEndIfNeeded()
-    const ticker = setInterval(() => {
-      if (Date.now() > openSettleUntilRef.current) {
-        clearInterval(ticker)
+  }, [isAbsorbingPrepend, scrollToEndIfNeeded])
+
+  const hasRows = rows.length > 0
+
+  useEffect(() => {
+    if (!hasRows) return
+    if (typeof ResizeObserver === 'undefined') return
+
+    // Virtuoso publishes the scroller from an effect of its own and renders the
+    // list into it a frame later, so NEITHER element is reliably there when this
+    // runs. Both are re-read on every attempt rather than captured, and the
+    // attempt is retried a frame at a time until they are — a single early miss
+    // would otherwise cost the thread its correction for the whole visit.
+    let frame: number | null = null
+    // Bounded, so a list that never turns up costs a handful of frames rather
+    // than a callback on every frame for as long as the chat stays open.
+    let attemptsLeft = 60
+    const attach = () => {
+      frame = null
+      if (attemptsLeft-- <= 0) return
+      const element = scrollerRef.current
+      const list =
+        element && !(element instanceof Window)
+          ? element.querySelector<HTMLElement>(VIRTUOSO_ITEM_LIST)
+          : null
+      if (!list) {
+        frame = requestAnimationFrame(attach)
         return
       }
-      // Ticks to the deadline, because a late image decode or a font swap can
-      // move the end after the list looked settled — but stays SILENT while
-      // there is nothing to correct. Each needless scroll re-enters Virtuoso's
-      // handler, and twenty-five of them over two and a half seconds is what a
-      // freshly-opened thread was doing to itself.
-      scrollToEndIfNeeded()
-    }, THREAD_OPEN_SETTLE_TICK_MS)
-    return () => clearInterval(ticker)
-  }, [chatId, rows.length, unreadAnchorId, scrollToEndIfNeeded])
+      const observer = new ResizeObserver(onContentResize)
+      observer.observe(list, { box: 'border-box' })
+      contentObserverRef.current = observer
+    }
+    attach()
+
+    // The one correction the observer cannot make, because nothing has resized
+    // by the time we get here: the opening one. `scrollToEndIfNeeded` is a
+    // no-op when the list already opened on the end, and a null scroller reads
+    // as "not on the end", so a genuine opening scroll still happens.
+    onContentResize()
+
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame)
+      contentObserverRef.current?.disconnect()
+      contentObserverRef.current = null
+    }
+  }, [chatId, hasRows, onContentResize])
 
   // A message arriving while the reader is up in history never fires
   // `rangeChanged`, so the badge would sit stale. Recount against the range the
@@ -882,7 +1164,7 @@ export function useThreadScroll({
    *
    * A fresh object here re-rendered `MessageList` on every render of the pane,
    * and Virtuoso republishes every one of its props into its own state on every
-   * render it does — data, totalCount, firstItemIndex, followOutput, the lot —
+   * render it does — data, totalCount, firstItemIndex, the lot —
    * which recomputes the list state and re-arms the machinery that decides
    * whether to pin the view to the end. Opening a thread renders the pane
    * twenty-eight times in two seconds (the page lands, the chat row updates,
@@ -890,7 +1172,7 @@ export function useThreadScroll({
    * With this memoised and the list memo'd, only the renders that changed
    * something the list draws reach it.
    */
-  const firstItemIndex = firstItemIndexRef.current
+  const firstItemIndex = firstItemIndexValue
   return useMemo(
     () => ({
       virtuosoRef,
@@ -907,7 +1189,6 @@ export function useThreadScroll({
       scrollToBottom,
       beginJump,
       endJump,
-      followOutput,
       onAtBottomChange,
       onRangeChanged,
     }),
@@ -922,12 +1203,17 @@ export function useThreadScroll({
       scrollToBottom,
       beginJump,
       endJump,
-      followOutput,
       onAtBottomChange,
       onRangeChanged,
     ],
   )
 }
+
+/**
+ * Virtuoso's inner list — the element whose outer height is the whole
+ * scrollable length of the thread. See `onContentResize`.
+ */
+const VIRTUOSO_ITEM_LIST = '[data-testid="virtuoso-item-list"]'
 
 /**
  * Where the "Unread messages" rule may be drawn: an unread row that a PERSON

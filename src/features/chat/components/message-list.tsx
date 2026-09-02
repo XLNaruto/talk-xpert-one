@@ -94,7 +94,6 @@ function MessageListInner({
     isAtBottom,
     unreadBelow,
     scrollToBottom,
-    followOutput,
     onAtBottomChange,
     onRangeChanged,
   } = scroll
@@ -335,7 +334,24 @@ function MessageListInner({
         // it compensates the scroll instead of throwing the reader up into it —
         // and so `startReached` re-arms for the page after this one.
         firstItemIndex={firstItemIndex}
-        followOutput={followOutput}
+        // OFF, and a literal `false` rather than the predicate this used to be.
+        //
+        // Virtuoso has THREE auto-scroll-to-end paths and only ONE of them asks
+        // the prop what it thinks. The other two — a list refresh that reports
+        // `SIZE_INCREASED`, and a viewport that got shorter — check nothing but
+        // `followOutput !== false`, which a function always satisfies. So every
+        // guard `use-thread-scroll.ts` holds (parked at a jump target, a history
+        // walk in flight, a reader up in history) was bypassed outright: a row
+        // measuring for the first time or the composer growing a line hauled the
+        // view to the newest message, the hook's own correction put it back, and
+        // the two took turns — the flicker.
+        //
+        // `false` is the only value all three paths respect, and following is
+        // the hook's job anyway: `use-thread-scroll.ts` scrolls to the end on
+        // its own for a send, for an arrival the reader is caught up on, while
+        // the thread opens, and when the pane's height changes — each behind the
+        // guards that decide whether the reader wants to be at the end at all.
+        followOutput={false}
         initialTopMostItemIndex={initialTopMostItemIndex}
         atBottomStateChange={onAtBottomChange}
         atBottomThreshold={THREAD_AT_BOTTOM_THRESHOLD_PX}
@@ -425,7 +441,14 @@ function computeItemKey(_index: number, row: ThreadRow): Id | string {
   return row.message.clientMessageId ?? row.message.id
 }
 
-const ListFooter = () => <div className="h-2" />
+/**
+ * The air under the newest bubble.
+ *
+ * `h-3.5` rather than `h-2` because the last row no longer carries a bottom
+ * margin of its own — see the note on the run spacing in `message-bubble.tsx`.
+ * Six of these fourteen pixels are the ones that margin used to contribute.
+ */
+const ListFooter = () => <div className="h-3.5" />
 
 /**
  * Module-level, so the list's `components` prop never changes identity —

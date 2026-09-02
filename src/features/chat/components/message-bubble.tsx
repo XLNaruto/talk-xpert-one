@@ -213,14 +213,27 @@ function MessageBubbleBase({
         'group flex gap-2 px-3 transition-colors',
         isMine ? 'justify-end' : 'justify-start',
         // A run is one block: its rows sit CLOSE, and the air goes between
-        // blocks. Both halves are needed — spacing above the first row alone
-        // left the last row of a run touching the next speaker's name. A single
-        // pixel between rows was too little: a stack of one-word messages read
-        // as one striped slab, with no seam to tell where a message ended, so
-        // the within-run gap is now a visible hairline of background while
-        // staying well under the gap between runs.
-        startsGroup ? 'mt-4' : 'mt-1',
-        endsGroup && 'mb-1.5',
+        // blocks. A single pixel between rows was too little: a stack of
+        // one-word messages read as one striped slab, with no seam to tell
+        // where a message ended, so the within-run gap is a visible hairline of
+        // background while staying well under the gap between runs.
+        //
+        // PADDING, and above only. A vertical MARGIN here is measured wrong by
+        // the virtualised list: this row is the only child of Virtuoso's item
+        // element, which has no padding, border or overflow of its own, so a
+        // margin collapses straight through it. The item is then measured
+        // WITHOUT the margin while the page lays it out WITH it, and — because
+        // collapsing depends on what a row is adjacent to — the list's height
+        // changes by this many pixels depending on which row happens to be
+        // first in the rendered window. It flipped 16 px back and forth as the
+        // view moved, and the thread's scroll correction chased it: eight
+        // visible bounces after a send. Padding cannot collapse, so the height
+        // the list reports is the height it occupies.
+        //
+        // Air BELOW a run comes from the next run's `pt-4` (margins collapsed
+        // to the larger of the two, so this is the same gap it always was) and,
+        // for the last row in the thread, from the list's footer.
+        startsGroup ? 'pt-4' : 'pt-1',
         isSelected && 'bg-primary/10',
         // The whole row is the hit target while a selection is running.
         selecting && 'cursor-pointer',

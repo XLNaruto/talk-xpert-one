@@ -195,8 +195,14 @@ export function ChatSidebar() {
             scale. No rail around the group — the row sits on the sidebar's own
             surface, so a second border and fill here would box in a control
             that is already legible. */}
+        {/* ONE row, always. A badge appearing used to widen a chip past the
+            sidebar and push the last one onto a second line, which moved every
+            other chip mid-interaction. So the row never wraps and the chips
+            SHARE the width instead: each may shrink and its label truncates,
+            while the count pill keeps its full size — the number is the part
+            that must stay readable. */}
         <div
-          className="flex items-center gap-1"
+          className="flex min-w-0 items-center gap-1"
           role="tablist"
           aria-label="Filter conversations"
         >
@@ -215,7 +221,7 @@ export function ChatSidebar() {
                 aria-selected={isPicked}
                 onClick={() => setFilter(option.value)}
                 className={cn(
-                  'flex flex-1 cursor-pointer items-center justify-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium transition-all duration-150',
+                  'flex min-w-0 shrink cursor-pointer items-center justify-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium transition-all duration-150',
                   'active:scale-[0.97]',
                   isPicked
                     ? // The picked one is raised: brand fill and a shadow, so it

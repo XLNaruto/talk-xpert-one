@@ -5,9 +5,11 @@ export function LoginPage() {
   return (
     <div className="auth-rise auth-glass w-full max-w-md rounded-2xl px-7 py-9 sm:px-9">
       <div className="text-center">
-        <span className="auth-mark inline-flex size-14 items-center justify-center rounded-2xl">
-          <MessagesSquare className="size-7" />
-        </span>
+        <img
+          src="/logos/logo.png"
+          alt="XpertOne Talk"
+          className="mx-auto h-16 w-auto object-contain"
+        />
         <h1 className="mt-5 text-2xl font-semibold tracking-tight">Welcome back</h1>
         <p className="mx-auto mt-2 max-w-xs text-sm leading-relaxed text-muted-foreground">
           Sign in to your XpertOne account to continue your conversations.

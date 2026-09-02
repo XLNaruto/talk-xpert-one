@@ -1,6 +1,7 @@
 import type { FirebaseApp } from 'firebase/app'
 import type { MessagePayload, Messaging } from 'firebase/messaging'
 import { appBasePath, firebaseConfig, firebaseVapidKey, isPushConfigured } from '@/config/env'
+import { getAppConfig } from '@/stores/config-store'
 import { logger } from './logger'
 
 /**
@@ -77,10 +78,24 @@ async function firebaseApp(): Promise<FirebaseApp> {
  * substitution, and a hand-maintained copy of the same six values is a second
  * place to forget to update. `?v=` is not needed — the browser re-fetches a
  * worker whose URL differs by a byte, which is exactly what a changed config is.
+ *
+ * `media` rides along for the same reason, and it is what lets a banner draw the
+ * SENDER'S FACE. Every `photo` the API returns is a storage KEY, so the worker
+ * needs `media_path` to turn one into something the browser can fetch — and it
+ * has no way of its own to get it: `GET /config` is an authenticated read and a
+ * push arrives with no tab, no store and no session to make it with. Handing it
+ * over here means the value has one home (`GET /config`, via `config-store`) and
+ * is present even on a cold push.
+ *
+ * Omitted entirely when it is blank, so a deployment that serves media from the
+ * app root keeps the URL it has rather than re-registering the worker for a
+ * parameter that says nothing.
  */
 async function ensureServiceWorker(): Promise<ServiceWorkerRegistration | null> {
   if (registration) return registration
+  const mediaPath = getAppConfig()?.mediaPath ?? ''
   const params = new URLSearchParams({ config: JSON.stringify(firebaseConfig) })
+  if (mediaPath) params.set('media', mediaPath)
   try {
     registration = await navigator.serviceWorker.register(
       `${appBasePath}${SERVICE_WORKER_FILE}?${params.toString()}`,

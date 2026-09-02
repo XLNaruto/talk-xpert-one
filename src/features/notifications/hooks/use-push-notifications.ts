@@ -108,13 +108,22 @@ export function usePushNotifications() {
     }
   }, [talkUserId, syncToken])
 
-  /* ---- 2. a push while this tab has focus ---- */
+  /* ---- 2. a push while this tab has focus — the SDK's own path ---- */
 
   useEffect(() => {
     if (talkUserId == null) return
     return onForegroundPush((payload) => {
-      // No banner: this tab is the one being looked at, and the thread it
-      // belongs to may already be open. The event still has to be applied.
+      // Kept as the FALLBACK, not the main road. The worker now takes the raw
+      // `push` event ahead of the FCM SDK, so it forwards to a focused tab
+      // itself (step 3 below) and `onMessage` normally never fires — but a
+      // browser can still be running a PREVIOUS worker version for a while
+      // after a deploy, and that one leaves the SDK's path in place. Both
+      // arriving is harmless: `admitTalkEvent` keys `talk.message.new` on the
+      // message id, so the second copy is dropped.
+      //
+      // No banner either way: this tab is the one being looked at, and the
+      // thread it belongs to may already be open. The event still has to be
+      // applied.
       const event = parsePushEvent(payload.data as PushData | undefined)
       logger.info('push received (foreground)', {
         type: event?.type ?? null,

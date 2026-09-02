@@ -1033,12 +1033,6 @@
     backdrop-filter: blur(6px);
   }
 
-  /* The brand tile at the top of the card. */
-  .auth-mark {
-    background-image: linear-gradient(140deg, var(--auth-mark-from), var(--auth-mark-to));
-    color: var(--auth-mark-foreground);
-  }
-
   /* Solid brand fill painted on the element itself, so the label sits on an even
      colour rather than on whatever the card shows through. `isolation` still opens
      a stacking context for ::after, the specular band that sweeps on hover. */

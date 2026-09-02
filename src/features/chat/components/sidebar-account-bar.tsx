@@ -74,7 +74,7 @@ export function SidebarAccountBar() {
     // last row can still be scrolled clear of the glass.
     <div
       ref={bar}
-      className="absolute inset-x-2 bottom-2 z-20 rounded-full border border-sidebar-border/70 bg-sidebar/90 px-2 py-1 shadow-lg supports-[backdrop-filter]:bg-sidebar/60 supports-[backdrop-filter]:backdrop-blur-xl"
+      className="absolute inset-x-2 bottom-2 z-20 mx-auto max-w-none rounded-full sm:max-w-sm border border-sidebar-border/70 bg-sidebar/90 px-2 py-0.5 shadow-lg supports-[backdrop-filter]:bg-sidebar/60 supports-[backdrop-filter]:backdrop-blur-xl"
     >
       <div className="flex items-center gap-2">
         <button
@@ -87,7 +87,7 @@ export function SidebarAccountBar() {
             <Avatar
               name={self.name}
               src={mediaUrl(self.avatarKey) || undefined}
-              className="size-9"
+              className="size-8"
             />
             <OnlineBadge
               online={isOnline}
