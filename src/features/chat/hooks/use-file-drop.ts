@@ -1,7 +1,10 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { DragEvent } from 'react'
 import { toastProblem } from '@/lib/api-toast'
 import { fileFromMediaUrl, mediaUrlFromDrop } from '../lib/dropped-media'
+
+/** The DOM event, spelled out because React's synthetic one owns the name here. */
+type NativeDragEvent = globalThis.DragEvent
 
 /**
  * Drag-and-drop onto an element, as a set of handlers to spread.
@@ -9,6 +12,18 @@ import { fileFromMediaUrl, mediaUrlFromDrop } from '../lib/dropped-media'
  * The handlers are returned as one object so a component cannot wire half of
  * them — a missing `onDragOver` makes the browser navigate to the file instead
  * of dropping it.
+ *
+ * A window-wide guard rides along, and it is not optional. The handlers cover
+ * the thread pane; the sidebar, the header chrome and every gap around them are
+ * still the BROWSER's drop target, and its default answer to a file is to open
+ * it — which for a `.pem` (or anything it will not render) is a download, so a
+ * misaimed drag left the app and put a file in the user's Downloads folder. The
+ * same event also never reaches the pane, so the counted drag depth was never
+ * paid back and the "Drop files here" scrim stayed up over a chat that had
+ * stopped listening. So a file drop ANYWHERE in the document is swallowed and
+ * the hint is cleared — on the drop, on a drag that leaves the window, and on a
+ * cancelled drag. Only `Files` are swallowed: a dragged LINK still has to reach
+ * the textarea, which types it into the draft.
  *
  * Two payloads land here. A drag off the desktop carries `Files` and goes
  * straight to `onFiles`. A drag off a picture — one already in the thread, or
@@ -29,6 +44,48 @@ export function useFileDrop(
   // the pointer crosses a child. Counting enters against leaves is what keeps
   // the hint steady while the file moves over the bubbles and the composer.
   const depth = useRef(0)
+
+  const stopDragging = useCallback(() => {
+    depth.current = 0
+    setDragging(false)
+  }, [])
+
+  /**
+   * The browser's own drop behaviour, off — for the whole document.
+   *
+   * Bound once and independent of `disabled`: a composer that cannot take a file
+   * is still no reason to hand the file to Chrome. `drop` fires on whatever was
+   * under the pointer and bubbles to here, so the pane's own handler has already
+   * run by the time this one does and only the misses are left to swallow.
+   */
+  useEffect(() => {
+    const carriesFileList = (event: NativeDragEvent) =>
+      Boolean(event.dataTransfer?.types.includes('Files'))
+
+    const onWindowDragOver = (event: NativeDragEvent) => {
+      if (carriesFileList(event)) event.preventDefault()
+    }
+    const onWindowDrop = (event: NativeDragEvent) => {
+      if (carriesFileList(event)) event.preventDefault()
+      stopDragging()
+    }
+    // `relatedTarget` is null exactly when the pointer left the WINDOW — every
+    // other dragleave is a child boundary the depth count already handles.
+    const onWindowDragLeave = (event: NativeDragEvent) => {
+      if (event.relatedTarget === null) stopDragging()
+    }
+
+    window.addEventListener('dragover', onWindowDragOver)
+    window.addEventListener('drop', onWindowDrop)
+    window.addEventListener('dragleave', onWindowDragLeave)
+    window.addEventListener('dragend', stopDragging)
+    return () => {
+      window.removeEventListener('dragover', onWindowDragOver)
+      window.removeEventListener('drop', onWindowDrop)
+      window.removeEventListener('dragleave', onWindowDragLeave)
+      window.removeEventListener('dragend', stopDragging)
+    }
+  }, [stopDragging])
 
   const attachFromLink = useCallback(
     async (url: string) => {
@@ -88,14 +145,13 @@ export function useFileDrop(
         if (!carriesFiles(event) && !url) return
 
         event.preventDefault()
-        depth.current = 0
-        setDragging(false)
+        stopDragging()
 
         if (url) void attachFromLink(url)
         else onFiles(event.dataTransfer.files)
       },
     }
-  }, [disabled, onFiles, attachFromLink])
+  }, [disabled, onFiles, attachFromLink, stopDragging])
 
   return {
     isDragging: (isDragging || isFetchingLink) && !disabled,

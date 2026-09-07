@@ -6,6 +6,7 @@ import { SocketAckError } from './api-error'
 import { refreshAccessToken } from './auth-refresh'
 import { resolveRealtimeTarget, type RealtimeTarget } from './config-mappers'
 import { logger } from './logger'
+import { endSession } from './session'
 import type { Id } from '@/types/api'
 
 /**
@@ -253,7 +254,12 @@ export function canSendOverSocket(): boolean {
  *
  * A `401` means the access token expired underneath a socket that still looks
  * healthy: refresh once, push the new bearer in place, replay once. A second
- * `401` is a real one and is thrown.
+ * `401` — or a refresh that itself fails — is the session being GONE, not a
+ * stale bearer: somebody signed in on another device of this OS and took the
+ * slot, or the credential was deleted. That is exactly what the REST
+ * interceptor signs out for, and the socket must agree with it: leaving the
+ * user on the thread would let them keep typing into a session the server has
+ * already forgotten, every send failing the same way.
  */
 export async function socketCall<T>(
   event: string,
@@ -282,8 +288,22 @@ export async function socketCall<T>(
 
   if (ack.ok) return ack.data
 
-  if (ack.status === 401 && !retried) {
-    const token = await refreshAccessToken()
+  if (ack.status === 401) {
+    if (retried) {
+      // The refresh worked and the server still refuses the new bearer: the
+      // session itself is over.
+      logger.warn('socket ack 401 after refresh, signing out')
+      endSession('session-lost')
+      throw new SocketAckError(ack.status, ack.error)
+    }
+    let token: string
+    try {
+      token = await refreshAccessToken()
+    } catch {
+      logger.warn('socket ack 401 and refresh failed, signing out')
+      endSession('session-lost')
+      throw new SocketAckError(ack.status, ack.error)
+    }
     await updateSocketToken(token)
     return socketCall<T>(event, payload, true)
   }

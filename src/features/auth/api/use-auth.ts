@@ -1,16 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toApiError } from '@/lib/api-error'
 import { toastSuccess } from '@/lib/api-toast'
-import { clearCookies } from '@/lib/cookie'
+import { clearSessionState } from '@/lib/session'
 import { disconnectSocket } from '@/lib/socket-client'
 import { logger } from '@/lib/logger'
 import type { TalkPlatform } from '@/lib/platform'
 import { useAuthStore } from '@/stores/auth-store'
-import { useChatListStore } from '@/stores/chat-list-store'
-import { useChatStore } from '@/stores/chat-store'
-import { useMessageCacheStore } from '@/stores/message-cache-store'
-import { useTalkDirectoryStore } from '@/stores/talk-directory-store'
-import { clearTalkEventDedupe } from '@/features/chat'
 import * as authApi from './auth-api'
 import type { LoginValues } from '../types'
 
@@ -71,10 +66,6 @@ export function useLogin() {
 
 export function useLogout() {
   const logoutLocal = useAuthStore((s) => s.logout)
-  const clearMessages = useMessageCacheStore((s) => s.clear)
-  const clearChats = useChatListStore((s) => s.clear)
-  const resetChatUi = useChatStore((s) => s.reset)
-  const clearDirectory = useTalkDirectoryStore((s) => s.clear)
   const [isPending, setPending] = useState(false)
 
   const mutate = useCallback(
@@ -90,23 +81,17 @@ export function useLogout() {
         // Logout is idempotent, and a failed one must not trap the user in the app.
         logger.warn('server logout failed, clearing locally', error)
       } finally {
-        clearMessages()
-        clearChats()
-        resetChatUi()
-        // Names and avatars belong to the signed-in account; the next person to
-        // use this browser must not see them.
-        clearDirectory()
-        // The socket-vs-push de-duplication cache is keyed on event identity,
-        // not on the account — the next person to sign in here must not have
-        // their first events swallowed as "already seen".
-        clearTalkEventDedupe()
-        clearCookies()
+        // The same teardown the involuntary sign-outs run — see
+        // `lib/session.ts`. Here it runs AFTER the request, so the server was
+        // asked to retire this platform's device registration with a live
+        // session; a 401 during it has already torn everything down itself.
+        clearSessionState()
         logoutLocal('user')
         setPending(false)
         toastSuccess(allDevices ? 'Signed out on every device' : 'Signed out')
       }
     },
-    [clearMessages, clearChats, resetChatUi, clearDirectory, logoutLocal],
+    [logoutLocal],
   )
 
   return { mutate, isPending }

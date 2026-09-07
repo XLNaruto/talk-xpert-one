@@ -146,10 +146,20 @@ function MessageBubbleBase({
   // Otherwise the label hugs the corner while the photos below it look inset by
   // a hair. The run author is NOT chrome any more: it sits above the bubble.
   const hasHeader = message.isForwarded
+  /**
+   * Whether this bubble's attachments include something the album TILES.
+   *
+   * Only a picture or a video frame can carry the floating timestamp: it is a
+   * plate laid over the bottom-right of the artwork, and there is artwork to lay
+   * it on. A document or a voice note is a ROW — an icon, a filename, its size,
+   * a download affordance — and floating the time over that corner puts it on
+   * top of the size and the download icon, which is what it was doing.
+   */
+  const hasTiles = message.media.some((m) => m.kind === 'image' || m.kind === 'video')
   // A bubble that is nothing but an album drops its padding and floats the
   // timestamp over the last tile, so the photos meet the bubble's own corners.
   const mediaOnly =
-    message.media.length > 0 &&
+    hasTiles &&
     !message.body &&
     !message.replyTo &&
     !hasHeader &&

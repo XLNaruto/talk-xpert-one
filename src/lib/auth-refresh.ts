@@ -3,6 +3,7 @@ import { apiBaseUrl } from '@/config/env'
 import { useAuthStore } from '@/stores/auth-store'
 import { ENDPOINTS } from './endpoints'
 import { logger } from './logger'
+import { endSession } from './session'
 
 /** How often to check whether the 30-minute access token is close to expiry. */
 export const REFRESH_CHECK_INTERVAL_MS = 60 * 1000
@@ -90,7 +91,7 @@ export function startTokenRefreshScheduler(): () => void {
     if (Date.now() < accessTokenExpiresAt - REFRESH_SKEW_MS) return
     refreshAccessToken().catch(() => {
       logger.warn('scheduled refresh failed, signing out')
-      useAuthStore.getState().logout('session-lost')
+      endSession('session-lost')
     })
   }, REFRESH_CHECK_INTERVAL_MS)
 

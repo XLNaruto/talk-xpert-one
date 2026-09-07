@@ -3,6 +3,7 @@ import { apiBaseUrl } from '@/config/env'
 import { useAuthStore } from '@/stores/auth-store'
 import { refreshAccessToken } from './auth-refresh'
 import { logger } from './logger'
+import { endSession } from './session'
 
 type RetriableConfig = InternalAxiosRequestConfig & { _retry?: boolean }
 
@@ -44,7 +45,7 @@ apiClient.interceptors.response.use(
      */
     if (status === 403 && isSuspended(error)) {
       logger.warn('credential suspended')
-      useAuthStore.getState().logout('suspended')
+      endSession('suspended')
       return Promise.reject(error)
     }
 
@@ -65,12 +66,14 @@ apiClient.interceptors.response.use(
       } catch {
         // Refresh itself failed: the credential was deleted, or someone signed
         // in on another device of the same OS and took this slot.
-        useAuthStore.getState().logout('session-lost')
+        endSession('session-lost')
         return Promise.reject(error)
       }
     }
 
-    if (status === 401) useAuthStore.getState().logout('session-lost')
+    // Nothing left to try: no refresh token, or the replay came back 401 too.
+    // The session is over, so clear it rather than leaving a dead one in place.
+    if (status === 401) endSession('session-lost')
 
     return Promise.reject(error)
   },

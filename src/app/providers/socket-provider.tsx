@@ -13,6 +13,7 @@ import {
   updateSocketToken,
 } from '@/lib/socket-client'
 import { logger } from '@/lib/logger'
+import { endSession } from '@/lib/session'
 
 /**
  * Owns the socket lifecycle and the token that keeps it alive.
@@ -63,7 +64,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       refreshAccessToken()
         .catch(() => {
           logger.warn('socket refused and refresh failed, signing out')
-          useAuthStore.getState().logout('session-lost')
+          endSession('session-lost')
         })
         .finally(() => {
           isRecovering.current = false
