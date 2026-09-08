@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { toastProblem } from '@/lib/api-toast'
 import type { Id } from '@/types/api'
 import { THREAD_JUMP_HIGHLIGHT_MS, THREAD_JUMP_SETTLE_MS } from '../constants'
+import { seekFailureText } from '../lib/chat-labels'
 import { useHistorySeek } from './use-history-seek'
 
 interface MessageJumpOptions {
@@ -124,12 +125,14 @@ export function useMessageJump({
       releaseHold()
       startRef.current?.()
 
-      const found = await ensureLoaded(messageId)
-      if (!found) {
+      const outcome = await ensureLoaded(messageId)
+      if (outcome !== 'found') {
         // Nothing moved, so the hold is handed straight back — otherwise the
         // thread sits held off arrivals with no jump to show for it.
         releaseHold()
-        toastProblem('That message is too far back to open from here.')
+        // Silent for `busy`: the walk already running is going to land, and a
+        // toast for the click that lost the race would explain nothing.
+        if (outcome !== 'busy') toastProblem(seekFailureText(outcome))
         return
       }
 

@@ -4,6 +4,7 @@ import { useDebouncedValue } from '@/hooks/use-debounced-value'
 import type { Id } from '@/types/api'
 import * as chatApi from '../api/chat-api'
 import { THREAD_SEARCH_HIT_CAP, THREAD_SEARCH_PAGE_SIZE } from '../constants'
+import { seekFailureText } from '../lib/chat-labels'
 import type { MessageSearchHit } from '../types'
 import { useHistorySeek } from './use-history-seek'
 
@@ -146,9 +147,13 @@ export function useThreadSearch({ chatId, loadEarlier, hasEarlier }: UseThreadSe
     async (index: number) => {
       if (index < 0 || index >= hits.length) return
       setActiveIndex(index)
-      const found = await ensureLoaded(hits[index].id)
-      if (!found) {
-        toastProblem('That message is too far back to open from here.')
+      const outcome = await ensureLoaded(hits[index].id)
+      // A hit the SERVER found but my thread cannot reach tells the two failures
+      // apart the same way a reply quote does — and here `gone` is the stranger
+      // of the pair, since search obeys my history too: the message went between
+      // the search and the step to it.
+      if (outcome !== 'found' && outcome !== 'busy') {
+        toastProblem(seekFailureText(outcome))
       }
     },
     [hits, ensureLoaded],

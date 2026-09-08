@@ -458,3 +458,23 @@ export function messageHideCopy(message: ChatMessage): ConfirmCopy {
     tone: 'destructive',
   }
 }
+
+
+/**
+ * Why a jump to a message did not land, said in the reader's terms.
+ *
+ * "Too far back" was told for BOTH failures, and it is wrong for the common one:
+ * a message deleted for me, written before I joined the group, or received while
+ * I had the sender blocked is not up the thread somewhere — it is not in my copy
+ * of the conversation at all. Sending that reader scrolling is worse than
+ * telling them nothing.
+ *
+ * The reply quote is what makes this visible: it outlives the message it points
+ * at, so the one row most likely to be tapped is the one whose target may be
+ * gone. Nothing is said for `found` or for a walk already in flight.
+ */
+export function seekFailureText(outcome: 'capped' | 'gone'): string {
+  return outcome === 'gone'
+    ? 'That message no longer exists in this conversation.'
+    : 'That message is too far back to open from here.'
+}
