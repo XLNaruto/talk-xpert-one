@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { keyOf, type Id } from '@/types/api'
-import type { ChatMessage } from '@/features/chat/types'
+import type { ChatMessage, MessageMedia, MessageType } from '@/features/chat/types'
 
 /**
  * In-memory message cache — Talk's answer to a server-state library.
@@ -102,6 +102,23 @@ interface MessageCacheState {
   applyDeleteForEveryone: (chatId: Id, messageIds: Id[]) => void
   /** Delete FOR ME — the row is genuinely gone from my view. */
   removeMany: (chatId: Id, messageIds: Id[]) => void
+  /**
+   * `talk.message.media_deleted`, and the answer to our own per-file delete —
+   * files came OFF a bubble that usually still has content, so the row survives.
+   *
+   * `type` is applied rather than derived: the message's type follows its FIRST
+   * file's kind, so removing the first attachment moves it image → video, and a
+   * local splice alone would go on drawing a photo frame around a video.
+   *
+   * `remainingMedia` is preferred when the caller has it — the response answers
+   * the whole live list, which is the authority on what is left — and the socket
+   * event, which names only what went, falls back to filtering by id.
+   */
+  applyMediaRemoved: (
+    chatId: Id,
+    messageId: Id,
+    change: { mediaIds?: Id[]; remainingMedia?: MessageMedia[]; type?: MessageType },
+  ) => void
   /**
    * `talk.message.read` — turn my own ticks blue.
    *
@@ -394,6 +411,27 @@ export const useMessageCacheStore = create<MessageCacheState>()((set) => ({
     set((s) => {
       const ids = new Set(messageIds)
       return patchChat(s, chatId, (held) => held.filter((m) => !ids.has(m.id)))
+    }),
+
+  applyMediaRemoved: (chatId, messageId, { mediaIds = [], remainingMedia, type }) =>
+    set((s) => {
+      const gone = new Set(mediaIds.map(String))
+      return patchChat(s, chatId, (held) =>
+        mapWhere(
+          held,
+          (m) => m.id === messageId,
+          (m) => ({
+            ...m,
+            media:
+              remainingMedia ??
+              m.media.filter((item) => !gone.has(String(item.id))),
+            // A message that keeps its caption and loses its last file becomes
+            // a `text` message — which the server has already worked out, so
+            // the type is taken rather than guessed.
+            type: type ?? m.type,
+          }),
+        ),
+      )
     }),
 
   applyRead: (chatId, messageIds, by = {}) =>

@@ -28,6 +28,18 @@ export const SOCKET_ACTIONS = {
   messageEdit: 'talk:message.edit',
   /** `{ chat_id, message_ids, for_everyone }` → `{ affected }`. */
   messageDelete: 'talk:message.delete',
+  /**
+   * `{ chat_id, message_id, media_ids }` → `{ message_id, deleted_media_ids,
+   * remaining_media, type, message_deleted }`, byte-identical to the HTTP 200.
+   *
+   * Takes ONE file off a multi-file message. `media_ids` are `media[].id`
+   * values ON THAT MESSAGE — a message id there is a 404 — and there is no
+   * `for_everyone`: the sender alone may do it and it always applies to
+   * everybody. The last file off a CAPTIONLESS bubble withdraws the whole
+   * message, which comes back as `message_deleted` and is announced as
+   * `talk.message.deleted` rather than the media event.
+   */
+  messageMediaDelete: 'talk:message.media.delete',
   /** `{ message_ids, to_chat_ids }` → `{ forwarded }`. One `talk.message.new` per destination. */
   messageForward: 'talk:message.forward',
   /** `{ chat_ids, upto_message_id? }` → `{ affected }`. Takes a LIST — mark-all is one emit. */
@@ -85,6 +97,22 @@ export const SOCKET_EVENTS = {
   messageEdited: 'talk.message.edited',
   /** `{ chat_id, message_ids }` — delete for EVERYONE only. */
   messageDeleted: 'talk.message.deleted',
+  /**
+   * `{ chat_id, message_id, media_ids, type, by_talk_user_id }` — files were
+   * taken OFF a message that usually still has content, so it is never routed
+   * through the `talk.message.deleted` handler.
+   *
+   * `type` is the message's type NOW: it is derived from the FIRST file's kind,
+   * so removing the first attachment moves the bubble image → video → document.
+   * Splice the local array without re-applying it and the client draws a photo
+   * frame around a video.
+   *
+   * Delivered to the whole room INCLUDING the actor's other devices — a removal
+   * done on a phone has to disappear on the same person's desktop — so, like
+   * every Talk write, the sender sees both the ack and the broadcast. Silent as
+   * a push: a removed attachment is state, not news.
+   */
+  messageMediaDeleted: 'talk.message.media_deleted',
   /**
    * `{ chat_id, message_ids, by_talk_user_id, by_name, by_photo, receipts }` —
    * turns your ticks blue.
@@ -309,6 +337,13 @@ export const PRESENCE_STALE_MS = 70_000
  * for a minute with no way to tell how far along it is.
  */
 export const MAX_ATTACHMENTS = 10
+
+/**
+ * How many files one per-file delete may name. The API refuses 0 and anything
+ * over this with a 400, so the grid's selection is capped rather than the
+ * request being sent to be refused.
+ */
+export const MAX_MEDIA_DELETE = 100
 
 /**
  * How tall the composer grows before it scrolls instead, in pixels. Kept here

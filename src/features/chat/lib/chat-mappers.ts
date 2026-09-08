@@ -7,6 +7,7 @@ import type {
   ChatSelf,
   ChatType,
   Contact,
+  MediaDeleteResult,
   MediaKind,
   MemberRole,
   MessageMedia,
@@ -38,6 +39,18 @@ export interface MessageMediaDto {
   duration_seconds?: number | null
   thumbnail_url?: string | null
   position?: number
+}
+
+/**
+ * The answer to a per-file delete — the same body over HTTP and in the socket
+ * ack, which is why one mapper serves both.
+ */
+export interface MediaDeleteResultDto {
+  message_id?: number
+  deleted_media_ids?: number[]
+  remaining_media?: MessageMediaDto[] | null
+  type?: string
+  message_deleted?: boolean
 }
 
 export interface MessageQuoteDto {
@@ -237,6 +250,19 @@ export function toMemberRole(value: unknown, fallback: MemberRole = 'member'): M
   return oneOf(value, MEMBER_ROLES, fallback)
 }
 
+/**
+ * Narrow a `type` that arrives on its own rather than inside a message row —
+ * `talk.message.media_deleted` and the per-file delete's answer both report the
+ * message's type AFTER the removal.
+ *
+ * `undefined` for anything unrecognised or absent, deliberately: the caller
+ * holds a type already, and keeping it beats overwriting a known `video` with a
+ * guessed `text`.
+ */
+export function toMessageType(value: unknown): MessageType | undefined {
+  return MESSAGE_TYPES.includes(value as MessageType) ? (value as MessageType) : undefined
+}
+
 export function toMessageMedia(dto: MessageMediaDto): MessageMedia {
   return {
     id: dto.id,
@@ -250,6 +276,28 @@ export function toMessageMedia(dto: MessageMediaDto): MessageMedia {
     durationSeconds: dto.duration_seconds ?? null,
     thumbnailUrl: dto.thumbnail_url ?? null,
     position: dto.position ?? 0,
+  }
+}
+
+/**
+ * `messageId` falls back to the id the caller asked about: the shape is fixed,
+ * but a narrowed ack must never leave the cache patching message `0`.
+ *
+ * `remaining_media` is sorted by `position` on the way through, because that is
+ * the sender's order and the grid draws straight from this list.
+ */
+export function toMediaDeleteResult(
+  dto: MediaDeleteResultDto,
+  messageId: Id,
+): MediaDeleteResult {
+  return {
+    messageId: dto.message_id ?? messageId,
+    deletedMediaIds: dto.deleted_media_ids ?? [],
+    remainingMedia: (dto.remaining_media ?? [])
+      .map(toMessageMedia)
+      .sort((a, b) => a.position - b.position),
+    type: toMessageType(dto.type),
+    messageDeleted: dto.message_deleted ?? false,
   }
 }
 

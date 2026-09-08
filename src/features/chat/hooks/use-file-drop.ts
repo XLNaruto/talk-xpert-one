@@ -26,11 +26,23 @@ type NativeDragEvent = globalThis.DragEvent
  * the textarea, which types it into the draft.
  *
  * Two payloads land here. A drag off the desktop carries `Files` and goes
- * straight to `onFiles`. A drag off a picture — one already in the thread, or
- * one in another tab — carries only a LINK, and a textarea's default answer to
- * that is to type the URL out as message text. So a link to a sendable file is
- * fetched back into a `File` and attached like any other; a link to anything
- * else is left alone and still writes itself into the draft.
+ * straight to `onFiles`. A drag off a picture in ANOTHER TAB carries only a
+ * LINK, and a textarea's default answer to that is to type the URL out as
+ * message text. So a link to a sendable file is fetched back into a `File` and
+ * attached like any other; a link to anything else is left alone and still
+ * writes itself into the draft.
+ *
+ * A drag that STARTED IN THIS DOCUMENT is none of those, and it is refused
+ * outright — the whole drop is swallowed, hint included. A photo in the thread
+ * and a thumbnail in the delete picker are both `<img>`s, so the browser lets
+ * them be dragged and hands the drop a `text/uri-list` pointing at our own
+ * storage: indistinguishable from the other-tab case, and taken as one it
+ * fetched the picture back and put it in the composer as a NEW attachment. So
+ * dragging a photo a few pixels inside its own bubble queued it to be sent
+ * again — one gesture with two meanings, and the destructive-looking one
+ * happening by accident. `dragstart` only fires for a drag begun here, which is
+ * exactly the test: no listener of ours runs for a drag from the desktop or
+ * another tab.
  */
 export function useFileDrop(
   onFiles: (files: FileList | File[]) => void,
@@ -44,6 +56,14 @@ export function useFileDrop(
   // the pointer crosses a child. Counting enters against leaves is what keeps
   // the hint steady while the file moves over the bubbles and the composer.
   const depth = useRef(0)
+  /**
+   * Whether the drag in flight was begun on an element of OURS.
+   *
+   * A ref rather than state on purpose: it is read inside a drop handler in the
+   * same gesture that sets it, and a re-render between the two would be a frame
+   * in which the app disagreed with itself about what is being dragged.
+   */
+  const isInternalDrag = useRef(false)
 
   const stopDragging = useCallback(() => {
     depth.current = 0
@@ -62,10 +82,34 @@ export function useFileDrop(
     const carriesFileList = (event: NativeDragEvent) =>
       Boolean(event.dataTransfer?.types.includes('Files'))
 
+    // Set for the whole of a drag begun HERE, and only such a drag: a file from
+    // the desktop and a picture from another tab both start in a document this
+    // listener is not bound to.
+    const onWindowDragStart = () => {
+      isInternalDrag.current = true
+    }
+    const onWindowDragEnd = () => {
+      isInternalDrag.current = false
+      stopDragging()
+    }
+
     const onWindowDragOver = (event: NativeDragEvent) => {
+      // NOT prevented for an internal drag, which is what makes the browser
+      // refuse the drop and show the "no drop" cursor rather than letting one
+      // land somewhere and be swallowed after the fact.
+      if (isInternalDrag.current) return
       if (carriesFileList(event)) event.preventDefault()
     }
     const onWindowDrop = (event: NativeDragEvent) => {
+      // A photo dragged out of the thread and let go anywhere in the app: the
+      // default here is the TEXTAREA typing our own storage URL into the draft,
+      // so it is cancelled even though nothing of ours acts on it.
+      if (isInternalDrag.current) {
+        event.preventDefault()
+        isInternalDrag.current = false
+        stopDragging()
+        return
+      }
       if (carriesFileList(event)) event.preventDefault()
       stopDragging()
     }
@@ -75,15 +119,20 @@ export function useFileDrop(
       if (event.relatedTarget === null) stopDragging()
     }
 
+    // Capture, so the flag is up before any handler of ours can read it —
+    // `dragstart` bubbles from the image, and the pane's `dragenter` for the
+    // same gesture follows immediately.
+    window.addEventListener('dragstart', onWindowDragStart, true)
     window.addEventListener('dragover', onWindowDragOver)
     window.addEventListener('drop', onWindowDrop)
     window.addEventListener('dragleave', onWindowDragLeave)
-    window.addEventListener('dragend', stopDragging)
+    window.addEventListener('dragend', onWindowDragEnd)
     return () => {
+      window.removeEventListener('dragstart', onWindowDragStart, true)
       window.removeEventListener('dragover', onWindowDragOver)
       window.removeEventListener('drop', onWindowDrop)
       window.removeEventListener('dragleave', onWindowDragLeave)
-      window.removeEventListener('dragend', stopDragging)
+      window.removeEventListener('dragend', onWindowDragEnd)
     }
   }, [stopDragging])
 
@@ -118,12 +167,12 @@ export function useFileDrop(
 
     return {
       onDragEnter: (event: DragEvent<HTMLElement>) => {
-        if (disabled || !carriesDrop(event)) return
+        if (disabled || isInternalDrag.current || !carriesDrop(event)) return
         depth.current += 1
         setDragging(true)
       },
       onDragOver: (event: DragEvent<HTMLElement>) => {
-        if (disabled || !carriesDrop(event)) return
+        if (disabled || isInternalDrag.current || !carriesDrop(event)) return
         event.preventDefault()
       },
       onDragLeave: () => {
@@ -132,6 +181,9 @@ export function useFileDrop(
         if (depth.current === 0) setDragging(false)
       },
       onDrop: (event: DragEvent<HTMLElement>) => {
+        // The window guard cancels the browser's own answer to this one; there
+        // is nothing here for the composer to take.
+        if (isInternalDrag.current) return
         if (disabled || !carriesDrop(event)) return
 
         // A link that isn't a file is a link: fall through with the default

@@ -71,6 +71,13 @@ interface ChatState {
    */
   receiptRevision: Record<string, number>
   /**
+   * Bumped when a file leaves a message, so an OPEN details sheet re-reads its
+   * gallery. The gallery is "every attachment in this chat", and a per-file
+   * delete drops one from it with no event of its own — the row is corrected
+   * only on the next read, so this is what asks for one.
+   */
+  mediaRevision: Record<string, number>
+  /**
    * Whether the OPEN thread is showing its newest message.
    *
    * Owned by `use-thread-scroll`, read by the socket handler. A message is read
@@ -119,6 +126,8 @@ interface ChatState {
   bumpMembers: (chatId: Id) => void
   /** `talk.message.read` from somebody else. */
   bumpReceipts: (chatId: Id) => void
+  /** A file was taken off a message — the chat's gallery is one shorter. */
+  bumpMedia: (chatId: Id) => void
   setThreadAtBottom: (atBottom: boolean) => void
   setBlockedTalkUserIds: (ids: Id[]) => void
   setBlocked: (talkUserId: Id, blocked: boolean) => void
@@ -138,6 +147,7 @@ export const useChatStore = create<ChatState>((set) => ({
   pinRevision: {},
   memberRevision: {},
   receiptRevision: {},
+  mediaRevision: {},
   isThreadAtBottom: true,
   isDetailsOpen: false,
 
@@ -258,6 +268,14 @@ export const useChatStore = create<ChatState>((set) => ({
       }
     }),
 
+  bumpMedia: (chatId) =>
+    set((s) => {
+      const key = keyOf(chatId)
+      return {
+        mediaRevision: { ...s.mediaRevision, [key]: (s.mediaRevision[key] ?? 0) + 1 },
+      }
+    }),
+
   setThreadAtBottom: (isThreadAtBottom) =>
     set((s) => (s.isThreadAtBottom === isThreadAtBottom ? {} : { isThreadAtBottom })),
 
@@ -283,6 +301,7 @@ export const useChatStore = create<ChatState>((set) => ({
       pinRevision: {},
       memberRevision: {},
       receiptRevision: {},
+      mediaRevision: {},
       isThreadAtBottom: true,
       isDetailsOpen: false,
     }),

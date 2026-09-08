@@ -39,6 +39,8 @@ interface MessageListProps {
   onReply: (message: ChatMessage) => void
   onEdit: (message: ChatMessage) => void
   onDelete: (message: ChatMessage, forEveryone: boolean) => void
+  /** Takes FILES off a message — my own bubbles only. Opens the picker panel. */
+  onDeleteMedia?: (message: ChatMessage, mediaIds: Id[]) => void
   onPin: (messageId: Id, pinned: boolean, forEveryone: boolean) => void
   onForward: (message: ChatMessage) => void
   onShowInfo: (message: ChatMessage) => void
@@ -75,6 +77,7 @@ function MessageListInner({
   onReply,
   onEdit,
   onDelete,
+  onDeleteMedia,
   onPin,
   onForward,
   onShowInfo,
@@ -279,6 +282,7 @@ function MessageListInner({
           onReply={onReply}
           onEdit={onEdit}
           onDelete={onDelete}
+          onDeleteMedia={onDeleteMedia}
           onPin={onPin}
           onForward={onForward}
           onShowInfo={onShowInfo}
@@ -299,6 +303,7 @@ function MessageListInner({
       onReply,
       onEdit,
       onDelete,
+      onDeleteMedia,
       onPin,
       onForward,
       onShowInfo,

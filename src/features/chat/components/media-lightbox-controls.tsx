@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Copy, Download, ZoomIn, ZoomOut } from 'lucide-react'
+import { Copy, Download, EyeOff, Trash2, ZoomIn, ZoomOut } from 'lucide-react'
 import {
   CloseIcon,
   IconButton,
@@ -15,6 +15,8 @@ import type {} from 'yet-another-react-lightbox/plugins/zoom'
 import { Tip } from '@/components/common/tip'
 import { toastProblem, toastSuccess } from '@/lib/api-toast'
 import { canCopyImages, copyImageToClipboard } from '@/lib/copy-image'
+import { useMediaViewerStore } from '@/stores/media-viewer-store'
+import type { Id } from '@/types/api'
 import { downloadMedia, slideDownload } from '../lib/media-download'
 
 /**
@@ -40,6 +42,8 @@ const TOOLTIP_LAYER = 'z-[10000]'
 declare module 'yet-another-react-lightbox' {
   interface Labels {
     'Copy image'?: string
+    'Delete file'?: string
+    'Delete for me'?: string
   }
 }
 
@@ -130,6 +134,87 @@ export function LightboxCopyButton() {
             .catch(() => toastProblem('That image could not be copied. Download it instead.'))
             .finally(() => setCopying(false))
         }}
+      />
+    </LightboxTip>
+  )
+}
+
+/**
+ * Take the file on screen off its message, from the viewer.
+ *
+ * The natural place for it: the slide IS one file, so there is nothing to pick
+ * and nothing to mistake — where the bubble's own menu, over an album of nine,
+ * can only offer a picker.
+ *
+ * Absent unless the viewer was opened from a bubble the reader SENT. The details
+ * sheet's gallery lists the whole chat's attachments without saying which
+ * message each one hangs off, so there is no `message_id` to name and the button
+ * would have nothing to send — better absent than present and permanently dead.
+ */
+export function LightboxDeleteButton({
+  onRequestDelete,
+}: {
+  /**
+   * Undefined when the thread no longer holds the message — the cache is
+   * bounded and a conversation paged out takes its rows with it, and a bin that
+   * opens nothing is worse than no bin.
+   */
+  onRequestDelete?: (mediaId: Id) => void
+}) {
+  const source = useMediaViewerStore((s) => s.source)
+  const { currentIndex } = useLightboxState()
+  // The ids are filtered the same way the slides are, so the slide in view and
+  // the id at its index are the same file.
+  const mediaId = source?.mediaIds[currentIndex]
+
+  // The per-file delete is the SENDER's alone — on somebody else's photo the
+  // button is absent rather than disabled, because a 403 is the only thing it
+  // could ever answer.
+  if (!source?.canDeleteFile || mediaId === undefined || !onRequestDelete) return null
+
+  return (
+    <LightboxTip label="Delete file">
+      <IconButton
+        label="Delete file"
+        title={undefined}
+        icon={Trash2}
+        onClick={() => onRequestDelete(mediaId)}
+      />
+    </LightboxTip>
+  )
+}
+
+/**
+ * Hide the whole message from MY view, from the viewer.
+ *
+ * Offered on ANY photo, including somebody else's — anyone may hide anything
+ * they can see, and nobody is told. It is deliberately not per-file: "hide it
+ * from me alone" is a whole-MESSAGE gesture in the API and there is no
+ * per-reader variant of the per-file one, so the confirmation names every file
+ * that goes rather than letting the reader lose an album expecting to lose a
+ * photo.
+ *
+ * `EyeOff`, not a second bin: the two deletes sit side by side up here, and the
+ * one that only changes MY view has to read differently from the one that
+ * withdraws a file from everybody.
+ */
+export function LightboxHideButton({
+  onRequestHide,
+}: {
+  /** Undefined when the thread no longer holds the message. */
+  onRequestHide?: () => void
+}) {
+  const source = useMediaViewerStore((s) => s.source)
+
+  if (!source || !onRequestHide) return null
+
+  return (
+    <LightboxTip label="Delete for me">
+      <IconButton
+        label="Delete for me"
+        title={undefined}
+        icon={EyeOff}
+        onClick={onRequestHide}
       />
     </LightboxTip>
   )

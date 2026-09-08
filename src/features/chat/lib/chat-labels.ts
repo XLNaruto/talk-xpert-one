@@ -1,6 +1,7 @@
 import type { Id } from '@/types/api'
 import type {
   Chat,
+  ChatMessage,
   Contact,
   MessageMedia,
   MessageQuote,
@@ -355,6 +356,105 @@ export function removeChatCopy(name: string, isLeftGroup: boolean): ConfirmCopy 
       ? `${name} leaves your list and its history goes with it. You have already left the group, so nothing will bring the row back — an admin adding you again starts a fresh one.`
       : `${name} leaves your list and its messages are hidden from you. The conversation comes back if they message you again.`,
     confirmLabel: 'Remove',
+    tone: 'destructive',
+  }
+}
+
+
+/**
+ * May this bubble's files be taken off one at a time?
+ *
+ * The SENDER alone, and the removal is always for everyone — a group owner may
+ * not strip somebody else's attachments, the same limit that stops them
+ * withdrawing another member's words. A tombstone has no files left to take, and
+ * an optimistic row has no server ids to name, so neither is offered the action:
+ * the whole point of `media_ids` is that they are `media[].id` values the server
+ * issued.
+ */
+export function canDeleteMessageMedia(message: ChatMessage, isMine: boolean): boolean {
+  return (
+    isMine &&
+    message.id > 0 &&
+    !message.isDeletedForEveryone &&
+    message.media.length > 0 &&
+    message.media.every((item) => item.id > 0)
+  )
+}
+
+/**
+ * Whether removing exactly these files withdraws the WHOLE message.
+ *
+ * A message with no files and no text is not renderable, so the server withdraws
+ * it — and the confirm has to say so rather than asking the generic question,
+ * because the caption, the replies pointing at it and the reader's place in the
+ * thread all go with it. Knowable before the call: it is the last file and there
+ * is no caption.
+ */
+export function mediaDeleteWithdrawsMessage(message: ChatMessage, mediaIds: Id[]): boolean {
+  const named = new Set(mediaIds.map(String))
+  const remaining = message.media.filter((item) => !named.has(String(item.id)))
+  return remaining.length === 0 && !message.body?.trim()
+}
+
+/**
+ * The question asked before files come off a message.
+ *
+ * Two shapes, and the difference is the whole reason this is not one string: the
+ * captionless case destroys the bubble, so the copy names that consequence
+ * instead of promising only the photo goes.
+ */
+export function mediaDeleteCopy(message: ChatMessage, mediaIds: Id[]): ConfirmCopy {
+  const count = mediaIds.length
+  const withdraws = mediaDeleteWithdrawsMessage(message, mediaIds)
+  const noun =
+    count === 1
+      ? (message.media.find((item) => String(item.id) === String(mediaIds[0]))?.kind ===
+        'image'
+          ? 'photo'
+          : 'file')
+      : `${count} files`
+
+  return {
+    title: count === 1 ? `Delete this ${noun}?` : `Delete ${noun}?`,
+    message: withdraws
+      ? 'This is the last file and there is no caption, so the whole message goes with it. Everyone in the chat sees it withdrawn.'
+      : count === 1
+        ? 'It comes off the message for everyone in the chat. The rest of the message stays.'
+        : 'They come off the message for everyone in the chat. The rest of the message stays.',
+    confirmLabel: withdraws ? 'Delete message' : count === 1 ? 'Delete' : `Delete ${count}`,
+    tone: 'destructive',
+  }
+}
+
+
+/**
+ * The question asked before hiding a whole message from MY view alone.
+ *
+ * Asked from the full-screen viewer, which is why it counts the files: the
+ * reader is looking at ONE photo, and "delete for me" is not a per-file gesture
+ * — there is no per-reader variant of that and none is coming, because a bubble
+ * with a gap in it for one person is not something any client draws. So the copy
+ * names everything that goes, or the reader loses an album expecting to lose a
+ * photo.
+ *
+ * It also promises the other half: nobody is told, and no event fires. That is
+ * the whole difference from the sender's delete, and it is the part worth
+ * stating before the choice is made.
+ */
+export function messageHideCopy(message: ChatMessage): ConfirmCopy {
+  const files = message.media.length
+  const caption = Boolean(message.body?.trim())
+  const scope =
+    files > 1
+      ? `all ${files} files${caption ? ' and its caption' : ''}`
+      : caption
+        ? 'this file and its caption'
+        : 'this file'
+
+  return {
+    title: 'Delete this message for you?',
+    message: `The whole message leaves your view — ${scope}. Nobody else's view changes and the sender is not told.`,
+    confirmLabel: 'Delete for me',
     tone: 'destructive',
   }
 }

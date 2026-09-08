@@ -96,6 +96,34 @@ export interface MessageMedia {
   position: number
 }
 
+/**
+ * What a per-file delete actually did — the same body from both transports.
+ *
+ * `deletedMediaIds` may be a SUBSET of what was asked for: an id already gone is
+ * skipped rather than refused, so a retry after a flaky first call settles
+ * instead of failing, and an empty list with a 200 means everything named had
+ * already been removed (nothing was written and no event was emitted).
+ *
+ * `remainingMedia` is the message's FULL live list afterwards, in `position`
+ * order — redraw the grid from it rather than splicing locally — and `type` is
+ * the message's type NOW, since it follows the first remaining file's kind.
+ *
+ * `messageDeleted` is the captionless case: the last file off a bubble with no
+ * body leaves nothing renderable, so the whole message is withdrawn and the
+ * tombstone is what to draw.
+ */
+export interface MediaDeleteResult {
+  messageId: Id
+  deletedMediaIds: Id[]
+  remainingMedia: MessageMedia[]
+  /**
+   * Undefined only where the answer omitted it, which is the one case where the
+   * type the client already holds is the better answer than a guessed one.
+   */
+  type: MessageType | undefined
+  messageDeleted: boolean
+}
+
 /** The inline quote on a reply — rendered directly, with no second request. */
 export interface MessageQuote {
   id: Id

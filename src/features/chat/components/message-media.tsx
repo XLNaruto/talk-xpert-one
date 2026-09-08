@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Download, FileText, ImageOff, Music, Play } from 'lucide-react'
+import { Download, FileText, ImageOff, Music, Play, Trash2 } from 'lucide-react'
 import { useMediaUrl } from '@/hooks/use-app-config'
 import { cn } from '@/lib/utils'
-import { useMediaViewer } from '../hooks/use-media-viewer'
+import { useMediaViewer, type MediaViewerOrigin } from '../hooks/use-media-viewer'
 import { formatBytes, formatDuration, mediaLabel } from '../lib/chat-labels'
 import { isPreviewable } from '../lib/media-slides'
 import type { MessageMedia } from '../types'
+import type { Id } from '@/types/api'
 import { Tip } from '@/components/common/tip'
 
 /**
@@ -23,10 +24,30 @@ export function MessageMediaGrid({
   media,
   isMine,
   uploadProgress,
+  onDeleteMedia,
+  viewerOrigin,
 }: {
   media: MessageMedia[]
   isMine: boolean
   uploadProgress?: number
+  /**
+   * Take these files off the message — the SENDER's action, so it is absent on
+   * anybody else's bubble, on a tombstone, and while an upload is still in
+   * flight (the ids it would name are the local preview's, not the server's).
+   *
+   * One file per tile here; the panel it opens is where several are picked.
+   */
+  onDeleteMedia?: (mediaIds: Id[]) => void
+  /**
+   * Which message these files belong to — handed to the full-screen viewer so
+   * the photo on screen can be acted on from there, where the reader is already
+   * looking at the one file they mean.
+   *
+   * Passed for ANY bubble, not only my own: the viewer offers two deletes with
+   * two different owners, and `canDeleteFile` on the origin is what tells them
+   * apart. Absent while an upload is in flight, whose ids are local.
+   */
+  viewerOrigin?: MediaViewerOrigin
 }) {
   if (media.length === 0) return null
 
@@ -46,7 +67,12 @@ export function MessageMediaGrid({
         // them, so the upload reads as happening TO these tiles rather than as a
         // separate bar under them. Clicks are off until it lands.
         <div className={cn('relative', isUploading && 'pointer-events-none')}>
-          <MediaAlbum tiles={tiles} siblings={media} />
+          <MediaAlbum
+            tiles={tiles}
+            siblings={media}
+            onDeleteMedia={isUploading ? undefined : onDeleteMedia}
+            viewerOrigin={isUploading ? undefined : viewerOrigin}
+          />
           {isUploading && (
             <span className="absolute inset-0 flex flex-col items-center justify-center gap-2 rounded-sm bg-black/45 backdrop-blur-[1px]">
               <UploadRing percent={percent} />
@@ -64,7 +90,14 @@ export function MessageMediaGrid({
           the tile, which throws away the picture it was showing and refetches
           the replacement from nothing. Position is the same before and after. */}
       {rows.map((item, index) => (
-        <MediaItem key={item.position ?? index} media={item} isMine={isMine} />
+        <MediaItem
+          key={item.position ?? index}
+          media={item}
+          isMine={isMine}
+          onDelete={
+            onDeleteMedia && !isUploading ? () => onDeleteMedia([item.id]) : undefined
+          }
+        />
       ))}
 
       {/* A document or a voice note has no tile to draw on, so it keeps a bar. */}
@@ -241,9 +274,13 @@ function soloBox(size: { w: number; h: number }) {
 function MediaAlbum({
   tiles,
   siblings,
+  onDeleteMedia,
+  viewerOrigin,
 }: {
   tiles: MessageMedia[]
   siblings: MessageMedia[]
+  onDeleteMedia?: (mediaIds: Id[]) => void
+  viewerOrigin?: MediaViewerOrigin
 }) {
   const visible = tiles.slice(0, ALBUM_TILES)
   const extra = tiles.length - visible.length
@@ -270,6 +307,8 @@ function MediaAlbum({
           siblings={siblings}
           solo={solo}
           extraCount={index === visible.length - 1 ? extra : 0}
+          onDelete={onDeleteMedia ? () => onDeleteMedia([item.id]) : undefined}
+          viewerOrigin={viewerOrigin}
           className={cn(
             count > 1 && 'aspect-square',
             count === 3 && index === 0 && 'col-span-2 aspect-[2/1]',
@@ -286,12 +325,18 @@ function AlbumTile({
   solo,
   extraCount,
   className,
+  onDelete,
+  viewerOrigin,
 }: {
   media: MessageMedia
   siblings: MessageMedia[]
   solo: boolean
   extraCount: number
   className?: string
+  /** Absent unless this is my own bubble — only the sender may strip a file. */
+  onDelete?: () => void
+  /** Lets the full-screen viewer act on the message behind the slide in view. */
+  viewerOrigin?: MediaViewerOrigin
 }) {
   const mediaUrl = useMediaUrl()
   const openViewer = useMediaViewer()
@@ -351,76 +396,139 @@ function AlbumTile({
       : 'block h-auto w-auto max-h-[420px] max-w-full'
 
   return (
-    <button
-      type="button"
-      onClick={() => openViewer(siblings, media)}
-      aria-label={
-        extraCount > 0 ? `Open ${label} and ${extraCount} more` : `Open ${label}`
-      }
+    // A wrapper, because the delete control cannot live INSIDE the tile: the
+    // tile is a button, and a button inside a button is neither valid markup
+    // nor reachable by a keyboard. So the two are siblings, and the wrapper is
+    // what the grid lays out — which is why the span carries the aspect and the
+    // column span while the tile fills it.
+    <span
+      className={cn('group/tile relative block', solo ? 'w-fit max-w-full' : className)}
       style={solo && size ? { ...soloBox(size), maxWidth: '100%' } : undefined}
-      className={cn(
-        'relative block cursor-zoom-in overflow-hidden',
-        // A grid tile fills its square, so its backdrop only ever shows while
-        // the picture loads — black is fine there. A solo frame's box is the
-        // photo's own shape, so its backdrop is only ever the loading plate: a
-        // `--foreground` tint, which is a light plate on the dark bubble and a
-        // soft grey one on the light bubble without naming either theme's colour.
-        solo ? cn(!size && SOLO_FLUID, 'bg-foreground/10') : 'bg-black/15',
-        className,
-      )}
     >
-      {isVideo ? (
-        // A frame, not a player: playback happens in the viewer. `preload` is
-        // metadata so this shows the first frame when the API gave no thumbnail,
-        // without pulling the whole file into a virtualised list — and it is
-        // also what reports the frame's size when the payload didn't.
-        <video
-          preload="metadata"
-          muted
-          playsInline
-          poster={poster || undefined}
-          className={fitClass}
-          tabIndex={-1}
-          onLoadedMetadata={(event) => {
-            const element = event.currentTarget
-            if (element.videoWidth && element.videoHeight) {
-              learnSize({ w: element.videoWidth, h: element.videoHeight })
-            }
-          }}
-        >
-          <source src={src} type={media.mimeType ?? undefined} />
-        </video>
-      ) : (
-        <TileImage
-          src={src}
-          alt={label}
-          width={media.width}
-          height={media.height}
-          imgClassName={fitClass}
-          onNaturalSize={learnSize}
+      <button
+        type="button"
+        onClick={() => openViewer(siblings, media, viewerOrigin)}
+        aria-label={
+          extraCount > 0 ? `Open ${label} and ${extraCount} more` : `Open ${label}`
+        }
+        className={cn(
+          'relative block cursor-zoom-in overflow-hidden',
+          // The wrapper owns the box now, so the tile fills it — except for a solo
+          // frame whose size is not known yet, which is still sizing ITSELF from
+          // the picture and would be collapsed by a full height.
+          (!solo || size) && 'size-full',
+          // A grid tile fills its square, so its backdrop only ever shows while
+          // the picture loads — black is fine there. A solo frame's box is the
+          // photo's own shape, so its backdrop is only ever the loading plate: a
+          // `--foreground` tint, which is a light plate on the dark bubble and a
+          // soft grey one on the light bubble without naming either theme's colour.
+          solo ? cn(!size && SOLO_FLUID, 'bg-foreground/10') : 'bg-black/15',
+        )}
+      >
+        {isVideo ? (
+          // A frame, not a player: playback happens in the viewer. `preload` is
+          // metadata so this shows the first frame when the API gave no thumbnail,
+          // without pulling the whole file into a virtualised list — and it is
+          // also what reports the frame's size when the payload didn't.
+          <video
+            preload="metadata"
+            muted
+            playsInline
+            poster={poster || undefined}
+            className={fitClass}
+            tabIndex={-1}
+            onLoadedMetadata={(event) => {
+              const element = event.currentTarget
+              if (element.videoWidth && element.videoHeight) {
+                learnSize({ w: element.videoWidth, h: element.videoHeight })
+              }
+            }}
+          >
+            <source src={src} type={media.mimeType ?? undefined} />
+          </video>
+        ) : (
+          <TileImage
+            src={src}
+            alt={label}
+            width={media.width}
+            height={media.height}
+            imgClassName={fitClass}
+            onNaturalSize={learnSize}
+          />
+        )}
+
+        {isVideo && extraCount === 0 && (
+          <span className="absolute inset-0 flex items-center justify-center">
+            <span className="flex size-9 items-center justify-center rounded-full bg-black/55">
+              <Play className="size-4 fill-white text-white" aria-hidden />
+            </span>
+          </span>
+        )}
+
+        {isVideo && media.durationSeconds != null && extraCount === 0 && (
+          <span className="absolute right-1.5 bottom-1.5 rounded bg-black/60 px-1.5 text-[10px] text-white">
+            {formatDuration(media.durationSeconds)}
+          </span>
+        )}
+
+        {extraCount > 0 && (
+          <span className="absolute inset-0 flex items-center justify-center bg-black/55 text-xl font-semibold text-white">
+            +{extraCount}
+          </span>
+        )}
+      </button>
+
+      {/* Per FILE, which is the whole point: the bubble's own menu can only ever
+          take the message. Hidden until the tile is hovered on a pointer device
+          so it is not a bin sitting on every photo the sender ever posted; on
+          touch there is no hover, so it stays visible there and long-press
+          reaches the same action from the bubble's menu. */}
+      {onDelete && (
+        <MediaDeleteControl
+          label={label}
+          onDelete={onDelete}
+          className="absolute top-1 right-1 opacity-0 group-hover/tile:opacity-100 focus-visible:opacity-100 max-md:opacity-100"
         />
       )}
+    </span>
+  )
+}
 
-      {isVideo && extraCount === 0 && (
-        <span className="absolute inset-0 flex items-center justify-center">
-          <span className="flex size-9 items-center justify-center rounded-full bg-black/55">
-            <Play className="size-4 fill-white text-white" aria-hidden />
-          </span>
-        </span>
-      )}
-
-      {isVideo && media.durationSeconds != null && extraCount === 0 && (
-        <span className="absolute right-1.5 bottom-1.5 rounded bg-black/60 px-1.5 text-[10px] text-white">
-          {formatDuration(media.durationSeconds)}
-        </span>
-      )}
-
-      {extraCount > 0 && (
-        <span className="absolute inset-0 flex items-center justify-center bg-black/55 text-xl font-semibold text-white">
-          +{extraCount}
-        </span>
-      )}
-    </button>
+/**
+ * "Take this one file off the message."
+ *
+ * It only ever OPENS the question — the panel behind it is where the consequence
+ * is stated, because the last file off a captionless bubble withdraws the whole
+ * message and no icon can say that.
+ */
+function MediaDeleteControl({
+  label,
+  onDelete,
+  className,
+}: {
+  label: string
+  onDelete: () => void
+  className?: string
+}) {
+  return (
+    <Tip label={`Delete ${label}`}>
+      <button
+        type="button"
+        aria-label={`Delete ${label}`}
+        onClick={(event) => {
+          // The tile underneath opens the viewer, and a document row navigates.
+          event.stopPropagation()
+          event.preventDefault()
+          onDelete()
+        }}
+        className={cn(
+          'flex size-6 items-center justify-center rounded-full bg-black/55 text-white transition-colors hover:bg-destructive focus-visible:bg-destructive',
+          className,
+        )}
+      >
+        <Trash2 className="size-3" aria-hidden />
+      </button>
+    </Tip>
   )
 }
 
@@ -545,10 +653,24 @@ function TileImage({
 }
 
 /** Audio and documents — the attachments an album cannot tile. */
-function MediaItem({ media, isMine }: { media: MessageMedia; isMine: boolean }) {
+function MediaItem({
+  media,
+  isMine,
+  onDelete,
+}: {
+  media: MessageMedia
+  isMine: boolean
+  onDelete?: () => void
+}) {
   const mediaUrl = useMediaUrl()
   const src = mediaUrl(media.fileUrl)
   const label = mediaLabel(media)
+
+  // Beside the row rather than over it: a document row is a full-width link with
+  // its own trailing glyph, so an overlaid button would sit on top of it.
+  const control = onDelete ? (
+    <MediaDeleteControl label={label} onDelete={onDelete} className="shrink-0" />
+  ) : null
 
   if (media.kind === 'audio') {
     return (
@@ -563,12 +685,13 @@ function MediaItem({ media, isMine }: { media: MessageMedia; isMine: boolean }) 
             {formatDuration(media.durationSeconds)}
           </span>
         )}
+        {control}
       </div>
     )
   }
 
   const size = formatBytes(media.sizeBytes)
-  return (
+  const row = (
     <a
       href={src}
       target="_blank"
@@ -588,6 +711,15 @@ function MediaItem({ media, isMine }: { media: MessageMedia; isMine: boolean }) 
       </span>
       <Download className="size-4 shrink-0 opacity-70" aria-hidden />
     </a>
+  )
+
+  if (!control) return row
+
+  return (
+    <div className="flex items-center gap-1">
+      <span className="min-w-0 flex-1">{row}</span>
+      {control}
+    </div>
   )
 }
 

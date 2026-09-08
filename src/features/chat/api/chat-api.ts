@@ -18,6 +18,7 @@ import {
   toChatMember,
   toChatMessage,
   toContact,
+  toMediaDeleteResult,
   toMemberRole,
   toMessageMedia,
   toMessageReceipt,
@@ -28,6 +29,7 @@ import {
   type ChatDto,
   type ChatMemberDto,
   type ContactDto,
+  type MediaDeleteResultDto,
   type MessageDto,
   type MessageMediaDto,
   type MessageReceiptDto,
@@ -55,6 +57,7 @@ import type {
   Contact,
   ContactQuery,
   CreateGroupInput,
+  MediaDeleteResult,
   MediaKind,
   MemberRole,
   MessageMedia,
@@ -588,6 +591,42 @@ export async function deleteMessages(
         message_ids: messageIds,
         for_everyone: forEveryone,
       })
+    },
+  )
+}
+
+/**
+ * Take one or more FILES off a message, leaving the rest of the bubble standing.
+ *
+ * The only delete that existed withdrew the whole message, so a phone that sent
+ * nine photos as one row could take a single photo back only by taking the other
+ * eight and the caption with it. This is the per-file gesture: SENDER ONLY and
+ * always for everyone — a group owner may not strip somebody else's
+ * attachments, the same limit that stops them withdrawing another member's
+ * words, and there is no per-reader variant because nothing draws a bubble with
+ * a gap in it for one person.
+ *
+ * `mediaIds` are `media[].id` values ON THIS MESSAGE. A message id there is a
+ * 404, and so is a batch in which NOT ONE id is a live file here — but a batch
+ * with at least one live id succeeds, silently skipping the ones an earlier
+ * attempt already removed, which is what makes a retry safe. `deletedMediaIds`
+ * says what the call actually did.
+ */
+export async function deleteMessageMedia(
+  chatId: Id,
+  messageId: Id,
+  mediaIds: Id[],
+): Promise<MediaDeleteResult> {
+  return write<MediaDeleteResultDto, MediaDeleteResult>(
+    SOCKET_ACTIONS.messageMediaDelete,
+    { chat_id: chatId, message_id: messageId, media_ids: mediaIds },
+    (data) => toMediaDeleteResult(data ?? {}, messageId),
+    async () => {
+      const res = await apiClient.post<MediaDeleteResultDto>(
+        ENDPOINTS.messages.mediaDelete(chatId, messageId),
+        { media_ids: mediaIds },
+      )
+      return toMediaDeleteResult(res.data ?? {}, messageId)
     },
   )
 }

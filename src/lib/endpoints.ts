@@ -84,6 +84,15 @@ export const ENDPOINTS = {
     /** Sender only. On a media message this edits the caption. */
     edit: (chatId: Id, messageId: Id) => `/talk/chats/${chatId}/messages/${messageId}`,
     delete: (chatId: Id) => `/talk/chats/${chatId}/messages/delete`,
+    /**
+     * Take ONE file off a multi-file message — sender only, and always for
+     * everyone. `media_ids` are `media[].id` values from that message, never
+     * message ids, and there is deliberately no `for_everyone`: hiding a whole
+     * message from myself is `messages.delete`, and nothing draws a bubble with
+     * a gap in it for one reader.
+     */
+    mediaDelete: (chatId: Id, messageId: Id) =>
+      `/talk/chats/${chatId}/messages/${messageId}/media/delete`,
     /** Pins for EVERYONE in the chat. Not the same as pinning the chat. */
     pin: (chatId: Id, messageId: Id) => `/talk/chats/${chatId}/messages/${messageId}/pin`,
     pins: (chatId: Id) => `/talk/chats/${chatId}/pins`,

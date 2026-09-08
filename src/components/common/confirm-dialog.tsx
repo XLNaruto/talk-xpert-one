@@ -12,6 +12,12 @@ interface ConfirmDialogProps {
   /** `destructive` for anything that takes something away. */
   tone?: 'default' | 'destructive'
   isPending?: boolean
+  /**
+   * The scrim's stacking layer, for a question asked from inside the media
+   * lightbox — its portal sits at 9999, so the app's default `z-50` would draw
+   * this behind the photo it is asking about.
+   */
+  layerClassName?: string
   onConfirm: () => void
   onCancel: () => void
 }
@@ -33,12 +39,14 @@ export function ConfirmDialog({
   cancelLabel = 'Cancel',
   tone = 'default',
   isPending = false,
+  layerClassName,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
   return (
     <Modal
       title={title}
+      layerClassName={layerClassName}
       onClose={isPending ? () => {} : onCancel}
       footer={
         <>

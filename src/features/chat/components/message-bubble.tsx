@@ -31,7 +31,7 @@ import { canCopyImages, copyImageToClipboard } from '@/lib/copy-image'
 import { useMediaUrl } from '@/hooks/use-app-config'
 import { cn } from '@/lib/utils'
 import type { Id } from '@/types/api'
-import { quoteText, DELETED_MESSAGE_TEXT } from '../lib/chat-labels'
+import { canDeleteMessageMedia, quoteText, DELETED_MESSAGE_TEXT } from '../lib/chat-labels'
 import { downloadMedia } from '../lib/media-download'
 import { countJumboEmoji, formatMessageTime } from '../lib/message-formatters'
 import { systemMessageText } from '../lib/system-messages'
@@ -62,6 +62,13 @@ interface MessageBubbleProps {
   onEdit: (message: ChatMessage) => void
   /** Deletes this one message at once — `true` withdraws it for everyone. */
   onDelete: (message: ChatMessage, forEveryone: boolean) => void
+  /**
+   * Takes FILES off the message, leaving the rest of the bubble standing —
+   * offered on my own bubbles only, since the sender alone may strip an
+   * attachment. `mediaIds` is what to tick when the panel opens: the one file a
+   * thumbnail named, or nothing at all when the menu asked over several.
+   */
+  onDeleteMedia?: (message: ChatMessage, mediaIds: Id[]) => void
   /** `forEveryone` picks the audience: the chat's pin, or my own bookmark. */
   onPin: (messageId: Id, pinned: boolean, forEveryone: boolean) => void
   onForward: (message: ChatMessage) => void
@@ -95,6 +102,7 @@ function MessageBubbleBase({
   onReply,
   onEdit,
   onDelete,
+  onDeleteMedia,
   onPin,
   onForward,
   onShowInfo,
@@ -210,6 +218,15 @@ function MessageBubbleBase({
    * down to those rather than offering actions the server would refuse.
    */
   const deletedOnly = message.isDeletedForEveryone
+  /**
+   * Whether files may be taken off this bubble one at a time.
+   *
+   * The SENDER's action alone — a group owner may not strip somebody else's
+   * attachments, the same limit that stops them withdrawing another member's
+   * words — and never over a row the server has not acknowledged, whose media
+   * ids are the local preview's rather than the ones the request has to name.
+   */
+  const canStripMedia = Boolean(onDeleteMedia) && canDeleteMessageMedia(message, isMine)
   // `sender_name` and `sender_photo` ride along with every message, so the run's
   // author is drawn from the message itself rather than from a second lookup.
   const author =
@@ -412,6 +429,25 @@ function MessageBubbleBase({
                 media={message.media}
                 isMine={isMine}
                 uploadProgress={message.uploadProgress}
+                onDeleteMedia={
+                  canStripMedia
+                    ? (mediaIds) => onDeleteMedia?.(message, mediaIds)
+                    : undefined
+                }
+                // Carried into the full-screen viewer for ANY bubble, mine or
+                // not: the slide in view is one file, which is what the
+                // per-file delete needs told, and the message behind it is what
+                // "delete for me" hides. The two have different owners, which is
+                // what `canDeleteFile` says.
+                viewerOrigin={
+                  message.id > 0 && !deletedOnly
+                    ? {
+                        chatId: message.chatId,
+                        messageId: message.id,
+                        canDeleteFile: canStripMedia,
+                      }
+                    : undefined
+                }
               />
               {message.body && (
                 <p
@@ -533,6 +569,29 @@ function MessageBubbleBase({
               {message.media.length === 1
                 ? 'Download'
                 : `Download ${message.media.length} files`}
+            </ContextMenuItem>
+          )}
+          {/* The per-FILE delete, which the two message deletes below cannot do:
+              a bubble carrying nine photos could only ever give one back by
+              taking the other eight and the caption with it. Named for what the
+              menu can be sure of — one file is "Delete file", several is a
+              picker — and it opens a panel rather than acting at once, because
+              the last file off a captionless bubble withdraws the message and
+              that has to be said before it happens. */}
+          {canStripMedia && (
+            <ContextMenuItem
+              variant="destructive"
+              onSelect={() =>
+                onDeleteMedia?.(
+                  message,
+                  message.media.length === 1 ? [message.media[0].id] : [],
+                )
+              }
+            >
+              <Trash2 />
+              {message.media.length === 1
+                ? 'Delete file'
+                : `Delete files (${message.media.length})`}
             </ContextMenuItem>
           )}
           {/* Editing is the SENDER's right alone, and only over text. */}

@@ -69,8 +69,14 @@ export function useMessageThread(chat: Chat | null) {
   const typingNames = useTypingNames(chatId)
   // Destructured so the effects below can depend on the individual callbacks,
   // which are stable — the returned object is not, and would re-fire them.
-  const { markRead, setPinned: pinMessage, deleteForEveryone, deleteForMe, forward } =
-    useMessageActions()
+  const {
+    markRead,
+    setPinned: pinMessage,
+    deleteForEveryone,
+    deleteForMe,
+    deleteMedia,
+    forward,
+  } = useMessageActions()
   const setReplyTo = useChatStore((s) => s.setReplyTo)
   const setEditing = useChatStore((s) => s.setEditing)
   const setDraft = useChatStore((s) => s.setDraft)
@@ -337,6 +343,23 @@ export function useMessageThread(chat: Chat | null) {
   )
 
   /**
+   * Take FILES off one message — the sender's own gesture, and the only delete
+   * that leaves the rest of a bubble standing.
+   *
+   * Nothing is dropped from the selection here: the message survives the removal
+   * unless it was a captionless bubble losing its last file, and in that case it
+   * survives as a tombstone, which is still a row a selection may legitimately
+   * hold.
+   */
+  const deleteMessageMedia = useCallback(
+    async (messageId: Id, mediaIds: Id[]) => {
+      if (chatId == null) return null
+      return deleteMedia(chatId, messageId, mediaIds)
+    },
+    [chatId, deleteMedia],
+  )
+
+  /**
    * The ticked rows themselves, and only the ones actually loaded.
    *
    * A selected id with no message behind it — a row paged out from under the
@@ -411,6 +434,7 @@ export function useMessageThread(chat: Chat | null) {
     canDeleteForEveryone,
     canForwardSelection,
     deleteMessage,
+    deleteMessageMedia,
     toggleSelected,
     clearSelection,
     deleteSelected,

@@ -795,6 +795,13 @@ function Pill({ tone, children }: { tone: 'primary' | 'outline'; children: React
  */
 function useChatMedia(chatId: Id): MessageMedia[] | null {
   const [media, setMedia] = useState<MessageMedia[] | null>(null)
+  /**
+   * A per-file delete drops a file from this gallery with no event of its own —
+   * `talk.message.media_deleted` is about a MESSAGE — so the socket handler
+   * bumps a number and the read is repeated. Only the endpoint knows what is
+   * left, since the gallery is the whole chat rather than one bubble.
+   */
+  const revision = useChatStore((s) => s.mediaRevision[keyOf(chatId)] ?? 0)
 
   useEffect(() => {
     let cancelled = false
@@ -809,7 +816,7 @@ function useChatMedia(chatId: Id): MessageMedia[] | null {
     return () => {
       cancelled = true
     }
-  }, [chatId])
+  }, [chatId, revision])
 
   return media
 }

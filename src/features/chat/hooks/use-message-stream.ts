@@ -13,6 +13,7 @@ import {
   toChat,
   toChatMessage,
   toMemberRole,
+  toMessageType,
   type ChatDto,
   type MessageDto,
   type MessageReceiptDto,
@@ -197,6 +198,41 @@ export function useMessageStream() {
       // private bookmark on it goes too. Neither list can be patched from here —
       // pins expire and are filtered at read time — so both re-read.
       if (wasPinned) ui().bumpPins(payload.chat_id)
+    }
+
+    /**
+     * Files came OFF a message — the bubble usually still has content, so this
+     * is NOT the delete handler.
+     *
+     * The event names only what went and the message's type NOW, which is why
+     * the type is applied rather than re-derived: a message's type follows its
+     * FIRST file's kind, so removing the first attachment moves the bubble image
+     * → video and a splice alone would draw a photo frame around a video.
+     *
+     * It reaches the actor's OWN other devices too, so no `by_talk_user_id`
+     * comparison is made: a removal done on a phone has to disappear here, and
+     * the change is idempotent either way.
+     *
+     * The captionless case — the last file off a bubble with no body — is not
+     * announced here at all: the whole message is withdrawn and the chat is told
+     * as `talk.message.deleted`, with the unpin and unread events riding along.
+     */
+    const onMessageMediaDeleted = (payload: {
+      chat_id: number
+      message_id: number
+      media_ids?: number[]
+      type?: string
+    } & EventActor) => {
+      rememberActor(payload)
+      cache().applyMediaRemoved(payload.chat_id, payload.message_id, {
+        mediaIds: payload.media_ids ?? [],
+        type: toMessageType(payload.type),
+      })
+      // A captionless attachment has no preview text of its own, so the sidebar
+      // substitutes the kind — and the kind is exactly what may have changed.
+      resyncPreview(payload.chat_id)
+      // The details sheet's gallery is one file shorter, and nothing else says so.
+      ui().bumpMedia(payload.chat_id)
     }
 
     const onMessageRead = (payload: {
@@ -599,6 +635,7 @@ export function useMessageStream() {
       [SOCKET_EVENTS.messageNew]: onMessageNew,
       [SOCKET_EVENTS.messageEdited]: onMessageEdited,
       [SOCKET_EVENTS.messageDeleted]: onMessageDeleted,
+      [SOCKET_EVENTS.messageMediaDeleted]: onMessageMediaDeleted,
       [SOCKET_EVENTS.messageRead]: onMessageRead,
       [SOCKET_EVENTS.messagePinned]: onMessagePinned,
       [SOCKET_EVENTS.messageUnpinned]: onMessageUnpinned,

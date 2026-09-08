@@ -18,6 +18,14 @@ interface ModalProps {
    */
   side?: 'center' | 'right'
   className?: string
+  /**
+   * The stacking layer of the scrim, for the one caller that needs more than the
+   * app's default `z-50`: the media lightbox renders its own portal at 9999, so
+   * a confirmation opened from INSIDE it would otherwise be drawn behind the
+   * photo it is asking about. Same reason the lightbox's tooltips declare a
+   * layer of their own.
+   */
+  layerClassName?: string
   children: ReactNode
 }
 
@@ -42,6 +50,7 @@ export function Modal({
   footer,
   side = 'center',
   className,
+  layerClassName,
   children,
 }: ModalProps) {
   const isSheet = side === 'right'
@@ -62,6 +71,7 @@ export function Modal({
       className={cn(
         'scrim-enter fixed inset-0 z-50 flex bg-black/40',
         isSheet ? 'justify-end' : 'items-center justify-center p-4',
+        layerClassName,
       )}
       // A click on the scrim closes; a click inside must not bubble out to it.
       onClick={onClose}

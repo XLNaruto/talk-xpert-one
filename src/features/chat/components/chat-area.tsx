@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { EyeOff, Forward, Loader2, Trash2, Upload, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tip } from '@/components/common/tip'
@@ -15,6 +15,7 @@ import { ChatEmpty } from './chat-empty'
 import { ChatHeader } from './chat-header'
 import { ChatDetailsSheet } from './chat-details-sheet'
 import { ForwardDialog } from './forward-dialog'
+import { MediaDeleteDialog } from './media-delete-dialog'
 import { MessageInfoDialog } from './message-info-dialog'
 import { MessageInput } from './message-input'
 import { MessageList } from './message-list'
@@ -52,6 +53,7 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
     clearSelection,
     deleteSelected,
     deleteMessage,
+    deleteMessageMedia,
     startReply,
     startEditing,
     setPinned,
@@ -123,6 +125,24 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
   const [showPins, setShowPins] = useState(false)
   const [forwarding, setForwarding] = useState<Id[] | null>(null)
   const [infoMessageId, setInfoMessageId] = useState<Id | null>(null)
+  /**
+   * Which message's files are being picked over, and which of them arrived
+   * ticked — a thumbnail's own button names one, the bubble's menu over an album
+   * names none and lets the panel ask.
+   *
+   * The message itself is looked up from `rows` on every render rather than
+   * copied in here, so the panel follows the live row: a removal that lands from
+   * another device redraws it instead of offering a file that is already gone.
+   */
+  const [strippingMedia, setStrippingMedia] = useState<{
+    messageId: Id
+    mediaIds: Id[]
+  } | null>(null)
+
+  const strippingMessage = useMemo(() => {
+    if (!strippingMedia) return null
+    return rows.find((row) => row.message.id === strippingMedia.messageId)?.message ?? null
+  }, [rows, strippingMedia])
 
   // The per-bubble handlers are hoisted into `useCallback`s rather than written
   // inline on `<MessageList>`: `MessageBubble` is memo'd, and a fresh arrow on
@@ -138,6 +158,11 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
     [setPinned],
   )
   const onForwardMessage = useCallback((message: ChatMessage) => setForwarding([message.id]), [])
+  const onDeleteMessageMedia = useCallback(
+    (message: ChatMessage, mediaIds: Id[]) =>
+      setStrippingMedia({ messageId: message.id, mediaIds }),
+    [],
+  )
   const onShowMessageInfo = useCallback((message: ChatMessage) => setInfoMessageId(message.id), [])
   const onRetryMessage = useCallback((message: ChatMessage) => void retry(message), [retry])
 
@@ -295,6 +320,7 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
           onReply={startReply}
           onEdit={startEditing}
           onDelete={onDeleteMessage}
+          onDeleteMedia={onDeleteMessageMedia}
           onPin={onPinMessage}
           onForward={onForwardMessage}
           onShowInfo={onShowMessageInfo}
@@ -364,6 +390,21 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
             return ok
           }}
           onClose={() => setForwarding(null)}
+        />
+      )}
+
+      {/* Only once the row is actually loaded: the panel draws the message's
+          files, so there is nothing to ask about a message paged out from under
+          the menu that opened it. */}
+      {strippingMedia && strippingMessage && (
+        <MediaDeleteDialog
+          // Remounted per target, so the ticks start from what the gesture named
+          // rather than from the last message's selection.
+          key={strippingMedia.messageId}
+          message={strippingMessage}
+          preselected={strippingMedia.mediaIds}
+          onDelete={deleteMessageMedia}
+          onClose={() => setStrippingMedia(null)}
         />
       )}
 

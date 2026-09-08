@@ -4,7 +4,9 @@ import { useChatListStore } from '@/stores/chat-list-store'
 import { useChatStore } from '@/stores/chat-store'
 import { hasPinnedMessages, useMessageCacheStore } from '@/stores/message-cache-store'
 import type { Id } from '@/types/api'
+import { MAX_MEDIA_DELETE } from '../constants'
 import { resyncPreview } from '../hooks/use-message-stream'
+import type { MediaDeleteResult } from '../types'
 import * as chatApi from './chat-api'
 
 /**
@@ -19,7 +21,9 @@ export function useMessageActions() {
   const applyDeleteForEveryone = useMessageCacheStore((s) => s.applyDeleteForEveryone)
   const removeMany = useMessageCacheStore((s) => s.removeMany)
   const applyPinned = useMessageCacheStore((s) => s.applyPinned)
+  const applyMediaRemoved = useMessageCacheStore((s) => s.applyMediaRemoved)
   const bumpPins = useChatStore((s) => s.bumpPins)
+  const bumpMedia = useChatStore((s) => s.bumpMedia)
   const clearUnread = useChatListStore((s) => s.clearUnread)
   const setUnreadCount = useChatListStore((s) => s.setUnread)
 
@@ -94,6 +98,54 @@ export function useMessageActions() {
   )
 
   /**
+   * Delete FILES off one message, leaving the rest of the bubble standing.
+   *
+   * Sender only and always for everyone, so there is no audience to choose. NOT
+   * optimistic: the response is the authority on what is left — a message's
+   * `type` follows its first remaining file's kind, and ids already gone are
+   * skipped rather than refused, so what the call actually did is only knowable
+   * afterwards.
+   *
+   * Two outcomes, and the second one is not a media change at all: the last file
+   * off a bubble with NO caption leaves nothing renderable, so the whole message
+   * is withdrawn and the tombstone is what to draw. The server announces that as
+   * `talk.message.deleted`, and our own copy applies the same thing here.
+   */
+  const deleteMedia = useCallback(
+    async (chatId: Id, messageId: Id, mediaIds: Id[]): Promise<MediaDeleteResult | null> => {
+      if (mediaIds.length === 0 || mediaIds.length > MAX_MEDIA_DELETE) return null
+      // Asked BEFORE the write, because a withdrawal clears both pin flags on
+      // the row and there would be nothing left to ask.
+      const wasPinned = hasPinnedMessages(chatId, [messageId])
+      try {
+        const result = await chatApi.deleteMessageMedia(chatId, messageId, mediaIds)
+        if (result.messageDeleted) {
+          applyDeleteForEveryone(chatId, [result.messageId])
+          if (wasPinned) bumpPins(chatId)
+        } else {
+          applyMediaRemoved(chatId, result.messageId, {
+            mediaIds: result.deletedMediaIds,
+            remainingMedia: result.remainingMedia,
+            type: result.type,
+          })
+        }
+        // The sidebar substitutes the KIND when a message has no caption, so
+        // "📷 Photo" becomes "🎥 Video" when the first file goes — and the whole
+        // preview changes when the message went with it. Nothing echoes back for
+        // my own write.
+        resyncPreview(chatId)
+        // The chat's gallery is one file shorter and has no event of its own.
+        bumpMedia(chatId)
+        return result
+      } catch (error) {
+        toastApiError(error, 'That file was not deleted')
+        return null
+      }
+    },
+    [applyDeleteForEveryone, applyMediaRemoved, bumpPins, bumpMedia],
+  )
+
+  /**
    * Pin, either way round and for either audience.
    *
    * `forEveryone` is the whole difference between an announcement and a
@@ -162,5 +214,5 @@ export function useMessageActions() {
     [clearUnread, setUnreadCount],
   )
 
-  return { edit, deleteForMe, deleteForEveryone, setPinned, forward, markRead }
+  return { edit, deleteForMe, deleteForEveryone, deleteMedia, setPinned, forward, markRead }
 }
