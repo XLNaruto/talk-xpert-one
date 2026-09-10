@@ -20,6 +20,7 @@ import {
   canHideChat,
   chatLabel,
   leaveGroupCopy,
+  memberCountLine,
   removeChatCopy,
 } from '../lib/chat-labels'
 import { canEditGroup } from '../lib/member-roles'
@@ -80,7 +81,9 @@ export function ChatHeader({
     typingNames.length > 0
       ? formatTypingLine(typingNames, chat.type === 'direct')
       : chat.type === 'group'
-        ? `${chat.memberCount} ${chat.memberCount === 1 ? 'member' : 'members'}`
+        ? // Frozen at the moment I left, name and picture included — so the
+          // line says WHEN, rather than reporting a stale count as today's.
+          memberCountLine(chat.memberCount, chat.self.hasLeft)
         : formatLastSeen(presence)
 
   return (

@@ -47,7 +47,9 @@ import {
   chatLabel,
   formatBytes,
   leaveGroupCopy,
+  LEFT_GROUP_ROSTER_NOTE,
   mediaLabel,
+  memberCountLine,
   memberBlockCopy,
   memberRoleCopy,
   removeChatCopy,
@@ -106,6 +108,10 @@ export function ChatDetailsSheet({ chat, onClose }: { chat: Chat; onClose: () =>
 
   const media = useChatMedia(chat.id)
   const memberCount = group.members.length || chat.memberCount
+  // Everything this pane draws for a departed member — the name, the picture,
+  // the headcount and the roster — is the snapshot the server stamped on the
+  // way out. It is a record, so it is labelled as one and carries no actions.
+  const hasLeft = isGroup && chat.self.hasLeft
 
   const manageProps = {
     selfId,
@@ -189,7 +195,7 @@ export function ChatDetailsSheet({ chat, onClose }: { chat: Chat; onClose: () =>
                   <p className="truncate text-base font-semibold">{label.title}</p>
                   <p className="text-xs text-muted-foreground">
                     {isGroup
-                      ? `${memberCount} ${memberCount === 1 ? 'participant' : 'participants'}`
+                      ? memberCountLine(memberCount, hasLeft, 'participant')
                       : 'Direct message'}
                   </p>
                   {/* What the group is FOR. The owner reads it out of the edit
@@ -250,7 +256,12 @@ export function ChatDetailsSheet({ chat, onClose }: { chat: Chat; onClose: () =>
 
             {isGroup && (
               <section className="grid gap-2">
-                <SectionHeading count={memberCount}>Members</SectionHeading>
+                <SectionHeading count={memberCount}>
+                  {hasLeft ? 'Members when you left' : 'Members'}
+                </SectionHeading>
+                {hasLeft && (
+                  <p className="text-xs text-muted-foreground">{LEFT_GROUP_ROSTER_NOTE}</p>
+                )}
 
                 <div className="relative">
                   <Search className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -387,7 +398,12 @@ export function ChatDetailsSheet({ chat, onClose }: { chat: Chat; onClose: () =>
             )}
 
             <section className="grid gap-2">
-              <SectionHeading count={memberCount}>Members</SectionHeading>
+              <SectionHeading count={memberCount}>
+                {hasLeft ? 'Members when you left' : 'Members'}
+              </SectionHeading>
+              {hasLeft && (
+                <p className="text-xs text-muted-foreground">{LEFT_GROUP_ROSTER_NOTE}</p>
+              )}
               <MemberList
                 members={group.members}
                 isLoading={group.isLoading}

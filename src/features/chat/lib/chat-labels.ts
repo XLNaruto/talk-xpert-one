@@ -52,6 +52,37 @@ export function chatLabel(chat: Chat): ChatLabel {
 }
 
 /**
+ * The headcount line under a group's name.
+ *
+ * Once you have LEFT, `member_count` and `members[]` are a SNAPSHOT the server
+ * stamped on the way out — the group as it stood then, not counting you — and
+ * they never move again, alongside the name and the picture. The number is
+ * honest but its tense is not visible, so somebody who left a busy group and
+ * reads "1 participant" takes it for a live fact and is wrong. The words carry
+ * the tense the field cannot.
+ *
+ * `word` because the header says "members" in a tight bar while the info pane
+ * has room for "participants".
+ */
+export function memberCountLine(
+  count: number,
+  hasLeft: boolean,
+  word: 'member' | 'participant' = 'member',
+): string {
+  const people = `${count} ${count === 1 ? word : `${word}s`}`
+  return hasLeft ? `${people} when you left` : people
+}
+
+/**
+ * Said once, above the roster of a group I have left: every row below it is a
+ * record of who was there THEN, and the actions that would act on it are gone.
+ * Never dated — the backfill stamped today's values onto everyone who had
+ * already left, so the snapshot cannot claim a day.
+ */
+export const LEFT_GROUP_ROSTER_NOTE =
+  'Who was here when you left. The group may have changed since.'
+
+/**
  * What a deleted-for-everyone row says, in the thread and in the sidebar alike.
  * A tombstone is not an empty message: a blank preview would be read as a file.
  */
