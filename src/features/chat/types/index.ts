@@ -20,7 +20,7 @@ export type ChatType = 'direct' | 'group'
 export type MemberRole = 'owner' | 'admin' | 'member'
 
 /** Derived server-side from what a message carries — never a request field. */
-export type MessageType = 'text' | 'image' | 'video' | 'audio' | 'document' | 'system'
+export type MessageType = 'text' | 'image' | 'video' | 'audio' | 'document' | 'system' | 'poll'
 
 export type MediaKind = 'image' | 'video' | 'audio' | 'document'
 
@@ -124,6 +124,101 @@ export interface MediaDeleteResult {
   messageDeleted: boolean
 }
 
+/**
+ * One reaction chip. `reactedByMe` is MY reaction — at most one chip per message
+ * carries it, because each person has exactly one reaction or none.
+ */
+export interface MessageReaction {
+  emoji: string
+  /** People who reacted with it. The number is drawn only above 1. */
+  count: number
+  reactedByMe: boolean
+}
+
+/** Who reacted with what — the "View reactions" sheet. */
+export interface ReactionBreakdown {
+  messageId: Id
+  /** Everyone who reacted, for the "All" tab — unchanged by an `emoji` filter. */
+  total: number
+  /** The tab badges, most-used first — unchanged by an `emoji` filter. */
+  reactions: Array<{ emoji: string; count: number }>
+  items: Array<{
+    talkUserId: Id
+    name: string | null
+    photo: string | null
+    emoji: string
+    reactedAt: string
+  }>
+}
+
+/**
+ * The card under a message with a link, built by the SERVER and stored with the
+ * message — every reader draws this copy and nobody fetches the site. Any field
+ * may be null; with no `siteName` the domain from `url` is shown instead.
+ */
+export interface LinkPreview {
+  url: string
+  title: string | null
+  description: string | null
+  siteName: string | null
+  /** A storage KEY, like every other `*_url` — through `useMediaUrl()`. */
+  imageUrl: string | null
+}
+
+/** Someone shown against a poll option — the first three per option. */
+export interface PollVoter {
+  talkUserId: Id
+  name: string | null
+  photo: string | null
+}
+
+export interface PollOption {
+  id: Id
+  position: number
+  text: string
+  voteCount: number
+  /** Only the first few, for the avatar stack. The votes list has everyone. */
+  voters: PollVoter[]
+}
+
+/** The `poll` block on a `type: 'poll'` message. Its question is the message `body`. */
+export interface Poll {
+  id: Id
+  allowMultiple: boolean
+  isClosed: boolean
+  closedAt: string | null
+  /** Null while open AND when the timer closed it — "Poll ended" rather than "Closed by". */
+  closedByTalkUserId: Id | null
+  closedByName: string | null
+  /** When the timer closes it. Null is a poll with no time limit. */
+  endsAt: string | null
+  /** PEOPLE who voted, not votes — the percentages divide by this. */
+  totalVoters: number
+  options: PollOption[]
+  /**
+   * What I picked. Only REST answers, acks and the message list carry it — a
+   * poll EVENT never does, so applying one must keep what is held unless the
+   * voter was me.
+   */
+  myOptionIds: Id[]
+}
+
+/** The poll's votes list — the "View votes" sheet. */
+export interface PollVotes {
+  pollId: Id
+  /** Unchanged by an `option_id` filter, for the tab badges. */
+  totalVoters: number
+  options: Array<{ id: Id; text: string; voteCount: number }>
+  items: Array<{
+    talkUserId: Id
+    name: string | null
+    photo: string | null
+    optionId: Id
+    optionText: string
+    votedAt: string
+  }>
+}
+
 /** The inline quote on a reply — rendered directly, with no second request. */
 export interface MessageQuote {
   id: Id
@@ -197,6 +292,19 @@ export interface ChatMessage {
    * nobody else is told, so this differs per reader on the same message.
    */
   isPinnedForMe: boolean
+  /**
+   * The chips under the bubble, most-used first. Always empty on a system
+   * message and on a tombstone.
+   */
+  reactions: MessageReaction[]
+  /** The stored link card, or null — see `LinkPreview`. */
+  /**
+   * The server-built card. `undefined` only on a row whose payload left the
+   * field OUT (a lean socket event) — merging it must keep the card held.
+   */
+  linkPreview?: LinkPreview | null
+  /** The poll block on a `type: 'poll'` message, null on every other. */
+  poll: Poll | null
   /** The blue tick. Always false on a message you did not send. */
   isReadByAll: boolean
   /** 0 on a message you did not send, for the same reason. */
@@ -214,6 +322,11 @@ export interface ChatMessage {
   clientMessageId?: string
   /** 0–1 while an attachment uploads. */
   uploadProgress?: number
+  /**
+   * The link whose card this send asked for, so a RETRY asks for the same one.
+   * The server builds the card itself; only the URL ever goes up.
+   */
+  linkPreviewUrl?: string | null
   /**
    * Why the send failed, on a `failed` row. Printed under the bubble, so it
    * survives the toast the user has already dismissed.
@@ -245,6 +358,131 @@ export interface ChatSelf {
   hasLeft: boolean
   /** Blocked by the group owner: reads on, posting off. */
   isBlocked: boolean
+  /**
+   * MY mute. Only pushes go quiet — the thread and the badge behave as ever.
+   * A timed mute ends on its own, so read it through `isChatMuted()`, which
+   * also checks `mutedUntil` against the clock.
+   */
+  isMuted: boolean
+  /** When a timed mute ends. Null with `isMuted` is "Always". */
+  mutedUntil: string | null
+}
+
+/** What a mark-unread leaves behind, from the response and from the event alike. */
+export interface UnreadState {
+  chatId: Id
+  /** Draw the divider after this. Null means the whole chat is unread. */
+  lastReadMessageId: Id | null
+  unreadCount: number
+}
+
+/** A mute menu choice — `null` unmutes. */
+export type MuteDuration = '1h' | '8h' | '24h' | '1w' | 'always'
+
+/** What a mute write answers. */
+export interface MuteState {
+  chatId: Id
+  isMuted: boolean
+  mutedUntil: string | null
+}
+
+/* ---------------------------------------------------------------- */
+/* Broadcast lists                                                   */
+/* ---------------------------------------------------------------- */
+
+/** How one recipient's copy went. `delivered` means stored, not "on the phone". */
+export type BroadcastDeliveryStatus = 'delivered' | 'read' | 'skipped' | 'failed'
+
+/** One sent broadcast — a bubble in the list's thread. */
+export interface Broadcast {
+  id: Id
+  listId: Id
+  listName: string | null
+  /** The list was deleted since; the broadcast survives in the history. */
+  listDeleted: boolean
+  type: MessageType
+  body: string | null
+  media: MessageMedia[]
+  linkPreview: LinkPreview | null
+  clientMessageId: string | null
+  recipientCount: number
+  /** Stored in the 1:1 chat. INCLUDES the people who have read it. */
+  deliveredCount: number
+  readCount: number
+  skippedCount: number
+  failedCount: number
+  createdAt: string
+}
+
+/** A row of the Broadcast Lists screen. */
+export interface BroadcastList {
+  id: Id
+  /** Null on an unnamed list — then its recipients' names are the title. */
+  name: string | null
+  recipientCount: number
+  lastBroadcast: Broadcast | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface BroadcastRecipient {
+  talkUserId: Id
+  name: string | null
+  photo: string | null
+  addedAt: string
+}
+
+/** One list WITH everyone on it — the info screen, and the edit picker's start. */
+export interface BroadcastListDetail extends BroadcastList {
+  recipients: BroadcastRecipient[]
+}
+
+/** Why nobody was sent a copy. */
+export type BroadcastSkipReason = 'blocked_by_you' | 'unavailable' | 'error'
+
+export interface BroadcastReportRow {
+  talkUserId: Id
+  name: string | null
+  photo: string | null
+  status: Exclude<BroadcastDeliveryStatus, 'read'>
+  reason: BroadcastSkipReason | null
+  isRead: boolean
+  readAt: string | null
+  /** The 1:1 chat their copy (and their reply) is in. Null when skipped. */
+  chatId: Id | null
+  messageId: Id | null
+}
+
+/** The delivery report. `counts` is over EVERYONE whatever `status` asked for. */
+export interface BroadcastReport {
+  broadcast: Broadcast
+  counts: {
+    total: number
+    delivered: number
+    read: number
+    skipped: number
+    failed: number
+  }
+  items: BroadcastReportRow[]
+}
+
+export interface SendBroadcastInput {
+  listId: Id
+  body?: string | null
+  media?: OutgoingMedia[]
+  /** Reused on a retry — the server answers the first send instead of a second. */
+  clientMessageId: string
+  linkPreviewUrl?: string | null
+}
+
+export interface CreatePollInput {
+  chatId: Id
+  question: string
+  options: string[]
+  allowMultiple: boolean
+  /** Whole minutes, 1–10080. Null is no time limit. */
+  durationMinutes: number | null
+  clientMessageId: string
 }
 
 /** One row of `GET /talk/chats` — and, identically, one chat's header. */
@@ -490,6 +728,11 @@ export interface SendMessageInput {
   body?: string | null
   media?: OutgoingMedia[]
   replyToMessageId?: Id | null
+  /**
+   * The link to attach the server's card for. Must appear in `body` exactly as
+   * typed; omitted (or null) when the user dismissed the card.
+   */
+  linkPreviewUrl?: string | null
   /**
    * A fresh UUID per send, which makes the request IDEMPOTENT — a retry on a
    * flaky connection answers the SAME message rather than a second bubble.

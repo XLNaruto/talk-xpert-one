@@ -1436,6 +1436,229 @@
   }
 }
 
+/* ══════════════════════════════════════════════════════════
+   MEDIA LIGHTBOX — blurred backdrop, square glass controls,
+   a title band, and the media as a rounded, lifted card.
+   The viewer is always dark, whatever the app theme: a photo
+   reads best on black. Only the active thumbnail takes the
+   brand, through --primary.
+   ══════════════════════════════════════════════════════════ */
+.xl-lightbox {
+  --yarl__color_backdrop: rgb(9 9 11 / 0.86);
+  --yarl__slide_captions_container_background: transparent;
+  --xl-lightbox-glass: rgb(20 20 24 / 0.55);
+  --xl-lightbox-glass-hover: rgb(20 20 24 / 0.78);
+  --xl-lightbox-edge: rgb(255 255 255 / 0.12);
+  --xl-lightbox-edge-hover: rgb(255 255 255 / 0.22);
+  --xl-lightbox-ink: rgb(255 255 255 / 0.9);
+  --xl-lightbox-shadow: 0 4px 14px -4px rgb(0 0 0 / 0.6);
+  backdrop-filter: blur(12px);
+}
+
+/* Toolbar and navigation share one control shape. */
+.xl-lightbox .yarl__button {
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  line-height: 0;
+  border-radius: 10px;
+  /* Dark glass with its own edge and shadow: a zoomed-in light image runs
+     under the toolbar, and a light tile would vanish into it. */
+  color: var(--xl-lightbox-ink);
+  background: var(--xl-lightbox-glass);
+  border: 1px solid var(--xl-lightbox-edge);
+  box-shadow: var(--xl-lightbox-shadow);
+  backdrop-filter: blur(10px);
+  filter: none;
+  cursor: pointer;
+  transition:
+    background 150ms ease,
+    color 150ms ease,
+    transform 150ms ease;
+}
+.xl-lightbox .yarl__button:hover,
+.xl-lightbox .yarl__button:focus-visible {
+  color: #fff;
+  background: var(--xl-lightbox-glass-hover);
+  border-color: var(--xl-lightbox-edge-hover);
+}
+.xl-lightbox .yarl__button:active {
+  transform: scale(0.94);
+}
+/* Dim the icon, not the tile — a faded tile disappears on a light image. */
+.xl-lightbox .yarl__button:disabled {
+  color: rgb(255 255 255 / 0.35);
+  cursor: default;
+}
+
+.xl-lightbox .yarl__toolbar {
+  gap: 8px;
+  padding: 16px;
+}
+/* Distance from the edge as margin, never padding, or the icon slides off centre. */
+.xl-lightbox .yarl__navigation_prev,
+.xl-lightbox .yarl__navigation_next {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  margin: 0 16px;
+}
+
+.xl-lightbox .yarl__slide_image,
+.xl-lightbox .yarl__video_container video {
+  border-radius: 14px;
+  box-shadow: 0 24px 60px -12px rgb(0 0 0 / 0.7);
+}
+
+/* The image is interactive (double-click / scroll zooms, drag pans) — say so. */
+.xl-lightbox .yarl__slide_image {
+  cursor: pointer;
+}
+
+/* The title owns the left of the top band, the toolbar the right. */
+.xl-lightbox .xl-lightbox__title {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 72px;
+  max-width: calc(100% - 36rem);
+  padding: 0 16px;
+  pointer-events: none;
+}
+.xl-lightbox .xl-lightbox__glass {
+  color: var(--xl-lightbox-ink);
+  background: var(--xl-lightbox-glass);
+  box-shadow:
+    var(--xl-lightbox-shadow),
+    inset 0 0 0 1px var(--xl-lightbox-edge);
+  backdrop-filter: blur(10px);
+}
+.xl-lightbox .xl-lightbox__name {
+  color: rgb(255 255 255 / 0.95);
+  text-shadow: 0 1px 3px rgb(0 0 0 / 0.8);
+}
+
+/* A band behind title and toolbar so both stay readable over a light image. */
+.xl-lightbox .yarl__container::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 72px;
+  z-index: 0;
+  pointer-events: none;
+  background: linear-gradient(to bottom, rgb(0 0 0 / 0.55), rgb(0 0 0 / 0.25) 60%, transparent);
+}
+
+/* The zoom level reads as a value — a pill wide enough for it. */
+.xl-lightbox .xl-lightbox__zoom {
+  display: flex;
+  gap: 6px;
+  width: auto;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+/* Thumbnail strip: painted in the backdrop colour (it sits beside the slide
+   container, not over it), current item lit by the brand ring. */
+.xl-lightbox .yarl__thumbnails_container {
+  background: var(--yarl__color_backdrop);
+  backdrop-filter: blur(12px);
+  border-top: 1px solid rgb(255 255 255 / 0.08);
+  padding: 10px 16px 14px;
+}
+.xl-lightbox .yarl__thumbnails_thumbnail {
+  border-radius: 10px;
+  cursor: pointer;
+  background: rgb(255 255 255 / 0.06);
+  opacity: 0.55;
+  transition:
+    opacity 150ms ease,
+    box-shadow 150ms ease;
+}
+.xl-lightbox .yarl__thumbnails_thumbnail:hover {
+  opacity: 0.85;
+}
+.xl-lightbox .yarl__thumbnails_thumbnail_active {
+  opacity: 1;
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
+.xl-lightbox .xl-lightbox__thumb-icon {
+  color: rgb(255 255 255 / 0.7);
+  background: rgb(255 255 255 / 0.1);
+}
+
+/* Narrow screens: the toolbar needs the whole top row, so the name drops to
+   its own line under it, and the slide area starts below that line. */
+@media (max-width: 767px) {
+  .xl-lightbox .yarl__container {
+    box-sizing: border-box;
+    padding-top: 40px;
+  }
+  .xl-lightbox .xl-lightbox__title {
+    top: 56px;
+    right: 0;
+    gap: 8px;
+    height: 36px;
+    max-width: 100%;
+    padding: 0 12px;
+  }
+  .xl-lightbox .xl-lightbox__title > span:first-child {
+    display: none;
+  }
+  .xl-lightbox .yarl__container::before {
+    height: 104px;
+  }
+}
+
+/* Phones: the toolbar must fit the width — smaller tiles, tighter gaps, and
+   no zoom buttons (pinch and double-tap zoom do that job on touch). */
+@media (max-width: 639px) {
+  .xl-lightbox .yarl__toolbar {
+    left: 0;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 8px;
+  }
+  .xl-lightbox .yarl__toolbar .yarl__button {
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+  }
+  .xl-lightbox .yarl__toolbar .yarl__button svg {
+    width: 18px;
+    height: 18px;
+  }
+  .xl-lightbox .xl-lightbox__zoom-step {
+    display: none;
+  }
+  .xl-lightbox .yarl__navigation_prev,
+  .xl-lightbox .yarl__navigation_next {
+    width: 36px;
+    height: 36px;
+    margin: 0 6px;
+  }
+  .xl-lightbox .xl-lightbox__title {
+    top: 48px;
+  }
+  .xl-lightbox .yarl__container::before {
+    height: 92px;
+  }
+  .xl-lightbox .yarl__thumbnails_container {
+    padding: 6px 8px 10px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

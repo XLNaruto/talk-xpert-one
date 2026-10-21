@@ -4,7 +4,10 @@ import { useChatStore } from '@/stores/chat-store'
 import type { Id } from '@/types/api'
 import { useMessages } from '../api/use-messages'
 import { useMessageActions } from '../api/use-message-actions'
+import { useChatActions } from '../api/use-chat-actions'
 import { usePins } from '../api/use-pins'
+import { canParticipate } from '../lib/chat-labels'
+import { canManagePolls } from '../lib/polls'
 import { startsNewDay, startsNewGroup } from '../lib/message-formatters'
 import { withQuoteMedia, quoteMedia } from '../lib/quote-preview'
 import { useTypingNames } from './use-typing'
@@ -76,7 +79,11 @@ export function useMessageThread(chat: Chat | null) {
     deleteForMe,
     deleteMedia,
     forward,
+    react: reactTo,
+    votePoll,
+    closePoll: closePollWrite,
   } = useMessageActions()
+  const { markUnread } = useChatActions()
   const setReplyTo = useChatStore((s) => s.setReplyTo)
   const setEditing = useChatStore((s) => s.setEditing)
   const setDraft = useChatStore((s) => s.setDraft)
@@ -279,11 +286,49 @@ export function useMessageThread(chat: Chat | null) {
         messageId: message.id,
         body: message.body ?? '',
         hasMedia: message.media.length > 0,
+        linkPreviewUrl: message.linkPreview?.url ?? null,
       })
       setDraft(chatId, message.body ?? '')
       setReplyTo(chatId, null)
     },
     [chatId, selfId, setEditing, setDraft, setReplyTo],
+  )
+
+  /** My one reaction — the emoji to send, already `null` when it comes off. */
+  const react = useCallback(
+    (message: ChatMessage, emoji: string | null) => {
+      if (chatId == null) return
+      void reactTo(chatId, message.id, emoji)
+    },
+    [chatId, reactTo],
+  )
+
+  const vote = useCallback(
+    async (message: ChatMessage, optionIds: Id[]) => {
+      if (chatId == null) return false
+      return votePoll(chatId, message.id, optionIds)
+    },
+    [chatId, votePoll],
+  )
+
+  const closePoll = useCallback(
+    (message: ChatMessage) => {
+      if (chatId == null) return
+      void closePollWrite(chatId, message.id)
+    },
+    [chatId, closePollWrite],
+  )
+
+  /**
+   * Unread from this message on. Closes the thread as part of the act — a
+   * thread left open marks what it shows as read, which would undo this.
+   */
+  const markUnreadFrom = useCallback(
+    (message: ChatMessage) => {
+      if (chatId == null) return
+      void markUnread(chatId, message.id)
+    },
+    [chatId, markUnread],
   )
 
   const toggleSelected = useCallback((messageId: Id) => {
@@ -442,5 +487,12 @@ export function useMessageThread(chat: Chat | null) {
     startEditing,
     setPinned,
     forward,
+    react,
+    vote,
+    closePoll,
+    markUnreadFrom,
+    /** Whether I may still react and vote — false once I left or was muted. */
+    canInteract: chat ? canParticipate(chat) : false,
+    canManagePolls: chat ? canManagePolls(chat.self, chat.type === 'group') : false,
   }
 }

@@ -1,4 +1,7 @@
 import type { Slide } from 'yet-another-react-lightbox'
+// Types only — the slide's `download` field is declared by the Download plugin,
+// which the viewer no longer loads now its own button does the saving.
+import type {} from 'yet-another-react-lightbox/plugins/download'
 
 /**
  * What a slide should save as — the `{ url, filename }` pair `toMediaSlides`

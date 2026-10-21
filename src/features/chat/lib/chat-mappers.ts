@@ -1,25 +1,38 @@
 import type { Id } from '@/types/api'
 import type {
   BlockedPerson,
+  Broadcast,
+  BroadcastList,
+  BroadcastListDetail,
+  BroadcastReport,
+  BroadcastReportRow,
+  BroadcastSkipReason,
   Chat,
   ChatMember,
   ChatMessage,
   ChatSelf,
   ChatType,
   Contact,
+  LinkPreview,
   MediaDeleteResult,
   MediaKind,
   MemberRole,
   MessageMedia,
   MessageQuote,
+  MessageReaction,
   MessageReceipt,
   MessageSearchHit,
   MessageSystemData,
   MessageType,
+  MuteState,
   PinnedMessage,
+  Poll,
+  PollVotes,
   Presence,
+  ReactionBreakdown,
   SystemEvent,
   SystemParticipant,
+  UnreadState,
 } from '../types'
 import { quoteMedia } from './quote-preview'
 
@@ -68,6 +81,76 @@ export interface MessageQuoteDto {
   media?: MessageMediaDto[] | null
 }
 
+/** A chip. `reacted_by_me` is absent on the socket event — see the stream. */
+export interface MessageReactionDto {
+  emoji: string
+  count?: number
+  reacted_by_me?: boolean
+}
+
+export interface LinkPreviewDto {
+  url: string
+  title?: string | null
+  description?: string | null
+  site_name?: string | null
+  image_url?: string | null
+}
+
+export interface PollVoterDto {
+  talk_user_id: number
+  name?: string | null
+  photo?: string | null
+}
+
+export interface PollOptionDto {
+  id: number
+  position?: number
+  text: string
+  vote_count?: number
+  voters?: PollVoterDto[] | null
+}
+
+export interface PollDto {
+  id: number
+  allow_multiple?: boolean
+  is_closed?: boolean
+  closed_at?: string | null
+  closed_by_talk_user_id?: number | null
+  closed_by_name?: string | null
+  ends_at?: string | null
+  total_voters?: number
+  options?: PollOptionDto[] | null
+  /** Absent on every poll EVENT — only replies to MY reads and writes carry it. */
+  my_option_ids?: number[] | null
+}
+
+export interface PollVotesDto {
+  poll_id: number
+  total_voters?: number
+  options?: Array<{ id: number; text: string; vote_count?: number }> | null
+  items?: Array<{
+    talk_user_id: number
+    name?: string | null
+    photo?: string | null
+    option_id: number
+    option_text?: string | null
+    voted_at: string
+  }> | null
+}
+
+export interface ReactionBreakdownDto {
+  message_id: number
+  total?: number
+  reactions?: Array<{ emoji: string; count?: number }> | null
+  items?: Array<{
+    talk_user_id: number
+    name?: string | null
+    photo?: string | null
+    emoji: string
+    reacted_at: string
+  }> | null
+}
+
 export interface MessageDto {
   id: number
   chat_id: number
@@ -90,6 +173,9 @@ export interface MessageDto {
   is_pinned?: boolean
   /** MY private bookmark on the same message. The two are independent. */
   is_pinned_for_me?: boolean
+  reactions?: MessageReactionDto[] | null
+  link_preview?: LinkPreviewDto | null
+  poll?: PollDto | null
   is_read_by_all?: boolean
   read_count?: number
   created_at: string
@@ -101,6 +187,8 @@ export interface ChatSelfDto {
   last_read_message_id?: number | null
   has_left?: boolean
   is_blocked?: boolean
+  is_muted?: boolean
+  muted_until?: string | null
 }
 
 export interface ChatDto {
@@ -208,6 +296,70 @@ export interface ContactDto {
   existing_chat_id?: number | null
 }
 
+/** What a mark-unread answers, and what `talk.chat.marked_unread` carries. */
+export interface UnreadStateDto {
+  chat_id: number
+  last_read_message_id?: number | null
+  unread_count?: number
+}
+
+/** What a mute answers, and what `talk.chat.mute_updated` carries. */
+export interface MuteStateDto {
+  chat_id: number
+  is_muted?: boolean
+  muted_until?: string | null
+}
+
+export interface BroadcastDto {
+  id: number
+  list_id: number
+  list_name?: string | null
+  list_deleted?: boolean
+  type: string
+  body?: string | null
+  media?: MessageMediaDto[] | null
+  link_preview?: LinkPreviewDto | null
+  client_message_id?: string | null
+  recipient_count?: number
+  delivered_count?: number
+  read_count?: number
+  skipped_count?: number
+  failed_count?: number
+  created_at: string
+}
+
+export interface BroadcastListDto {
+  id: number
+  name?: string | null
+  recipient_count?: number
+  last_broadcast?: BroadcastDto | null
+  created_at: string
+  updated_at: string
+  /** Only on the single-list answers — create, read, rename, re-member. */
+  recipients?: Array<{
+    talk_user_id: number
+    name?: string | null
+    photo?: string | null
+    added_at: string
+  }> | null
+}
+
+export interface BroadcastReportDto {
+  broadcast: BroadcastDto
+  counts?: Partial<Record<'total' | 'delivered' | 'read' | 'skipped' | 'failed', number>>
+  items?: Array<{
+    talk_user_id: number
+    name?: string | null
+    photo?: string | null
+    status: string
+    reason?: string | null
+    is_read?: boolean
+    read_at?: string | null
+    chat_id?: number | null
+    message_id?: number | null
+  }> | null
+}
+
 export interface BlockedPersonDto {
   talk_user_id: number
   name?: string | null
@@ -219,7 +371,15 @@ export interface BlockedPersonDto {
 /* Pure mapping. No React, no hooks, no store reads in this folder.  */
 /* ---------------------------------------------------------------- */
 
-const MESSAGE_TYPES: MessageType[] = ['text', 'image', 'video', 'audio', 'document', 'system']
+const MESSAGE_TYPES: MessageType[] = [
+  'text',
+  'image',
+  'video',
+  'audio',
+  'document',
+  'system',
+  'poll',
+]
 const MEDIA_KINDS: MediaKind[] = ['image', 'video', 'audio', 'document']
 const MEMBER_ROLES: MemberRole[] = ['owner', 'admin', 'member']
 const SYSTEM_EVENTS: SystemEvent[] = [
@@ -298,6 +458,197 @@ export function toMediaDeleteResult(
       .sort((a, b) => a.position - b.position),
     type: toMessageType(dto.type),
     messageDeleted: dto.message_deleted ?? false,
+  }
+}
+
+/**
+ * The chips, most-used first as the server ordered them. `reacted_by_me` is
+ * defaulted to false: the socket event never carries it, and the stream decides
+ * whose chip is mine before writing a row.
+ */
+export function toMessageReactions(
+  dtos: MessageReactionDto[] | null | undefined,
+): MessageReaction[] {
+  return (dtos ?? [])
+    .filter((dto) => typeof dto?.emoji === 'string' && dto.emoji.length > 0)
+    .map((dto) => ({
+      emoji: dto.emoji,
+      count: dto.count ?? 1,
+      reactedByMe: dto.reacted_by_me ?? false,
+    }))
+}
+
+export function toLinkPreview(dto: LinkPreviewDto | null | undefined): LinkPreview | null {
+  if (!dto?.url) return null
+  return {
+    url: dto.url,
+    title: stringOrNull(dto.title),
+    description: stringOrNull(dto.description),
+    siteName: stringOrNull(dto.site_name),
+    imageUrl: stringOrNull(dto.image_url),
+  }
+}
+
+export function toPoll(dto: PollDto): Poll {
+  return {
+    id: dto.id,
+    allowMultiple: dto.allow_multiple ?? false,
+    isClosed: dto.is_closed ?? false,
+    closedAt: dto.closed_at ?? null,
+    closedByTalkUserId: dto.closed_by_talk_user_id ?? null,
+    closedByName: dto.closed_by_name ?? null,
+    endsAt: dto.ends_at ?? null,
+    totalVoters: dto.total_voters ?? 0,
+    options: (dto.options ?? [])
+      .map((option, index) => ({
+        id: option.id,
+        position: option.position ?? index + 1,
+        text: option.text,
+        voteCount: option.vote_count ?? 0,
+        voters: (option.voters ?? []).map((voter) => ({
+          talkUserId: voter.talk_user_id,
+          name: voter.name ?? null,
+          photo: voter.photo ?? null,
+        })),
+      }))
+      .sort((a, b) => a.position - b.position),
+    myOptionIds: dto.my_option_ids ?? [],
+  }
+}
+
+/**
+ * Whether a poll payload said what I picked. An EVENT never does, so the cache
+ * keeps what it holds unless this is true — see `applyPoll`.
+ */
+export function pollCarriesMyChoice(dto: PollDto | null | undefined): boolean {
+  return Array.isArray(dto?.my_option_ids)
+}
+
+export function toPollVotes(dto: PollVotesDto): PollVotes {
+  return {
+    pollId: dto.poll_id,
+    totalVoters: dto.total_voters ?? 0,
+    options: (dto.options ?? []).map((option) => ({
+      id: option.id,
+      text: option.text,
+      voteCount: option.vote_count ?? 0,
+    })),
+    items: (dto.items ?? []).map((item) => ({
+      talkUserId: item.talk_user_id,
+      name: item.name ?? null,
+      photo: item.photo ?? null,
+      optionId: item.option_id,
+      optionText: item.option_text ?? '',
+      votedAt: item.voted_at,
+    })),
+  }
+}
+
+export function toReactionBreakdown(dto: ReactionBreakdownDto): ReactionBreakdown {
+  return {
+    messageId: dto.message_id,
+    total: dto.total ?? 0,
+    reactions: (dto.reactions ?? []).map((chip) => ({
+      emoji: chip.emoji,
+      count: chip.count ?? 0,
+    })),
+    items: (dto.items ?? []).map((item) => ({
+      talkUserId: item.talk_user_id,
+      name: item.name ?? null,
+      photo: item.photo ?? null,
+      emoji: item.emoji,
+      reactedAt: item.reacted_at,
+    })),
+  }
+}
+
+export function toUnreadState(dto: UnreadStateDto): UnreadState {
+  return {
+    chatId: dto.chat_id,
+    lastReadMessageId: dto.last_read_message_id ?? null,
+    unreadCount: dto.unread_count ?? 0,
+  }
+}
+
+export function toMuteState(dto: MuteStateDto): MuteState {
+  return {
+    chatId: dto.chat_id,
+    isMuted: dto.is_muted ?? false,
+    mutedUntil: dto.muted_until ?? null,
+  }
+}
+
+export function toBroadcast(dto: BroadcastDto): Broadcast {
+  return {
+    id: dto.id,
+    listId: dto.list_id,
+    listName: dto.list_name ?? null,
+    listDeleted: dto.list_deleted ?? false,
+    type: oneOf(dto.type, MESSAGE_TYPES, 'text'),
+    body: dto.body ?? null,
+    media: (dto.media ?? []).map(toMessageMedia).sort((a, b) => a.position - b.position),
+    linkPreview: toLinkPreview(dto.link_preview),
+    clientMessageId: dto.client_message_id ?? null,
+    recipientCount: dto.recipient_count ?? 0,
+    deliveredCount: dto.delivered_count ?? 0,
+    readCount: dto.read_count ?? 0,
+    skippedCount: dto.skipped_count ?? 0,
+    failedCount: dto.failed_count ?? 0,
+    createdAt: dto.created_at,
+  }
+}
+
+export function toBroadcastList(dto: BroadcastListDto): BroadcastList {
+  return {
+    id: dto.id,
+    name: stringOrNull(dto.name),
+    recipientCount: dto.recipient_count ?? dto.recipients?.length ?? 0,
+    lastBroadcast: dto.last_broadcast ? toBroadcast(dto.last_broadcast) : null,
+    createdAt: dto.created_at,
+    updatedAt: dto.updated_at,
+  }
+}
+
+export function toBroadcastListDetail(dto: BroadcastListDto): BroadcastListDetail {
+  return {
+    ...toBroadcastList(dto),
+    recipients: (dto.recipients ?? []).map((recipient) => ({
+      talkUserId: recipient.talk_user_id,
+      name: recipient.name ?? null,
+      photo: recipient.photo ?? null,
+      addedAt: recipient.added_at,
+    })),
+  }
+}
+
+const SKIP_REASONS: BroadcastSkipReason[] = ['blocked_by_you', 'unavailable', 'error']
+
+export function toBroadcastReport(dto: BroadcastReportDto): BroadcastReport {
+  const counts = dto.counts ?? {}
+  return {
+    broadcast: toBroadcast(dto.broadcast),
+    counts: {
+      total: counts.total ?? 0,
+      delivered: counts.delivered ?? 0,
+      read: counts.read ?? 0,
+      skipped: counts.skipped ?? 0,
+      failed: counts.failed ?? 0,
+    },
+    items: (dto.items ?? []).map(
+      (item): BroadcastReportRow => ({
+        talkUserId: item.talk_user_id,
+        name: item.name ?? null,
+        photo: item.photo ?? null,
+        status: oneOf(item.status, ['delivered', 'skipped', 'failed'], 'delivered'),
+        reason: SKIP_REASONS.includes(item.reason as BroadcastSkipReason)
+          ? (item.reason as BroadcastSkipReason)
+          : null,
+        isRead: item.is_read ?? false,
+        readAt: item.read_at ?? null,
+        chatId: item.chat_id ?? null,
+        messageId: item.message_id ?? null,
+      }),
+    ),
   }
 }
 
@@ -434,6 +785,11 @@ export function toChatMessage(dto: MessageDto): ChatMessage {
     media: (dto.media ?? []).map(toMessageMedia).sort((a, b) => a.position - b.position),
     isPinned: dto.is_pinned ?? false,
     isPinnedForMe: dto.is_pinned_for_me ?? false,
+    reactions: toMessageReactions(dto.reactions),
+    // Absent is not "no card": an event that omits the field must not wipe the
+    // card the send's own answer (or the composer) already put on the bubble.
+    linkPreview: 'link_preview' in dto ? toLinkPreview(dto.link_preview) : undefined,
+    poll: dto.poll ? toPoll(dto.poll) : null,
     isReadByAll: dto.is_read_by_all ?? false,
     readCount: dto.read_count ?? 0,
     createdAt: dto.created_at,
@@ -447,6 +803,8 @@ function toChatSelf(dto: ChatSelfDto | null | undefined): ChatSelf {
     lastReadMessageId: dto?.last_read_message_id ?? null,
     hasLeft: dto?.has_left ?? false,
     isBlocked: dto?.is_blocked ?? false,
+    isMuted: dto?.is_muted ?? false,
+    mutedUntil: dto?.muted_until ?? null,
   }
 }
 
@@ -612,12 +970,17 @@ export function draftMessage(
     clientMessageId,
     senderName = null,
     senderPhoto = null,
+    linkPreview = null,
+    linkPreviewUrl = null,
   }: {
     body: string | null
     media?: MessageMedia[]
     replyToMessageId?: Id | null
     replyTo?: MessageQuote | null
     clientMessageId: string
+    /** The card the composer was showing, so the bubble has it before the server row. */
+    linkPreview?: LinkPreview | null
+    linkPreviewUrl?: string | null
     /** My own name and avatar, so the bubble reads the same before and after
         the server's row replaces it. */
     senderName?: string | null
@@ -644,11 +1007,15 @@ export function draftMessage(
     media,
     isPinned: false,
     isPinnedForMe: false,
+    reactions: [],
+    linkPreview,
+    poll: null,
     isReadByAll: false,
     readCount: 0,
     createdAt: new Date().toISOString(),
     status: 'sending',
     clientMessageId,
+    linkPreviewUrl,
   }
 }
 

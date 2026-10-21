@@ -2,10 +2,15 @@ import { useCallback } from 'react'
 import { toastApiError, toastSuccess } from '@/lib/api-toast'
 import { useChatListStore } from '@/stores/chat-list-store'
 import { useChatStore } from '@/stores/chat-store'
-import { hasPinnedMessages, useMessageCacheStore } from '@/stores/message-cache-store'
+import {
+  cachedMessages,
+  hasPinnedMessages,
+  useMessageCacheStore,
+} from '@/stores/message-cache-store'
 import type { Id } from '@/types/api'
 import { MAX_MEDIA_DELETE } from '../constants'
 import { resyncPreview } from '../hooks/use-message-stream'
+import { withMyReaction } from '../lib/reactions'
 import type { MediaDeleteResult } from '../types'
 import * as chatApi from './chat-api'
 
@@ -22,19 +27,31 @@ export function useMessageActions() {
   const removeMany = useMessageCacheStore((s) => s.removeMany)
   const applyPinned = useMessageCacheStore((s) => s.applyPinned)
   const applyMediaRemoved = useMessageCacheStore((s) => s.applyMediaRemoved)
+  const applyReactions = useMessageCacheStore((s) => s.applyReactions)
+  const applyPoll = useMessageCacheStore((s) => s.applyPoll)
   const bumpPins = useChatStore((s) => s.bumpPins)
   const bumpMedia = useChatStore((s) => s.bumpMedia)
   const clearUnread = useChatListStore((s) => s.clearUnread)
   const setUnreadCount = useChatListStore((s) => s.setUnread)
 
-  /** Sender only. On a media message this edits the caption. */
+  /**
+   * Sender only. On a media message this edits the caption.
+   *
+   * `linkPreviewUrl` follows the edit route's three meanings — leave it out to
+   * keep the card, `null` to drop it, a URL in the new text to swap it.
+   */
   const edit = useCallback(
-    async (chatId: Id, messageId: Id, body: string): Promise<boolean> => {
+    async (
+      chatId: Id,
+      messageId: Id,
+      body: string,
+      linkPreviewUrl?: string | null,
+    ): Promise<boolean> => {
       try {
-        const saved = await chatApi.editMessage(chatId, messageId, body)
+        const saved = await chatApi.editMessage(chatId, messageId, body, linkPreviewUrl)
         // No success toast: the bubble redraws with its new text and an
         // "edited" marker, which says it better than a notification would.
-        applyEdit(chatId, saved.messageId, saved.body, saved.editedAt)
+        applyEdit(chatId, saved.messageId, saved.body, saved.editedAt, saved.linkPreview)
         // The sidebar quotes the newest message, so an edit to it changes the
         // preview. No echo comes back for my own write.
         resyncPreview(chatId)
@@ -172,6 +189,67 @@ export function useMessageActions() {
     [applyPinned],
   )
 
+  /**
+   * Set MY one reaction — or take it off with `null`.
+   *
+   * Optimistic: the chips move the moment the tap lands, then the answer's own
+   * chips replace them (the server's counts are the truth), and a refusal puts
+   * back exactly what was there.
+   */
+  const react = useCallback(
+    async (chatId: Id, messageId: Id, emoji: string | null): Promise<boolean> => {
+      const held = cachedMessages(chatId).find((m) => m.id === messageId)
+      if (!held) return false
+      const before = held.reactions
+      applyReactions(chatId, messageId, withMyReaction(before, emoji))
+      try {
+        const reactions = await chatApi.reactToMessage(chatId, messageId, emoji)
+        applyReactions(chatId, messageId, reactions)
+        return true
+      } catch (error) {
+        applyReactions(chatId, messageId, before)
+        toastApiError(error, 'That reaction did not save')
+        return false
+      }
+    },
+    [applyReactions],
+  )
+
+  /**
+   * Vote — the whole new choice, `[]` to withdraw. Not optimistic: the answer
+   * carries the new counts AND my `my_option_ids`, which no event ever will,
+   * and a 409 on a poll that just ended must not leave a tick behind.
+   */
+  const votePoll = useCallback(
+    async (chatId: Id, messageId: Id, optionIds: Id[]): Promise<boolean> => {
+      try {
+        const poll = await chatApi.votePoll(chatId, messageId, optionIds)
+        applyPoll(chatId, messageId, poll)
+        return true
+      } catch (error) {
+        toastApiError(error, 'That vote did not count')
+        return false
+      }
+    },
+    [applyPoll],
+  )
+
+  /** Close for good. Closing an already-closed poll is a quiet 200. */
+  const closePoll = useCallback(
+    async (chatId: Id, messageId: Id): Promise<boolean> => {
+      try {
+        const poll = await chatApi.closePoll(chatId, messageId)
+        // The close answer is about the POLL, not about me — my ticks stay.
+        applyPoll(chatId, messageId, poll, true)
+        return true
+      } catch (error) {
+        toastApiError(error, 'That poll was not closed')
+        return false
+      }
+    },
+    [applyPoll],
+  )
+
   /** A forward is a NEW message in each destination, not a pointer. */
   const forward = useCallback(
     async (messageIds: Id[], toChatIds: Id[]): Promise<boolean> => {
@@ -214,5 +292,16 @@ export function useMessageActions() {
     [clearUnread, setUnreadCount],
   )
 
-  return { edit, deleteForMe, deleteForEveryone, deleteMedia, setPinned, forward, markRead }
+  return {
+    edit,
+    deleteForMe,
+    deleteForEveryone,
+    deleteMedia,
+    setPinned,
+    forward,
+    markRead,
+    react,
+    votePoll,
+    closePoll,
+  }
 }

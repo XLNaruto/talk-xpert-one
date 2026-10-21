@@ -1,6 +1,15 @@
 import { z } from 'zod'
 import { MAX_ATTACHMENT_BYTES } from '@/lib/uploads'
 import { requiredText } from '@/lib/validation'
+import {
+  BROADCAST_MAX_RECIPIENTS,
+  BROADCAST_MIN_RECIPIENTS,
+  BROADCAST_NAME_MAX,
+  POLL_MAX_OPTIONS,
+  POLL_MIN_OPTIONS,
+  POLL_OPTION_MAX,
+  POLL_QUESTION_MAX,
+} from './constants'
 
 /**
  * A message needs text, attachments, or both — the API answers 400 for neither,
@@ -41,3 +50,59 @@ export const groupSettingsSchema = z.object({
 })
 
 export type GroupSettingsValues = z.infer<typeof groupSettingsSchema>
+
+/**
+ * A poll — the server's limits, said before a 400 does. Options are compared
+ * without case, because the server treats "Same" and "same" as duplicates.
+ */
+export const pollFormSchema = z.object({
+  question: requiredText('Question').max(
+    POLL_QUESTION_MAX,
+    `Keep the question under ${POLL_QUESTION_MAX} characters`,
+  ),
+  options: z
+    .array(
+      z.object({
+        text: z
+          .string()
+          .trim()
+          .min(1, 'Fill in this option or remove it')
+          .max(POLL_OPTION_MAX, `Keep each option under ${POLL_OPTION_MAX} characters`),
+      }),
+    )
+    .min(POLL_MIN_OPTIONS, `A poll needs at least ${POLL_MIN_OPTIONS} options`)
+    .max(POLL_MAX_OPTIONS, `A poll can have up to ${POLL_MAX_OPTIONS} options`)
+    .superRefine((options, ctx) => {
+      const seen = new Set<string>()
+      options.forEach((option, index) => {
+        const key = option.text.trim().toLowerCase()
+        if (!key) return
+        if (seen.has(key)) {
+          ctx.addIssue({
+            code: 'custom',
+            message: 'This option is already in the poll',
+            path: [index, 'text'],
+          })
+        }
+        seen.add(key)
+      })
+    }),
+  allowMultiple: z.boolean(),
+  durationMinutes: z.number().int().min(1).max(10080).nullable(),
+})
+
+export type PollFormValues = z.infer<typeof pollFormSchema>
+
+/** A broadcast list: an optional name and 2–256 different people. */
+export const broadcastListSchema = z.object({
+  name: z
+    .string()
+    .max(BROADCAST_NAME_MAX, `Keep the name under ${BROADCAST_NAME_MAX} characters`)
+    .optional(),
+  talkUserIds: z
+    .array(z.number())
+    .min(BROADCAST_MIN_RECIPIENTS, `Pick at least ${BROADCAST_MIN_RECIPIENTS} people`)
+    .max(BROADCAST_MAX_RECIPIENTS, `A list holds up to ${BROADCAST_MAX_RECIPIENTS} people`),
+})
+
+export type BroadcastListValues = z.infer<typeof broadcastListSchema>

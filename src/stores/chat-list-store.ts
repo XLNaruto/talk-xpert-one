@@ -114,6 +114,14 @@ interface ChatListState {
    * chat, and blanking the row there loses the other eighty.
    */
   setUnread: (chatId: Id, count: number) => void
+  /**
+   * A mark-UNREAD landed — mine, or `talk.chat.marked_unread` from another
+   * device. Both numbers come from the server: the frontier is where the
+   * divider is drawn next time the chat opens, and the count is the badge.
+   */
+  applyUnreadState: (chatId: Id, lastReadMessageId: Id | null, unreadCount: number) => void
+  /** MY mute changed, here or on another device. */
+  setSelfMute: (chatId: Id, isMuted: boolean, mutedUntil: string | null) => void
   /** `PUT /talk/chats/:id/pin` — private to me, so re-sort locally. */
   setPinned: (chatId: Id, pinned: boolean) => void
   /** The group owner blocked or unblocked me from posting. */
@@ -323,6 +331,23 @@ export const useChatListStore = create<ChatListState>()(
           return { chats: patchOne(s.chats, chatId, (c) => ({ ...c, unreadCount: 0 })) }
         }),
 
+      applyUnreadState: (chatId, lastReadMessageId, unreadCount) =>
+        set((s) => ({
+          chats: patchOne(s.chats, chatId, (chat) => ({
+            ...chat,
+            unreadCount: Math.max(0, unreadCount),
+            self: { ...chat.self, lastReadMessageId },
+          })),
+        })),
+
+      setSelfMute: (chatId, isMuted, mutedUntil) =>
+        set((s) => ({
+          chats: patchOne(s.chats, chatId, (chat) => ({
+            ...chat,
+            self: { ...chat.self, isMuted, mutedUntil },
+          })),
+        })),
+
       setPinned: (chatId, pinned) =>
         set((s) => ({
           chats: reorder(
@@ -403,9 +428,19 @@ export const useChatListStore = create<ChatListState>()(
       // Bumped when the separately-held unread total was dropped: the badges are
       // derived from the rows now, so a persisted copy of that number is a stale
       // second answer to a question the rows already answer.
-      version: 2,
+      // 3: `self` gained the mute. A row painted from an older copy has none,
+      // and every reader of it expects a value — so it is filled in empty until
+      // the list read replaces the row.
+      version: 3,
       migrate: (state) => ({
-        chats: (state as { chats?: Chat[] })?.chats ?? [],
+        chats: ((state as { chats?: Chat[] })?.chats ?? []).map((chat) => ({
+          ...chat,
+          self: {
+            ...chat.self,
+            isMuted: chat.self?.isMuted ?? false,
+            mutedUntil: chat.self?.mutedUntil ?? null,
+          },
+        })),
         total: (state as { total?: number })?.total ?? 0,
       }),
     },

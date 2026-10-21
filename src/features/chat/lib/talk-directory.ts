@@ -2,6 +2,8 @@ import type { Id } from '@/types/api'
 import type { TalkPerson } from '@/stores/talk-directory-store'
 import type {
   BlockedPerson,
+  BroadcastListDetail,
+  BroadcastReport,
   Chat,
   ChatMember,
   ChatMessage,
@@ -10,7 +12,10 @@ import type {
   MessageSearchHit,
   MessageSystemData,
   PinnedMessage,
+  Poll,
+  PollVotes,
   Presence,
+  ReactionBreakdown,
 } from '../types'
 
 /**
@@ -162,7 +167,36 @@ export function peopleInMessage(message: ChatMessage): (TalkPerson | null)[] {
     // A system message has no sender, so the only names it carries are the ones
     // in its operands — the actor and the people it happened to.
     ...peopleInSystemData(message.systemData),
+    ...(message.poll ? peopleInPoll(message.poll) : []),
   ]
+}
+
+/** The voters each option shows, and whoever closed it. */
+export function peopleInPoll(poll: Poll): (TalkPerson | null)[] {
+  return [
+    person(poll.closedByTalkUserId, poll.closedByName, null),
+    ...poll.options.flatMap((option) =>
+      option.voters.map((voter) => person(voter.talkUserId, voter.name, voter.photo)),
+    ),
+  ]
+}
+
+export function peopleInPollVotes(votes: PollVotes): (TalkPerson | null)[] {
+  return votes.items.map((item) => person(item.talkUserId, item.name, item.photo))
+}
+
+export function peopleInReactions(breakdown: ReactionBreakdown): (TalkPerson | null)[] {
+  return breakdown.items.map((item) => person(item.talkUserId, item.name, item.photo))
+}
+
+export function peopleInBroadcastList(list: BroadcastListDetail): (TalkPerson | null)[] {
+  return list.recipients.map((recipient) =>
+    person(recipient.talkUserId, recipient.name, recipient.photo),
+  )
+}
+
+export function peopleInBroadcastReport(report: BroadcastReport): (TalkPerson | null)[] {
+  return report.items.map((item) => person(item.talkUserId, item.name, item.photo))
 }
 
 /**

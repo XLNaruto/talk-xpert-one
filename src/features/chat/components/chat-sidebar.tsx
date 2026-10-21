@@ -7,7 +7,7 @@ import { ConfirmDialog } from '@/components/common/confirm-dialog'
 import { Tip } from '@/components/common/tip'
 import { useAuthStore } from '@/stores/auth-store'
 import { cn } from '@/lib/utils'
-import { useChatList, type ChatFilter } from '../hooks/use-chat-list'
+import { useChatList, type SidebarTab } from '../hooks/use-chat-list'
 import { chatCursorKey, contactCursorKey } from '../hooks/use-search-cursor'
 import { chatLabel, leaveGroupCopy, removeChatCopy } from '../lib/chat-labels'
 import { canEditGroup } from '../lib/member-roles'
@@ -18,14 +18,18 @@ import { ChatSection } from './chat-section'
 import { ContactRow } from './contact-row'
 import { SidebarEmpty } from './sidebar-empty'
 import { SidebarSkeleton } from './sidebar-skeleton'
+import { BroadcastListDialog } from './broadcast-list-dialog'
+import { BroadcastListPanel } from './broadcast-list-panel'
 import { CreateGroupDialog } from './create-group-dialog'
 import { SidebarAccountBar } from './sidebar-account-bar'
 
-const FILTERS: Array<{ value: ChatFilter; label: string }> = [
+const FILTERS: Array<{ value: SidebarTab; label: string }> = [
   { value: 'all', label: 'All' },
   { value: 'unread', label: 'Unread' },
   { value: 'direct', label: 'Direct' },
   { value: 'group', label: 'Groups' },
+  // Not a chat filter — the owner's broadcast lists, drawn where chats are.
+  { value: 'broadcast', label: 'Broadcast' },
 ]
 
 /**
@@ -43,11 +47,16 @@ export function ChatSidebar() {
     closeSearch,
     filter,
     setFilter,
+    chatFilter,
+    activeBroadcastId,
+    openBroadcast,
     unreadSummary,
     activeChatId,
     selectChat,
     setChatPinned,
     markChatRead,
+    markChatUnread,
+    muteChat,
     selectedIds,
     selectedRemovableIds,
     toggleSelected,
@@ -67,6 +76,11 @@ export function ChatSidebar() {
 
   const selfTalkUserId = useAuthStore((s) => s.identity?.talkUserId ?? null)
   const [isCreatingGroup, setCreatingGroup] = useState(false)
+  // Purely visual: whether the New broadcast list sheet is open.
+  const [isCreatingBroadcast, setCreatingBroadcast] = useState(false)
+  // The Broadcast tab swaps the chat rows for my lists — but a search term
+  // always answers with chats and people, whichever tab is picked.
+  const showBroadcasts = filter === 'broadcast' && !search
   // Purely visual, and deliberately NOT persisted: a fold is a glance at a long
   // list, not a preference to carry across reloads.
   const [folded, setFolded] = useState({ pinned: false, recent: false })
@@ -90,6 +104,8 @@ export function ChatSidebar() {
       onToggleSelected={toggleSelected}
       onPin={setChatPinned}
       onMarkRead={markChatRead}
+      onMarkUnread={markChatUnread}
+      onMute={muteChat}
       onDelete={() => rowConfirm.ask('remove', chat)}
       onOpenInfo={openChatInfo}
       onLeaveGroup={(target) => rowConfirm.ask('leave', target)}
@@ -195,14 +211,12 @@ export function ChatSidebar() {
             scale. No rail around the group — the row sits on the sidebar's own
             surface, so a second border and fill here would box in a control
             that is already legible. */}
-        {/* ONE row, always. A badge appearing used to widen a chip past the
-            sidebar and push the last one onto a second line, which moved every
-            other chip mid-interaction. So the row never wraps and the chips
-            SHARE the width instead: each may shrink and its label truncates,
-            while the count pill keeps its full size — the number is the part
-            that must stay readable. */}
+        {/* The chips WRAP rather than shrink: with five of them a single row
+            truncated every label to a few letters. Each chip keeps its full
+            label and its count pill, and the row takes a second line when the
+            sidebar is too narrow for all of them. */}
         <div
-          className="flex min-w-0 items-center gap-1"
+          className="flex flex-wrap items-center gap-1"
           role="tablist"
           aria-label="Filter conversations"
         >
@@ -212,7 +226,9 @@ export function ChatSidebar() {
             // server's own count, not a sum over the rows we happen to hold. A
             // real zero means NO PILL: nothing to read is not a number worth
             // drawing, and an empty circle would read as "unknown".
-            const unread = tabUnreadCount(unreadSummary, option.value)
+            // Broadcasts have no unread — they are things I SENT.
+            const unread =
+              option.value === 'broadcast' ? 0 : tabUnreadCount(unreadSummary, option.value)
             return (
               <button
                 key={option.value}
@@ -221,7 +237,7 @@ export function ChatSidebar() {
                 aria-selected={isPicked}
                 onClick={() => setFilter(option.value)}
                 className={cn(
-                  'flex min-w-0 shrink cursor-pointer items-center justify-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium transition-all duration-150',
+                  'flex shrink-0 cursor-pointer items-center justify-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium transition-all duration-150',
                   'active:scale-[0.97]',
                   isPicked
                     ? // The picked one is raised: brand fill and a shadow, so it
@@ -233,7 +249,7 @@ export function ChatSidebar() {
                       'border border-sidebar-border bg-card text-muted-foreground hover:border-primary/40 hover:bg-primary/10 hover:text-foreground hover:shadow-xs',
                 )}
               >
-                <span className="truncate">{option.label}</span>
+                <span>{option.label}</span>
                 {unread > 0 && (
                   // On the picked chip the pill has to read against brand fill,
                   // so it inverts to the chip's own foreground rather than
@@ -313,12 +329,18 @@ export function ChatSidebar() {
           card sits ON this list, so without it the last row can never be
           scrolled out from under the glass. */}
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pt-2 pb-20">
-        {isLoading ? (
+        {showBroadcasts ? (
+          <BroadcastListPanel
+            activeId={activeBroadcastId}
+            onOpen={openBroadcast}
+            onCreate={() => setCreatingBroadcast(true)}
+          />
+        ) : isLoading ? (
           <SidebarSkeleton />
         ) : chats.length === 0 && contacts.length === 0 && !isDirectoryLoading ? (
           <SidebarEmpty
             search={search}
-            filter={filter}
+            filter={chatFilter}
             onNewGroup={() => setCreatingGroup(true)}
           />
         ) : (
@@ -412,6 +434,17 @@ export function ChatSidebar() {
       )}
 
       {isCreatingGroup && <CreateGroupDialog onClose={() => setCreatingGroup(false)} />}
+
+      {isCreatingBroadcast && (
+        <BroadcastListDialog
+          // A new list opens straight into its thread, ready for the first send.
+          onDone={(list) => {
+            setCreatingBroadcast(false)
+            openBroadcast(list.id)
+          }}
+          onClose={() => setCreatingBroadcast(false)}
+        />
+      )}
     </aside>
   )
 }

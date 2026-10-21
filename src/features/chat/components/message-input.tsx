@@ -1,5 +1,5 @@
-import { useRef } from 'react'
-import { Loader2, Paperclip, Send, X } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { BarChart3, Loader2, Paperclip, Send, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ATTACHMENT_CONTENT_TYPES } from '@/lib/uploads'
 import { chatLabel, quoteText } from '../lib/chat-labels'
@@ -7,7 +7,9 @@ import { resolveTalkUser } from '../lib/talk-directory'
 import { useMessageInput } from '../hooks/use-message-input'
 import { usePersonBlock } from '../hooks/use-person-block'
 import { AttachmentStrip } from './attachment-strip'
+import { CreatePollDialog } from './create-poll-dialog'
 import { EmojiPicker } from './emoji-picker'
+import { LinkPreviewStrip } from './link-preview-card'
 import { PersonBlockDialog } from './person-block-dialog'
 import { QuoteThumb } from './quote-thumb'
 import type { Chat } from '../types'
@@ -37,6 +39,9 @@ export function MessageInput({ chat }: { chat: Chat }) {
     cancelEditing,
     isSending,
     isOnline,
+    linkPreviews,
+    isLinkPreviewLoading,
+    dismissLinkPreview,
     blockedReason,
     canUnblock,
     canSend,
@@ -45,6 +50,8 @@ export function MessageInput({ chat }: { chat: Chat }) {
   } = useMessageInput(chat)
 
   const fileInput = useRef<HTMLInputElement>(null)
+  // Purely visual: whether the poll sheet is open. The form is its own hook.
+  const [isCreatingPoll, setCreatingPoll] = useState(false)
   const block = usePersonBlock()
   const counterpartId = chat.counterpartTalkUserId
 
@@ -109,6 +116,14 @@ export function MessageInput({ chat }: { chat: Chat }) {
           PATCH only changes the caption. */}
       {!editing && <AttachmentStrip files={files} onRemove={removeFile} />}
 
+      {/* A card per link. The ✕ drops that one; the message keeps the first
+          card still standing, for everybody. */}
+      <LinkPreviewStrip
+        previews={linkPreviews}
+        isLoading={isLinkPreviewLoading}
+        onDismiss={dismissLinkPreview}
+      />
+
       {/* One field-shaped box holds every control, so a click anywhere in it lands
           in the text — the same target Teams gives you. */}
       <div
@@ -148,6 +163,18 @@ export function MessageInput({ chat }: { chat: Chat }) {
                 <Paperclip />
               </Button>
             </Tip>
+            <Tip label="Create a poll" side="top">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-8 shrink-0"
+                onClick={() => setCreatingPoll(true)}
+                aria-label="Create a poll"
+              >
+                <BarChart3 />
+              </Button>
+            </Tip>
             <input
               ref={fileInput}
               type="file"
@@ -177,6 +204,10 @@ export function MessageInput({ chat }: { chat: Chat }) {
           {isSending ? <Loader2 className="animate-spin" /> : <Send />}
         </Button>
       </div>
+
+      {isCreatingPoll && (
+        <CreatePollDialog chatId={chat.id} onClose={() => setCreatingPoll(false)} />
+      )}
     </div>
   )
 }

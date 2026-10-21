@@ -2,28 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Loader2, Smile } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useUiStore } from '@/stores/ui-store'
-
-/**
- * The emoji set and the picker code, imported once per session.
- *
- * Module-level rather than per-open so the prefetch on hover and the real open
- * share one in-flight promise instead of racing two imports — and so the second
- * open costs nothing. A failure clears the cache, or a dropped connection would
- * leave the picker permanently broken for the rest of the session.
- */
-function importEmoji() {
-  return Promise.all([import('emoji-mart'), import('@emoji-mart/data')])
-}
-
-let emojiBundle: ReturnType<typeof importEmoji> | null = null
-
-function loadEmojiBundle() {
-  emojiBundle ??= importEmoji().catch((error: unknown) => {
-    emojiBundle = null
-    throw error
-  })
-  return emojiBundle
-}
+import { loadEmojiBundle } from '../lib/emoji-bundle'
 
 /**
  * The composer's emoji button and its emoji-mart panel.
@@ -40,53 +19,7 @@ function loadEmojiBundle() {
  */
 export function EmojiPicker({ onSelect }: { onSelect: (emoji: string) => void }) {
   const [open, setOpen] = useState(false)
-  const [isReady, setReady] = useState(false)
-  const theme = useUiStore((s) => s.theme)
   const wrapper = useRef<HTMLDivElement>(null)
-  const host = useRef<HTMLDivElement>(null)
-
-  // The panel outlives any one render of the callback, so it reads the latest
-  // one from a ref instead of being rebuilt whenever the draft changes.
-  const selectRef = useRef(onSelect)
-  selectRef.current = onSelect
-
-  useEffect(() => {
-    if (!open) return
-    let cancelled = false
-    // Captured now: by cleanup time the ref may already point elsewhere, and the
-    // element to empty is the one this effect filled.
-    const mount = host.current
-
-    void (async () => {
-      const [{ Picker }, data] = await loadEmojiBundle()
-      if (cancelled || !mount) return
-      const picker = new Picker({
-        data: data.default,
-        theme,
-        previewPosition: 'none',
-        navPosition: 'top',
-        // Re-flows the grid to the width of the panel instead of sizing the
-        // panel to a whole number of emoji. The reserved box is then always
-        // right, whatever the emoji button size is.
-        dynamicWidth: true,
-        emojiButtonSize: 30,
-        emojiSize: 18,
-        autoFocus: true,
-        onEmojiSelect: (emoji: { native?: string }) => {
-          if (emoji.native) selectRef.current(emoji.native)
-          setOpen(false)
-        },
-      })
-      mount.replaceChildren(picker as unknown as Node)
-      setReady(true)
-    })()
-
-    return () => {
-      cancelled = true
-      setReady(false)
-      mount?.replaceChildren()
-    }
-  }, [open, theme])
 
   // Click-away and Escape both close: the panel sits above the message list, so
   // leaving it open would swallow the next click on a bubble.
@@ -135,22 +68,79 @@ export function EmojiPicker({ onSelect }: { onSelect: (emoji: string) => void })
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
         >
-          {/* The panel reserves the final size up front and the picker is told to
-              fill it, so loading and loaded occupy exactly the same rectangle.
-              Sizing the panel to the picker instead made it jump the moment the
-              emoji data landed — the picker's own width is `min-content`, which
-              is narrower than any box we can reserve for it. */}
-          {!isReady && (
-            <div className="absolute inset-0 flex items-center justify-center">
-              <Loader2
-                className="size-5 animate-spin text-muted-foreground"
-                aria-label="Loading emoji"
-              />
-            </div>
-          )}
-          <div ref={host} className="size-full" />
+          <EmojiPanel
+            onSelect={(emoji) => {
+              onSelect(emoji)
+              setOpen(false)
+            }}
+          />
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * The emoji-mart grid on its own, filling whatever box it is put in — the
+ * composer's popover above, and the reaction picker's dialog.
+ *
+ * The box is sized by the CALLER and reserved up front, so loading and loaded
+ * occupy exactly the same rectangle.
+ */
+export function EmojiPanel({ onSelect }: { onSelect: (emoji: string) => void }) {
+  const [isReady, setReady] = useState(false)
+  const theme = useUiStore((s) => s.theme)
+  const host = useRef<HTMLDivElement>(null)
+
+  // The panel outlives any one render of the callback, so it reads the latest
+  // one from a ref instead of being rebuilt whenever the draft changes.
+  const selectRef = useRef(onSelect)
+  selectRef.current = onSelect
+
+  useEffect(() => {
+    let cancelled = false
+    // Captured now: by cleanup time the ref may already point elsewhere, and the
+    // element to empty is the one this effect filled.
+    const mount = host.current
+
+    void (async () => {
+      const [{ Picker }, data] = await loadEmojiBundle()
+      if (cancelled || !mount) return
+      const picker = new Picker({
+        data: data.default,
+        theme,
+        previewPosition: 'none',
+        navPosition: 'top',
+        // Re-flows the grid to the width of the panel instead of sizing the
+        // panel to a whole number of emoji. The reserved box is then always
+        // right, whatever the emoji button size is.
+        dynamicWidth: true,
+        emojiButtonSize: 30,
+        emojiSize: 18,
+        autoFocus: true,
+        onEmojiSelect: (emoji: { native?: string }) => {
+          if (emoji.native) selectRef.current(emoji.native)
+        },
+      })
+      mount.replaceChildren(picker as unknown as Node)
+      setReady(true)
+    })()
+
+    return () => {
+      cancelled = true
+      setReady(false)
+      mount?.replaceChildren()
+    }
+  }, [theme])
+
+  return (
+    <div className="relative size-full">
+      {!isReady && (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <Loader2 className="size-5 animate-spin text-muted-foreground" aria-label="Loading emoji" />
+        </div>
+      )}
+      <div ref={host} className="size-full" />
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useDebouncedValue } from '@/hooks/use-debounced-value'
 import { useChatListStore } from '@/stores/chat-list-store'
 import { useChatStore } from '@/stores/chat-store'
@@ -13,9 +13,16 @@ import { useMessageActions } from '../api/use-message-actions'
 import { usePresence, useBlockList } from '../api/use-presence'
 import { useChatConfirmActions } from './use-chat-header-actions'
 import { useSearchCursor } from './use-search-cursor'
-import type { ChatFilter, ChatType, Contact } from '../types'
+import type { ChatFilter, ChatType, Contact, MuteDuration } from '../types'
 
 export type { ChatFilter }
+
+/**
+ * A tab of the sidebar: the four chat filters, plus Broadcast — which is not a
+ * filter over chats at all (a list is never a chat) but the owner's lists, drawn
+ * in the same place.
+ */
+export type SidebarTab = ChatFilter | 'broadcast'
 
 /**
  * Conversation-list screen logic: search, filtering, selection, pinning, bulk
@@ -32,7 +39,9 @@ export function useChatList() {
    * on every screen to serve the minority of visits that are looking for a name.
    */
   const [isSearchOpen, setSearchOpen] = useState(false)
-  const [filter, setFilter] = useState<ChatFilter>('all')
+  const [filter, setFilter] = useState<SidebarTab>('all')
+  /** What the chat read filters by — the Broadcast tab reads chats unfiltered. */
+  const chatFilter: ChatFilter = filter === 'broadcast' ? 'all' : filter
   /** Ids ticked for a bulk delete or forward. Empty means selection mode is off. */
   const [selectedIds, setSelectedIds] = useState<Id[]>([])
 
@@ -43,8 +52,8 @@ export function useChatList() {
 
   const { chats, isLoading, isFetching, refetch } = useChats({
     search: debouncedSearch || undefined,
-    type: filter === 'direct' || filter === 'group' ? (filter as ChatType) : undefined,
-    unreadOnly: filter === 'unread' || undefined,
+    type: chatFilter === 'direct' || chatFilter === 'group' ? (chatFilter as ChatType) : undefined,
+    unreadOnly: chatFilter === 'unread' || undefined,
   })
 
   /**
@@ -71,6 +80,14 @@ export function useChatList() {
 
   const activeChatId = useChatStore((s) => s.activeChatId)
   const setActiveChat = useChatStore((s) => s.setActiveChat)
+  const activeBroadcastId = useChatStore((s) => s.activeBroadcastId)
+  const setActiveBroadcast = useChatStore((s) => s.setActiveBroadcast)
+  // A list opened from OUTSIDE the tab — a reload restoring it from the URL —
+  // brings the tab with it, so its row shows as the selected one.
+  const isBroadcastOpen = activeBroadcastId !== null
+  useEffect(() => {
+    if (isBroadcastOpen) setFilter('broadcast')
+  }, [isBroadcastOpen])
   const clearTyping = useChatStore((s) => s.clearTyping)
   const setDetailsOpen = useChatStore((s) => s.setDetailsOpen)
   /**
@@ -85,7 +102,14 @@ export function useChatList() {
   const knownChats = useChatListStore((s) => s.chats)
   const unreadSummary = useMemo(() => deriveUnreadSummary(knownChats), [knownChats])
   const setSidebarOpen = useUiStore((s) => s.setSidebarOpen)
-  const { setChatPinned, deleteForMe, openDirect, isPending: isOpeningContact } = useChatActions()
+  const {
+    setChatPinned,
+    deleteForMe,
+    openDirect,
+    markUnread,
+    setMuted,
+    isPending: isOpeningContact,
+  } = useChatActions()
   const { markRead } = useMessageActions()
 
   const selectChat = useCallback(
@@ -108,6 +132,18 @@ export function useChatList() {
       // time; the badge walks down with the reader instead of vanishing.
     },
     [setActiveChat, setSidebarOpen, clearTyping],
+  )
+
+  /**
+   * Open a broadcast list — or `'all'`, the history — in the main pane, the way
+   * a chat opens. The store closes the chat as it does.
+   */
+  const openBroadcast = useCallback(
+    (target: Id | 'all') => {
+      setActiveBroadcast(target)
+      setSidebarOpen(false)
+    },
+    [setActiveBroadcast, setSidebarOpen],
   )
 
   /**
@@ -157,6 +193,14 @@ export function useChatList() {
    * undone, so it is never one click away.
    */
   const markChatRead = useCallback((chatId: Id) => markRead([chatId]), [markRead])
+
+  /** The whole row unread again. Closes the chat if it is the open one. */
+  const markChatUnread = useCallback((chatId: Id) => void markUnread(chatId), [markUnread])
+
+  const muteChat = useCallback(
+    (chatId: Id, duration: MuteDuration | null) => void setMuted(chatId, duration),
+    [setMuted],
+  )
 
   /**
    * Directory hits worth showing: anyone whose existing chat is already a row
@@ -240,6 +284,9 @@ export function useChatList() {
     closeSearch,
     filter,
     setFilter,
+    chatFilter,
+    activeBroadcastId,
+    openBroadcast,
     unreadSummary,
     /** The tab-title badge: unread MESSAGES, where a pill counts chats. */
     totalUnread: unreadSummary.totalUnread,
@@ -254,6 +301,8 @@ export function useChatList() {
     deleteSelected,
     markAllRead,
     markChatRead,
+    markChatUnread,
+    muteChat,
     hasSelection: selectedIds.length > 0,
     contacts,
     /** True until the directory has answered the term now in the box. */

@@ -6,6 +6,7 @@ import { applyThemeToDocument } from '@/lib/theme-dom'
 import { router } from '@/app/router/router'
 import { useAuthStore } from '@/stores/auth-store'
 import { useChatListStore } from '@/stores/chat-list-store'
+import { persistComposerDrafts, rehydrateComposerDrafts } from '@/stores/chat-draft-persistence'
 import { bootstrapAppConfig, useConfigStore } from '@/stores/config-store'
 import { useUiStore } from '@/stores/ui-store'
 import '@/styles/globals.css'
@@ -35,6 +36,9 @@ Promise.all(
     const { theme, accent } = useUiStore.getState()
     applyThemeToDocument(theme, accent)
   })
+  // The composer's unsent text, files, reply and edit, saved on this device.
+  .then(() => rehydrateComposerDrafts())
+  .then(() => persistComposerDrafts())
   // Then read `GET /config` — awaited only on a first-ever launch, refreshed in
   // the background when a persisted copy already exists. A failed read never
   // blocks the app: the store keeps the old values and env supplies fallbacks.

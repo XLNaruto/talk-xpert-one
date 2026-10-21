@@ -11,6 +11,7 @@ import { useMessageJump } from '../hooks/use-message-jump'
 import { useMessageThread } from '../hooks/use-message-thread'
 import { useThreadSearch } from '../hooks/use-thread-search'
 import { composerBlockedReason } from '../lib/chat-labels'
+import { reactionToSend } from '../lib/reactions'
 import { ChatEmpty } from './chat-empty'
 import { ChatHeader } from './chat-header'
 import { ChatDetailsSheet } from './chat-details-sheet'
@@ -22,6 +23,9 @@ import { MessageList } from './message-list'
 import { MessageListSkeleton } from './message-list-skeleton'
 import { PinnedBar } from './pinned-bar'
 import { PinnedMessagesSheet } from './pinned-messages-sheet'
+import { PollVotesDialog } from './poll-votes-dialog'
+import { ReactionPickerDialog } from './reaction-picker-dialog'
+import { ReactionsDialog } from './reactions-dialog'
 import { ThreadSearchBar } from './thread-search-bar'
 import type { Chat, ChatMessage } from '../types'
 import type { Id } from '@/types/api'
@@ -58,6 +62,12 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
     startEditing,
     setPinned,
     forward,
+    react,
+    vote,
+    closePoll,
+    markUnreadFrom,
+    canInteract,
+    canManagePolls,
   } = useMessageThread(chat)
 
   // Both of these WALK history to reach a message, so they page without the
@@ -125,6 +135,10 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
   const [showPins, setShowPins] = useState(false)
   const [forwarding, setForwarding] = useState<Id[] | null>(null)
   const [infoMessageId, setInfoMessageId] = useState<Id | null>(null)
+  /** Which message the full emoji set is open for, the reactions list, the votes list. */
+  const [pickingReactionFor, setPickingReactionFor] = useState<ChatMessage | null>(null)
+  const [reactionsFor, setReactionsFor] = useState<Id | null>(null)
+  const [votesFor, setVotesFor] = useState<ChatMessage | null>(null)
   /**
    * Which message's files are being picked over, and which of them arrived
    * ticked — a thumbnail's own button names one, the bubble's menu over an album
@@ -165,6 +179,9 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
   )
   const onShowMessageInfo = useCallback((message: ChatMessage) => setInfoMessageId(message.id), [])
   const onRetryMessage = useCallback((message: ChatMessage) => void retry(message), [retry])
+  const onPickReaction = useCallback((message: ChatMessage) => setPickingReactionFor(message), [])
+  const onShowReactions = useCallback((message: ChatMessage) => setReactionsFor(message.id), [])
+  const onShowVotes = useCallback((message: ChatMessage) => setVotesFor(message), [])
 
   if (!chat) {
     return <ChatEmpty />
@@ -330,6 +347,15 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
           jumpTarget={jump.target}
           jumpHighlightId={jump.highlightedId}
           onJumpToMessage={jumpToMessage}
+          canInteract={canInteract}
+          canManagePolls={canManagePolls}
+          onReact={react}
+          onPickReaction={onPickReaction}
+          onShowReactions={onShowReactions}
+          onVote={vote}
+          onClosePoll={closePoll}
+          onShowVotes={onShowVotes}
+          onMarkUnread={markUnreadFrom}
         />
       )}
 
@@ -405,6 +431,36 @@ export function ChatArea({ chat }: { chat: Chat | null }) {
           preselected={strippingMedia.mediaIds}
           onDelete={deleteMessageMedia}
           onClose={() => setStrippingMedia(null)}
+        />
+      )}
+
+      {pickingReactionFor && (
+        <ReactionPickerDialog
+          // The full set picks ONE emoji — picking the one I already have takes
+          // it off, the same rule as every other way of reacting.
+          onPick={(emoji) =>
+            react(pickingReactionFor, reactionToSend(pickingReactionFor.reactions, emoji))
+          }
+          onClose={() => setPickingReactionFor(null)}
+        />
+      )}
+
+      {reactionsFor !== null && (
+        <ReactionsDialog
+          chatId={chat.id}
+          messageId={reactionsFor}
+          selfTalkUserId={selfId}
+          onClose={() => setReactionsFor(null)}
+        />
+      )}
+
+      {votesFor && (
+        <PollVotesDialog
+          chatId={chat.id}
+          messageId={votesFor.id}
+          question={votesFor.body}
+          selfTalkUserId={selfId}
+          onClose={() => setVotesFor(null)}
         />
       )}
 

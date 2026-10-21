@@ -106,19 +106,12 @@ export function connectSocket(): Socket | null {
     auth: { token: useAuthStore.getState().token },
   })
 
-  socket.on('connect', () => logger.debug('socket transport up'))
-
   // `connect` only means the transport is up; `connected` is the gateway
   // accepting the token. The catch-up hangs off the latter.
   socket.on('connected', (payload: ConnectedPayload) => {
     const isReconnect = hasConnectedOnce
     hasConnectedOnce = true
-    logger.debug(`socket ${isReconnect ? 're' : ''}connected`, payload)
     for (const handler of connectedHandlers) handler(payload ?? {}, isReconnect)
-  })
-
-  socket.on('disconnect', (reason: string) => {
-    logger.debug('socket disconnected', reason)
   })
 
   socket.on('connect_error', (err: Error) => {
@@ -185,7 +178,6 @@ export function updateSocketToken(token: string): Promise<void> {
         { token },
         (timeout: Error | null, res: { ok?: boolean } | undefined) => {
           if (!timeout && res?.ok) {
-            logger.debug('socket bearer replaced in place')
             resolve()
             return
           }
@@ -264,14 +256,24 @@ export function canSendOverSocket(): boolean {
 export async function socketCall<T>(
   event: string,
   payload: Record<string, unknown>,
-  retried = false,
+  {
+    retried = false,
+    timeoutMs = ACK_TIMEOUT_MS,
+  }: {
+    retried?: boolean
+    /**
+     * A longer wait for the one write that does real work before it answers —
+     * a broadcast writes up to 256 messages inside its single request.
+     */
+    timeoutMs?: number
+  } = {},
 ): Promise<T> {
   const active = socket
   if (!active?.connected) throw new SocketAckError(0, { code: 'OFFLINE', message: 'No connection' })
 
   const ack = await new Promise<TalkAck<T>>((resolve, reject) => {
     active
-      .timeout(ACK_TIMEOUT_MS)
+      .timeout(timeoutMs)
       .emit(event, payload, (timeout: Error | null, res: TalkAck<T> | undefined) => {
         if (timeout || !res) {
           reject(
@@ -305,7 +307,7 @@ export async function socketCall<T>(
       throw new SocketAckError(ack.status, ack.error)
     }
     await updateSocketToken(token)
-    return socketCall<T>(event, payload, true)
+    return socketCall<T>(event, payload, { retried: true, timeoutMs })
   }
 
   throw new SocketAckError(ack.status, ack.error)
@@ -360,11 +362,7 @@ export function joinChatRoom(chatId: Id, withChat = false): Promise<JoinResult> 
       withChat ? { chat_id: chatId, with_chat: true } : { chat_id: chatId },
       (res: { ok?: boolean; chat?: unknown } | undefined) => {
         const ok = Boolean(res?.ok)
-        // Both outcomes, not just the refusal. A room we are NOT in is
-        // indistinguishable in the console from one nothing has been sent to,
-        // and that is the first fork when "I get no messages" is reported.
-        if (ok) logger.info('talk:join ok', chatId)
-        else logger.warn('talk:join refused', chatId, res)
+        if (!ok) logger.warn('talk:join refused', chatId, res)
         resolve({ ok, chat: res?.chat ?? null })
       },
     )

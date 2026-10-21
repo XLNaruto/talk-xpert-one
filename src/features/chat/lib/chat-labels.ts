@@ -1,7 +1,9 @@
 import type { Id } from '@/types/api'
+import { format, isToday } from 'date-fns'
 import type {
   Chat,
   ChatMessage,
+  ChatSelf,
   Contact,
   MessageMedia,
   MessageQuote,
@@ -132,7 +134,7 @@ export function previewLine(chat: Chat, selfTalkUserId: Id | null): string {
  * What to call the previewed message when it is a FILE. Null for text and for a
  * system line, which speak for themselves.
  */
-function attachmentLabel(type: MessageType): string | null {
+export function attachmentLabel(type: MessageType): string | null {
   switch (type) {
     case 'image':
       return 'Photo'
@@ -144,9 +146,54 @@ function attachmentLabel(type: MessageType): string | null {
       return 'Audio'
     case 'document':
       return 'Document'
+    case 'poll':
+      return 'Poll'
     default:
       return null
   }
+}
+
+/**
+ * The text of my unsent draft, flattened to one line — the row's second line
+ * while there is one, because it beats the last message: it is the thing I was
+ * in the middle of. Null when there is no draft worth showing.
+ *
+ * Files picked with no text yet are a draft too, named by their count.
+ */
+export function draftPreview(local: string | undefined, fileCount = 0): string | null {
+  const text = local?.replace(/\s+/g, ' ').trim()
+  if (text) return text
+  if (fileCount > 0) return fileCount === 1 ? 'Attachment' : `${fileCount} attachments`
+  return null
+}
+
+/**
+ * Whether MY notifications for a chat are off right now.
+ *
+ * `isMuted` is what the server said at the last read, and a timed mute ends on
+ * its own with no event — so `mutedUntil` is checked against the clock too, or
+ * the bell would stay crossed out after an hour's mute had run out.
+ */
+export function isChatMuted(self: Pick<ChatSelf, 'isMuted' | 'mutedUntil'>, now = Date.now()): boolean {
+  if (!self.isMuted) return false
+  return self.mutedUntil === null || new Date(self.mutedUntil).getTime() > now
+}
+
+/** "Muted until 6:30 PM", "Muted until 21 Oct", or "Muted" for always. */
+export function muteLabel(self: Pick<ChatSelf, 'isMuted' | 'mutedUntil'>): string | null {
+  if (!isChatMuted(self)) return null
+  if (self.mutedUntil === null) return 'Muted'
+  const until = new Date(self.mutedUntil)
+  return `Muted until ${isToday(until) ? format(until, 'h:mm a') : format(until, 'd MMM, h:mm a')}`
+}
+
+/**
+ * Whether I may still act on messages here — react, vote, mark a poll. Leaving
+ * a group or being muted in it by an admin closes all of them, exactly as it
+ * closes the composer.
+ */
+export function canParticipate(chat: Chat): boolean {
+  return !chat.self.hasLeft && !chat.self.isBlocked
 }
 
 /** A short label for an attachment, used where a caption is missing. */

@@ -10,12 +10,16 @@ import {
   Forward,
   Image as ImageIcon,
   Info,
+  MailWarning,
   Pencil,
   Pin,
   PinOff,
+  Plus,
   RotateCcw,
+  SmilePlus,
   SquareCheck,
   Trash2,
+  Users,
 } from 'lucide-react'
 import { Avatar } from '@/components/ui/avatar'
 import { Tip } from '@/components/common/tip'
@@ -24,6 +28,9 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
 import { toastProblem, toastSuccess } from '@/lib/api-toast'
@@ -31,12 +38,20 @@ import { canCopyImages, copyImageToClipboard } from '@/lib/copy-image'
 import { useMediaUrl } from '@/hooks/use-app-config'
 import { cn } from '@/lib/utils'
 import type { Id } from '@/types/api'
+import { QUICK_REACTIONS } from '../constants'
 import { canDeleteMessageMedia, quoteText, DELETED_MESSAGE_TEXT } from '../lib/chat-labels'
+import { canClosePoll } from '../lib/polls'
+import { canReactTo, myReaction, reactionToSend } from '../lib/reactions'
 import { downloadMedia } from '../lib/media-download'
 import { countJumboEmoji, formatMessageTime } from '../lib/message-formatters'
 import { systemMessageText } from '../lib/system-messages'
 import { resolveTalkUser } from '../lib/talk-directory'
+import { useMessageLinkPreviews } from '../api/use-link-preview'
+import { LinkPreviewCard } from './link-preview-card'
+import { LinkedText } from './linked-text'
 import { MessageMediaGrid } from './message-media'
+import { ReactButton, ReactionChips } from './message-reactions'
+import { PollCard } from './poll-card'
 import { QuoteThumb } from './quote-thumb'
 import type { ChatMessage, MessageQuote } from '../types'
 
@@ -76,6 +91,23 @@ interface MessageBubbleProps {
   onRetry: (message: ChatMessage) => void
   /** Go to the quoted message. Absent where there is no thread to scroll. */
   onJumpToMessage?: (messageId: Id) => void
+  /**
+   * Whether I may still act here — react, vote. False in a group I left or an
+   * admin muted me in; everything still READS, nothing responds.
+   */
+  canInteract: boolean
+  /** A group owner or admin, who may close anybody's poll. */
+  canManagePolls: boolean
+  /** The emoji to SEND — already `null` when it takes my reaction off. */
+  onReact: (message: ChatMessage, emoji: string | null) => void
+  /** Open the full emoji set for a reaction the quick six don't cover. */
+  onPickReaction: (message: ChatMessage) => void
+  onShowReactions: (message: ChatMessage) => void
+  onVote: (message: ChatMessage, optionIds: Id[]) => Promise<boolean>
+  onClosePoll: (message: ChatMessage) => void
+  onShowVotes: (message: ChatMessage) => void
+  /** Unread from this message on — only somebody else's; mine never count. */
+  onMarkUnread: (message: ChatMessage) => void
 }
 
 /**
@@ -108,8 +140,20 @@ function MessageBubbleBase({
   onShowInfo,
   onRetry,
   onJumpToMessage,
+  canInteract,
+  canManagePolls,
+  onReact,
+  onPickReaction,
+  onShowReactions,
+  onVote,
+  onClosePoll,
+  onShowVotes,
+  onMarkUnread,
 }: MessageBubbleProps) {
   const mediaUrl = useMediaUrl()
+  const linkPreviews = useMessageLinkPreviews(message)
+  const showsLinkCard =
+    linkPreviews.length > 0 && message.media.length === 0 && !message.isDeletedForEveryone
 
   /**
    * A system message belongs to the conversation, not to a person — so it is a
@@ -202,6 +246,7 @@ function MessageBubbleBase({
    */
   const jumboEmoji =
     message.media.length === 0 &&
+    message.type !== 'poll' &&
     !message.replyTo &&
     !message.isForwarded &&
     !message.isDeletedForEveryone
@@ -233,6 +278,18 @@ function MessageBubbleBase({
     message.senderTalkUserId !== null
       ? resolveTalkUser(message.senderTalkUserId, message.senderName, message.senderPhoto)
       : null
+  const isPoll = message.poll !== null && !message.isDeletedForEveryone
+  // Reacting needs a row the server has acknowledged, a message that can carry
+  // reactions at all, and a chat I may still act in.
+  const canReact = canInteract && canReactTo(message)
+  const reactButton =
+    canReact && actionable ? (
+      <ReactButton
+        reactions={message.reactions}
+        isMine={isMine}
+        onReact={(emoji) => onReact(message, emoji)}
+      />
+    ) : null
 
   return (
     <div
@@ -260,7 +317,7 @@ function MessageBubbleBase({
         // Air BELOW a run comes from the next run's `pt-4` (margins collapsed
         // to the larger of the two, so this is the same gap it always was) and,
         // for the last row in the thread, from the list's footer.
-        startsGroup ? 'pt-4' : 'pt-1',
+        startsGroup ? 'pt-4' : 'pt-2',
         isSelected && 'bg-primary/10',
         // The whole row is the hit target while a selection is running.
         selecting && 'cursor-pointer',
@@ -278,6 +335,7 @@ function MessageBubbleBase({
         />
       )}
       {!isMine && !showAuthor && <span className="w-7 shrink-0" aria-hidden />}
+
 
       {/* The column hugs its widest child, so it must NOT stretch: a two-line
           failure note under a one-word message used to drag the bubble out to
@@ -314,8 +372,9 @@ function MessageBubbleBase({
 
         {/* The bubble clips its own overflow, for the media corners — so the
             pin lives on a wrapper OUTSIDE that clip and hangs over the corner
-            instead of being cut in half by it. */}
-        <div className="relative">
+            instead of being cut in half by it. `max-w-full` so a bubble with a
+            fixed width (the link card's) still gives way on a narrow window. */}
+        <div className="relative max-w-full min-w-0">
         <ContextMenu>
         <ContextMenuTrigger asChild disabled={!actionable}>
         <div
@@ -323,6 +382,10 @@ function MessageBubbleBase({
             // The readable ceiling — see the column above. On a narrow window
             // the column's 65% bites first and this never applies.
             'relative max-w-[34rem] min-w-0 overflow-hidden rounded-lg text-sm',
+            // A bubble carrying a link card is exactly as wide as the card (21rem
+            // plus the bubble's own padding): a long URL wraps inside it instead
+            // of stretching the bubble out past the card's edge.
+            showsLinkCard && 'w-[22.5rem] max-w-full',
             // A quote is a two-line block with a picture beside it, and it is
             // capped at whatever the message below it needs (see the quote's own
             // note). Under a one-word reply that would leave a sliver, so a
@@ -423,6 +486,22 @@ function MessageBubbleBase({
             // The tombstone. The bubble SURVIVES a delete-for-everyone, because
             // replies still point at it.
             <p className="text-xs italic opacity-70">{DELETED_MESSAGE_TEXT}</p>
+          ) : isPoll ? (
+            // The poll draws its own question — it IS the message's body.
+            <PollCard
+              message={message}
+              isMine={isMine}
+              canVote={canInteract}
+              canClose={canClosePoll(message, {
+                isMine,
+                canManage: canManagePolls,
+                canInteract,
+              })}
+              selfTalkUserId={selfTalkUserId}
+              onVote={onVote}
+              onClosePoll={onClosePoll}
+              onShowVotes={onShowVotes}
+            />
           ) : (
             <>
               <MessageMediaGrid
@@ -470,9 +549,20 @@ function MessageBubbleBase({
                     jumboEmoji !== null && (isMine ? 'text-right' : 'text-left'),
                   )}
                 >
-                  {message.body}
+                  <LinkedText text={message.body} isMine={isMine} />
                 </p>
               )}
+              {/* The stored card, or the server's card for the link in the
+                  text when none was stored — never on an attachment. */}
+              {showsLinkCard &&
+                linkPreviews.map((card) => (
+                  <LinkPreviewCard
+                    key={card.url}
+                    preview={card}
+                    isMine={isMine}
+                    className="mt-1.5"
+                  />
+                ))}
             </>
           )}
 
@@ -506,16 +596,61 @@ function MessageBubbleBase({
             take it straight back off the composer that "Reply" and "Edit" just
             handed it to. */}
         <ContextMenuContent className="w-48" onCloseAutoFocus={(event) => event.preventDefault()}>
+          {canReact && (
+            <ContextMenuSub>
+              <ContextMenuSubTrigger>
+                <SmilePlus />
+                React
+              </ContextMenuSubTrigger>
+              {/* One row of the quick six, then the whole set. Picking the one I
+                  already have takes it off, as tapping my chip does. */}
+              <ContextMenuSubContent className="w-auto">
+                <div className="flex gap-0.5 p-0.5">
+                  {QUICK_REACTIONS.map((emoji) => (
+                    <ContextMenuItem
+                      key={emoji}
+                      onSelect={() => onReact(message, reactionToSend(message.reactions, emoji))}
+                      aria-label={
+                        myReaction(message.reactions) === emoji
+                          ? `Remove your ${emoji} reaction`
+                          : `React with ${emoji}`
+                      }
+                      className={cn(
+                        'size-8 justify-center rounded-full p-0 text-lg',
+                        myReaction(message.reactions) === emoji && 'bg-primary/15',
+                      )}
+                    >
+                      {emoji}
+                    </ContextMenuItem>
+                  ))}
+                </div>
+                <ContextMenuSeparator />
+                <ContextMenuItem onSelect={() => onPickReaction(message)}>
+                  <Plus />
+                  More reactions
+                </ContextMenuItem>
+              </ContextMenuSubContent>
+            </ContextMenuSub>
+          )}
+          {message.reactions.length > 0 && !deletedOnly && (
+            <ContextMenuItem onSelect={() => onShowReactions(message)}>
+              <Users />
+              View reactions
+            </ContextMenuItem>
+          )}
           {!deletedOnly && (
             <>
               <ContextMenuItem onSelect={() => onReply(message)}>
                 <CornerUpLeft />
                 Reply
               </ContextMenuItem>
-              <ContextMenuItem onSelect={() => onForward(message)}>
-                <Forward />
-                Forward
-              </ContextMenuItem>
+              {/* A poll cannot be forwarded — the server refuses it with a 400. */}
+              {!isPoll && (
+                <ContextMenuItem onSelect={() => onForward(message)}>
+                  <Forward />
+                  Forward
+                </ContextMenuItem>
+              )}
             </>
           )}
           <ContextMenuItem onSelect={() => onToggleSelected(message.id)}>
@@ -594,8 +729,9 @@ function MessageBubbleBase({
                 : `Delete files (${message.media.length})`}
             </ContextMenuItem>
           )}
-          {/* Editing is the SENDER's right alone, and only over text. */}
-          {isMine && message.body && !deletedOnly && (
+          {/* Editing is the SENDER's right alone, and only over text — a
+              poll's question is not editable, the server answers 403. */}
+          {isMine && message.body && !deletedOnly && !isPoll && (
             <ContextMenuItem onSelect={() => onEdit(message)}>
               <Pencil />
               Edit
@@ -624,6 +760,15 @@ function MessageBubbleBase({
                 </ContextMenuItem>
               )}
             </>
+          )}
+          {/* Somebody else's only — my own messages never count as unread, so
+              the server would answer zero. The thread closes as part of it:
+              left open, it would read the message straight back. */}
+          {!isMine && message.id > 0 && (
+            <ContextMenuItem onSelect={() => onMarkUnread(message)}>
+              <MailWarning />
+              Mark as unread from here
+            </ContextMenuItem>
           )}
           <ContextMenuSeparator />
           {/* The two deletions are named rather than hidden behind one word:
@@ -719,7 +864,30 @@ function MessageBubbleBase({
               </button>
             </Tip>
           ))}
+
+        {/* Straddling the bubble's bottom corner on the side facing the middle
+            of the thread — opposite the tail, so the two never meet. */}
+        {reactButton && (
+          <span
+            className={cn(
+              'absolute -bottom-2.5 z-[2]',
+              isMine ? 'left-0 -translate-x-1/2' : 'right-0 translate-x-1/2',
+            )}
+          >
+            {reactButton}
+          </span>
+        )}
         </div>
+
+        {!deletedOnly && (
+          <ReactionChips
+            reactions={message.reactions}
+            isMine={isMine}
+            canReact={canReact && !selecting}
+            onTap={(emoji) => onReact(message, reactionToSend(message.reactions, emoji))}
+            onShowAll={() => onShowReactions(message)}
+          />
+        )}
 
         {/* The reason states itself and the action sits beside it as its own
             button — a whole line that is also a link reads like a warning you
@@ -747,6 +915,7 @@ function MessageBubbleBase({
           </span>
         )}
       </div>
+
     </div>
   )
 }

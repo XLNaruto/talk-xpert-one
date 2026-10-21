@@ -55,6 +55,17 @@ interface MessageListProps {
   jumpHighlightId?: Id | null
   /** Clicking a reply quote goes to the message it points at. */
   onJumpToMessage?: (messageId: Id) => void
+  /** Whether I may still react and vote here — see `canParticipate`. */
+  canInteract: boolean
+  /** A group owner or admin, who may close anybody's poll. */
+  canManagePolls: boolean
+  onReact: (message: ChatMessage, emoji: string | null) => void
+  onPickReaction: (message: ChatMessage) => void
+  onShowReactions: (message: ChatMessage) => void
+  onVote: (message: ChatMessage, optionIds: Id[]) => Promise<boolean>
+  onClosePoll: (message: ChatMessage) => void
+  onShowVotes: (message: ChatMessage) => void
+  onMarkUnread: (message: ChatMessage) => void
 }
 
 /**
@@ -87,6 +98,15 @@ function MessageListInner({
   jumpTarget = null,
   jumpHighlightId = null,
   onJumpToMessage,
+  canInteract,
+  canManagePolls,
+  onReact,
+  onPickReaction,
+  onShowReactions,
+  onVote,
+  onClosePoll,
+  onShowVotes,
+  onMarkUnread,
 }: MessageListProps) {
   const {
     virtuosoRef,
@@ -288,6 +308,15 @@ function MessageListInner({
           onShowInfo={onShowInfo}
           onRetry={onRetry}
           onJumpToMessage={onJumpToMessage}
+          canInteract={canInteract}
+          canManagePolls={canManagePolls}
+          onReact={onReact}
+          onPickReaction={onPickReaction}
+          onShowReactions={onShowReactions}
+          onVote={onVote}
+          onClosePoll={onClosePoll}
+          onShowVotes={onShowVotes}
+          onMarkUnread={onMarkUnread}
         />
       </div>
     ),
@@ -309,6 +338,15 @@ function MessageListInner({
       onShowInfo,
       onRetry,
       onJumpToMessage,
+      canInteract,
+      canManagePolls,
+      onReact,
+      onPickReaction,
+      onShowReactions,
+      onVote,
+      onClosePoll,
+      onShowVotes,
+      onMarkUnread,
     ],
   )
 

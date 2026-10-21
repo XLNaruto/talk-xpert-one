@@ -18,11 +18,7 @@ export function useRegisterPushDevice() {
   const mutate = useCallback(async (token: string): Promise<boolean> => {
     setPending(true)
     try {
-      const device = await deviceApi.registerDevice(token)
-      // The link between "this browser has a token" and "the server will send to
-      // it". A token with no registration behind it looks identical in the
-      // console to a working one, right up until nothing ever arrives.
-      logger.info('push device registered', device)
+      await deviceApi.registerDevice(token)
       return true
     } catch (error) {
       logger.warn('push device registration failed', error)

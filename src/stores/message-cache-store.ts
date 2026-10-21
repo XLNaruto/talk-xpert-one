@@ -1,6 +1,13 @@
 import { create } from 'zustand'
 import { keyOf, type Id } from '@/types/api'
-import type { ChatMessage, MessageMedia, MessageType } from '@/features/chat/types'
+import type {
+  ChatMessage,
+  LinkPreview,
+  MessageMedia,
+  MessageReaction,
+  MessageType,
+  Poll,
+} from '@/features/chat/types'
 
 /**
  * In-memory message cache — Talk's answer to a server-state library.
@@ -93,8 +100,33 @@ interface MessageCacheState {
   markSending: (chatId: Id, clientMessageId: string) => void
   setUploadProgress: (chatId: Id, clientMessageId: string, fraction: number) => void
 
-  /** `talk.message.edited` — replace the body and flag it. */
-  applyEdit: (chatId: Id, messageId: Id, body: string | null, editedAt: string) => void
+  /**
+   * `talk.message.edited` — replace the body and flag it. `linkPreview` is the
+   * card AFTER the edit; `undefined` (an answer that did not say) keeps the one
+   * held.
+   */
+  applyEdit: (
+    chatId: Id,
+    messageId: Id,
+    body: string | null,
+    editedAt: string,
+    linkPreview?: LinkPreview | null,
+  ) => void
+  /**
+   * The chips, as they now stand — from my own write, its rollback, or
+   * `talk.message.reaction_updated` once the stream has decided which is mine.
+   */
+  applyReactions: (chatId: Id, messageId: Id, reactions: MessageReaction[]) => void
+  /**
+   * A poll moved. `keepMyChoice` is for an EVENT, which never says what I
+   * picked: the counts are replaced and my own ticks stay as they were.
+   */
+  applyPoll: (chatId: Id, messageId: Id, poll: Poll, keepMyChoice?: boolean) => void
+  /**
+   * `talk.message.unread` — somebody took their read back, so those of MY
+   * messages lose that reader, and with it the double tick.
+   */
+  applyUnread: (chatId: Id, messageIds: Id[], readerTalkUserId: Id | null) => void
   /**
    * `talk.message.deleted` — delete for EVERYONE. The bubble stays as a
    * tombstone because replies still point at it.
@@ -162,7 +194,7 @@ function merge(existing: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] 
   const map = new Map(existing.map((m) => [m.id, m]))
   for (const message of incoming) {
     const held = map.get(message.id)
-    map.set(message.id, held ? { ...held, ...message } : adopt(map, message))
+    map.set(message.id, held ? keepCard(held, { ...held, ...message }) : adopt(map, message))
   }
   return [...map.values()].sort(byOldestFirst)
 }
@@ -200,10 +232,18 @@ function adopt(map: Map<Id, ChatMessage>, message: ChatMessage): ChatMessage {
     // once the replacement can be drawn; this is the backstop for the socket
     // echo, which arrives with no idea what the replacement looks like.
     releaseLater(held)
-    return { ...message, clientMessageId: held.clientMessageId, status: 'sent' }
+    return keepCard(held, { ...message, clientMessageId: held.clientMessageId, status: 'sent' })
   }
 
   return message
+}
+
+/**
+ * A row whose payload left `link_preview` OUT keeps the card already held. Only
+ * an explicit `null` (the server built none, or an edit dropped it) takes it off.
+ */
+function keepCard(held: ChatMessage, next: ChatMessage): ChatMessage {
+  return next.linkPreview === undefined ? { ...next, linkPreview: held.linkPreview ?? null } : next
 }
 
 /**
@@ -304,9 +344,10 @@ export const useMessageCacheStore = create<MessageCacheState>()((set) => ({
         // blinking out of the thread and Virtuoso remounting the rows around it.
         // A row with a real id needs no removing anyway: `merge` upserts it by
         // that id.
-        const without = held.filter(
-          (m) => !(m.id < 0 && m.clientMessageId === clientMessageId),
+        const placeholder = held.find(
+          (m) => m.id < 0 && m.clientMessageId === clientMessageId,
         )
+        const without = held.filter((m) => m !== placeholder)
         // A client id names exactly ONE row, and after the mix-up above two rows
         // can claim it — which is one React key for two bubbles
         // (`computeItemKey` reads the client id first), and React answers that by
@@ -318,7 +359,10 @@ export const useMessageCacheStore = create<MessageCacheState>()((set) => ({
             ? { ...m, clientMessageId: undefined }
             : m,
         )
-        return merge(claimed, [{ ...saved, status: 'sent', clientMessageId }])
+        // An answer that left `link_preview` out keeps the composer's card,
+        // which the server builds from the same cache entry.
+        const row = placeholder ? keepCard(placeholder, saved) : saved
+        return merge(claimed, [{ ...row, status: 'sent', clientMessageId }])
       }),
     ),
 
@@ -370,16 +414,71 @@ export const useMessageCacheStore = create<MessageCacheState>()((set) => ({
       ),
     ),
 
-  applyEdit: (chatId, messageId, body, editedAt) =>
+  applyEdit: (chatId, messageId, body, editedAt, linkPreview) =>
     set((s) =>
       patchChat(s, chatId, (held) =>
         mapWhere(
           held,
           (m) => m.id === messageId,
-          (m) => ({ ...m, body, isEdited: true, editedAt }),
+          (m) => ({
+            ...m,
+            body,
+            isEdited: true,
+            editedAt,
+            linkPreview: linkPreview === undefined ? m.linkPreview : linkPreview,
+          }),
         ),
       ),
     ),
+
+  applyReactions: (chatId, messageId, reactions) =>
+    set((s) =>
+      patchChat(s, chatId, (held) =>
+        mapWhere(
+          held,
+          (m) => m.id === messageId,
+          (m) => ({ ...m, reactions }),
+        ),
+      ),
+    ),
+
+  applyPoll: (chatId, messageId, poll, keepMyChoice = false) =>
+    set((s) =>
+      patchChat(s, chatId, (held) =>
+        mapWhere(
+          held,
+          (m) => m.id === messageId,
+          (m) => ({
+            ...m,
+            poll: keepMyChoice ? { ...poll, myOptionIds: m.poll?.myOptionIds ?? [] } : poll,
+          }),
+        ),
+      ),
+    ),
+
+  applyUnread: (chatId, messageIds, readerTalkUserId) =>
+    set((s) => {
+      const ids = new Set(messageIds)
+      return patchChat(s, chatId, (held) =>
+        mapWhere(
+          held,
+          (m) => ids.has(m.id),
+          (m) => {
+            const readers = (m.readerIds ?? []).filter((id) => id !== readerTalkUserId)
+            // One reader went back. Counted off the server's number, since the
+            // reader set only holds whoever read while this tab was watching.
+            const readCount = Math.max(0, m.readCount - 1)
+            return {
+              ...m,
+              readerIds: readers,
+              readCount,
+              isReadByAll: false,
+              status: m.status === 'read' ? 'sent' : m.status,
+            }
+          },
+        ),
+      )
+    }),
 
   applyDeleteForEveryone: (chatId, messageIds) =>
     set((s) => {
@@ -395,6 +494,8 @@ export const useMessageCacheStore = create<MessageCacheState>()((set) => ({
           // announcing, and it is not a bookmark worth keeping either. Left
           // set, `isPinnedForMe` keeps the pin mark on the corner of a message
           // whose body is gone.
+          // Reactions, the link card and the poll go too — the server answers
+          // a tombstone with none of them, so neither does the cache.
           (m) => ({
             ...m,
             body: null,
@@ -402,6 +503,9 @@ export const useMessageCacheStore = create<MessageCacheState>()((set) => ({
             isDeletedForEveryone: true,
             isPinned: false,
             isPinnedForMe: false,
+            reactions: [],
+            linkPreview: null,
+            poll: null,
           }),
         ),
       )

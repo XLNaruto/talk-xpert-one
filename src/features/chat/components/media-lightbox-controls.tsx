@@ -1,13 +1,23 @@
-import { useState } from 'react'
-import { Copy, Download, EyeOff, Trash2, ZoomIn, ZoomOut } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
 import {
-  CloseIcon,
-  IconButton,
-  NextIcon,
-  PreviousIcon,
-  cssClass,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  Download,
+  EyeOff,
+  Image as ImageIcon,
+  Maximize,
+  Minus,
+  Plus,
+  Trash2,
+  Video as VideoIcon,
+  X,
+} from 'lucide-react'
+import {
+  stopNavigationEventsPropagation,
   useController,
   useLightboxState,
+  useLoseFocus,
   useNavigationState,
 } from 'yet-another-react-lightbox'
 import type { ZoomRef } from 'yet-another-react-lightbox'
@@ -15,18 +25,16 @@ import type {} from 'yet-another-react-lightbox/plugins/zoom'
 import { Tip } from '@/components/common/tip'
 import { toastProblem, toastSuccess } from '@/lib/api-toast'
 import { canCopyImages, copyImageToClipboard } from '@/lib/copy-image'
+import { cn } from '@/lib/utils'
 import { useMediaViewerStore } from '@/stores/media-viewer-store'
 import type { Id } from '@/types/api'
 import { downloadMedia, slideDownload } from '../lib/media-download'
 
 /**
- * The lightbox's toolbar and navigation buttons, redrawn so they carry the app's
- * `Tip` instead of the OS tooltip the library's `title` attribute produces.
- *
- * The library's own `IconButton` is kept — it is what gives these buttons the
- * lightbox's hit area, hover state and focus ring — with `title` cleared so the
- * native bubble doesn't show up underneath ours. `aria-label` still comes from
- * `label`, so nothing is lost for a screen reader.
+ * The lightbox's title band, toolbar and navigation, drawn by us so every control
+ * shares one square glass shape (`.xl-lightbox .yarl__button` in `globals.css`)
+ * and carries the app's `Tip` instead of the OS tooltip a `title` attribute
+ * produces.
  *
  * The bubble needs a z-index above the lightbox portal (9999): a tooltip renders
  * in a portal of its own at the end of `body`, so the app's default layer would
@@ -35,69 +43,129 @@ import { downloadMedia, slideDownload } from '../lib/media-download'
 const TOOLTIP_LAYER = 'z-[10000]'
 
 /**
- * `IconButton`'s label is a key into the library's own translation table, and
- * the copy button is ours — so the key is declared, the same way each of the
- * library's own plugins declares the label for the button it adds.
+ * One control of the viewer.
+ *
+ * Pointer and key events stop here: the carousel swipes on drag, and that should
+ * not happen because someone reached for a button. `useLoseFocus` hands focus
+ * back to the lightbox when the button disables itself mid-press, so the arrow
+ * keys keep paging.
  */
-declare module 'yet-another-react-lightbox' {
-  interface Labels {
-    'Copy image'?: string
-    'Delete file'?: string
-    'Delete for me'?: string
-  }
-}
+function LightboxButton({
+  label,
+  side = 'bottom',
+  onClick,
+  disabled,
+  className,
+  children,
+}: {
+  label: string
+  side?: 'top' | 'bottom' | 'left' | 'right'
+  onClick?: () => void
+  disabled?: boolean
+  className?: string
+  children: ReactNode
+}) {
+  const { focus } = useController()
+  const loseFocus = useLoseFocus(focus, disabled)
 
-function LightboxTip({ label, side = 'bottom', children }: Parameters<typeof Tip>[0]) {
   return (
     <Tip label={label} side={side} className={TOOLTIP_LAYER}>
-      {children}
+      <button
+        type="button"
+        aria-label={label}
+        className={cn('yarl__button', className)}
+        disabled={disabled}
+        onClick={onClick}
+        {...stopNavigationEventsPropagation()}
+        {...loseFocus}
+      >
+        {children}
+      </button>
     </Tip>
   )
 }
 
-/** Zoom in / zoom out, replacing the Zoom plugin's pair of buttons. */
+/** Top-left band: what you're looking at, and where you are in the set. */
+export function LightboxTitleBar({ count }: { count: number }) {
+  const { currentSlide, currentIndex } = useLightboxState()
+
+  return (
+    <div className="xl-lightbox__title">
+      <span className="xl-lightbox__glass grid size-9 shrink-0 place-items-center rounded-[10px]">
+        {currentSlide?.type === 'video' ? (
+          <VideoIcon className="size-4" />
+        ) : (
+          <ImageIcon className="size-4" />
+        )}
+      </span>
+      <span className="xl-lightbox__name min-w-0 truncate text-sm font-medium">
+        {currentSlide?.caption ?? 'Media'}
+      </span>
+      {count > 1 && (
+        <span className="xl-lightbox__glass shrink-0 rounded-full px-2.5 py-1 text-xs font-medium tabular-nums">
+          {currentIndex + 1} / {count}
+        </span>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Zoom out / level / in, replacing the Zoom plugin's pair of buttons.
+ *
+ * The live percentage doubles as "reset to fit" — the only way back to 1×
+ * without spinning the wheel all the way down. The cluster is absent on a video
+ * slide, where zoom does nothing.
+ */
 export function LightboxZoomButtons(zoom: ZoomRef) {
+  if (zoom.disabled) return null
+
   return (
     <>
-      <LightboxTip label="Zoom in">
-        <IconButton
-          label="Zoom in"
-          title={undefined}
-          icon={ZoomIn}
-          disabled={zoom.disabled || zoom.zoom >= zoom.maxZoom}
-          onClick={zoom.zoomIn}
-        />
-      </LightboxTip>
-      <LightboxTip label="Zoom out">
-        <IconButton
-          label="Zoom out"
-          title={undefined}
-          icon={ZoomOut}
-          disabled={zoom.disabled || zoom.zoom <= zoom.minZoom}
-          onClick={zoom.zoomOut}
-        />
-      </LightboxTip>
+      <LightboxButton
+        label="Zoom out"
+        className="xl-lightbox__zoom-step"
+        onClick={zoom.zoomOut}
+        disabled={zoom.zoom <= zoom.minZoom}
+      >
+        <Minus className="size-5" />
+      </LightboxButton>
+      <LightboxButton
+        label="Reset zoom"
+        className="xl-lightbox__zoom xl-lightbox__zoom-step"
+        onClick={() => zoom.changeZoom(zoom.minZoom)}
+        disabled={zoom.zoom <= zoom.minZoom}
+      >
+        <Maximize className="size-3.5" />
+        {Math.round(zoom.zoom * 100)}%
+      </LightboxButton>
+      <LightboxButton
+        label="Zoom in"
+        className="xl-lightbox__zoom-step"
+        onClick={zoom.zoomIn}
+        disabled={zoom.zoom >= zoom.maxZoom}
+      >
+        <Plus className="size-5" />
+      </LightboxButton>
     </>
   )
 }
 
-/** Save the current slide, replacing the Download plugin's button. */
+/** Save the current slide. */
 export function LightboxDownloadButton() {
   const { currentSlide } = useLightboxState()
   const target = slideDownload(currentSlide)
 
   return (
-    <LightboxTip label="Download">
-      <IconButton
-        label="Download"
-        title={undefined}
-        icon={Download}
-        disabled={!target}
-        onClick={() => {
-          if (target) void downloadMedia(target.url, target.filename)
-        }}
-      />
-    </LightboxTip>
+    <LightboxButton
+      label="Download"
+      disabled={!target}
+      onClick={() => {
+        if (target) void downloadMedia(target.url, target.filename)
+      }}
+    >
+      <Download className="size-5" />
+    </LightboxButton>
   )
 }
 
@@ -121,21 +189,19 @@ export function LightboxCopyButton() {
   if (!source || !canCopyImages()) return null
 
   return (
-    <LightboxTip label="Copy image">
-      <IconButton
-        label="Copy image"
-        title={undefined}
-        icon={Copy}
-        disabled={copying}
-        onClick={() => {
-          setCopying(true)
-          void copyImageToClipboard(source)
-            .then(() => toastSuccess('Image copied'))
-            .catch(() => toastProblem('That image could not be copied. Download it instead.'))
-            .finally(() => setCopying(false))
-        }}
-      />
-    </LightboxTip>
+    <LightboxButton
+      label="Copy image"
+      disabled={copying}
+      onClick={() => {
+        setCopying(true)
+        void copyImageToClipboard(source)
+          .then(() => toastSuccess('Image copied'))
+          .catch(() => toastProblem('That image could not be copied. Download it instead.'))
+          .finally(() => setCopying(false))
+      }}
+    >
+      <Copy className="size-5" />
+    </LightboxButton>
   )
 }
 
@@ -173,14 +239,9 @@ export function LightboxDeleteButton({
   if (!source?.canDeleteFile || mediaId === undefined || !onRequestDelete) return null
 
   return (
-    <LightboxTip label="Delete file">
-      <IconButton
-        label="Delete file"
-        title={undefined}
-        icon={Trash2}
-        onClick={() => onRequestDelete(mediaId)}
-      />
-    </LightboxTip>
+    <LightboxButton label="Delete file" onClick={() => onRequestDelete(mediaId)}>
+      <Trash2 className="size-5" />
+    </LightboxButton>
   )
 }
 
@@ -209,14 +270,9 @@ export function LightboxHideButton({
   if (!source || !onRequestHide) return null
 
   return (
-    <LightboxTip label="Delete for me">
-      <IconButton
-        label="Delete for me"
-        title={undefined}
-        icon={EyeOff}
-        onClick={onRequestHide}
-      />
-    </LightboxTip>
+    <LightboxButton label="Delete for me" onClick={onRequestHide}>
+      <EyeOff className="size-5" />
+    </LightboxButton>
   )
 }
 
@@ -224,44 +280,35 @@ export function LightboxCloseButton() {
   const { close } = useController()
 
   return (
-    <LightboxTip label="Close">
-      <IconButton label="Close" title={undefined} icon={CloseIcon} onClick={close} />
-    </LightboxTip>
+    <LightboxButton label="Close" onClick={close}>
+      <X className="size-5" />
+    </LightboxButton>
+  )
+}
+
+/** Previous / next. The library keeps the arrow's placement; we keep its look. */
+function LightboxNavButton({ action }: { action: 'prev' | 'next' }) {
+  const { prev, next } = useController()
+  const { prevDisabled, nextDisabled } = useNavigationState()
+  const isPrev = action === 'prev'
+
+  return (
+    <LightboxButton
+      label={isPrev ? 'Previous' : 'Next'}
+      side={isPrev ? 'right' : 'left'}
+      onClick={() => (isPrev ? prev() : next())}
+      disabled={isPrev ? prevDisabled : nextDisabled}
+      className={`yarl__navigation_${action}`}
+    >
+      {isPrev ? <ChevronLeft className="size-5" /> : <ChevronRight className="size-5" />}
+    </LightboxButton>
   )
 }
 
 export function LightboxPrevButton() {
-  const { prev } = useController()
-  const { prevDisabled } = useNavigationState()
-
-  return (
-    <LightboxTip label="Previous" side="top">
-      <IconButton
-        label="Previous"
-        title={undefined}
-        icon={PreviousIcon}
-        className={cssClass('navigation_prev')}
-        disabled={prevDisabled}
-        onClick={() => prev()}
-      />
-    </LightboxTip>
-  )
+  return <LightboxNavButton action="prev" />
 }
 
 export function LightboxNextButton() {
-  const { next } = useController()
-  const { nextDisabled } = useNavigationState()
-
-  return (
-    <LightboxTip label="Next" side="top">
-      <IconButton
-        label="Next"
-        title={undefined}
-        icon={NextIcon}
-        className={cssClass('navigation_next')}
-        disabled={nextDisabled}
-        onClick={() => next()}
-      />
-    </LightboxTip>
-  )
+  return <LightboxNavButton action="next" />
 }

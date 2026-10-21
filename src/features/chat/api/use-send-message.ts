@@ -7,7 +7,7 @@ import { useMessageCacheStore } from '@/stores/message-cache-store'
 import type { Id } from '@/types/api'
 import { draftMessage, mediaKindFor } from '../lib/chat-mappers'
 import { sendFailure } from '../lib/send-failures'
-import type { ChatMessage, MessageQuote, OutgoingMedia } from '../types'
+import type { ChatMessage, LinkPreview, MessageQuote, OutgoingMedia } from '../types'
 import * as chatApi from './chat-api'
 
 /** What the composer hands over. Files are still bytes at this point. */
@@ -16,6 +16,10 @@ export interface SendRequest {
   body: string
   files?: File[]
   replyTo?: MessageQuote | null
+  /** The link to ask the server's card for — as typed, and only if not dismissed. */
+  linkPreviewUrl?: string | null
+  /** The card the composer was showing, so the bubble wears it straight away. */
+  linkPreview?: LinkPreview | null
 }
 
 /**
@@ -58,7 +62,12 @@ export function useSendMessage() {
     async (
       chatId: Id,
       clientMessageId: string,
-      payload: { body: string | null; files: File[]; replyToMessageId: Id | null },
+      payload: {
+        body: string | null
+        files: File[]
+        replyToMessageId: Id | null
+        linkPreviewUrl: string | null
+      },
       onSent?: (saved: ChatMessage) => void,
     ): Promise<boolean> => {
       try {
@@ -71,6 +80,7 @@ export function useSendMessage() {
           body: payload.body,
           media,
           replyToMessageId: payload.replyToMessageId,
+          linkPreviewUrl: payload.linkPreviewUrl,
           clientMessageId,
         })
 
@@ -101,6 +111,8 @@ export function useSendMessage() {
       const { chatId, body, files = [], replyTo } = request
       const clientMessageId = crypto.randomUUID()
       const trimmed = body.trim()
+      // An attachment never gets a card, so neither does its placeholder.
+      const linkPreviewUrl = files.length === 0 ? (request.linkPreviewUrl ?? null) : null
 
       // The placeholder carries the local previews so an image send shows the
       // picture straight away rather than a grey box that fills in later.
@@ -112,13 +124,15 @@ export function useSendMessage() {
         clientMessageId,
         senderName: selfName ?? null,
         senderPhoto: selfPhoto ?? null,
+        linkPreview: linkPreviewUrl ? (request.linkPreview ?? null) : null,
+        linkPreviewUrl,
       })
       upsertOne(chatId, optimistic)
 
       return deliver(
         chatId,
         clientMessageId,
-        { body: trimmed || null, files, replyToMessageId: replyTo?.id ?? null },
+        { body: trimmed || null, files, replyToMessageId: replyTo?.id ?? null, linkPreviewUrl },
         (saved) => revokePreviews(optimistic, saved, mediaUrl),
       )
     },
@@ -157,6 +171,8 @@ export function useSendMessage() {
           chatId: message.chatId,
           body: message.body ?? '',
           replyTo: message.replyTo,
+          linkPreviewUrl: message.linkPreviewUrl,
+          linkPreview: message.linkPreview,
         })
       }
 
@@ -165,6 +181,7 @@ export function useSendMessage() {
         body: message.body,
         files: [],
         replyToMessageId: message.replyToMessageId ?? null,
+        linkPreviewUrl: message.linkPreviewUrl ?? null,
       })
     },
     [send, deliver, markSending],

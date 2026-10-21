@@ -11,9 +11,10 @@ import type { MessageQuote, Presence } from '@/features/chat/types'
  * it into an encrypted `?data=` token and restores it on a refresh; this store
  * stays the single source of truth that everything else reads.
  *
- * Nothing in here is persisted: a draft is worth keeping across a thread switch,
- * not across a browser restart, and typing and presence are ephemeral by
- * definition.
+ * The store itself is in-memory. The composer's slices — `drafts`,
+ * `attachments`, `replyTo`, `editing` — are mirrored to IndexedDB for a day by
+ * `chat-draft-persistence.ts`, so a reload does not lose what I was writing;
+ * typing and presence are ephemeral by definition.
  */
 
 /** Who is typing, and when their signal expires. */
@@ -23,8 +24,26 @@ interface TypingEntry {
   expiresAt: number
 }
 
+/** What the composer is editing instead of composing. */
+export interface EditTarget {
+  messageId: Id
+  body: string
+  hasMedia: boolean
+  /** The link the message's card is for — an edit keeps, swaps or drops it. */
+  linkPreviewUrl: string | null
+}
+
 interface ChatState {
   activeChatId: Id | null
+  /**
+   * The broadcast list open in the main pane INSTEAD of a chat — or `'all'`
+   * for every broadcast, deleted lists included. Opening one closes the chat
+   * and opening a chat closes it: the pane shows one thing.
+   *
+   * Not mirrored to the URL. A list is the owner's private tool, not a place a
+   * refresh or a pasted link should land on.
+   */
+  activeBroadcastId: Id | 'all' | null
   /** Unsent text per chat, so switching threads doesn't lose a draft. */
   drafts: Record<string, string>
   /**
@@ -32,15 +51,16 @@ interface ChatState {
    *
    * Here rather than in the composer's `useState` because the drop target is the
    * WHOLE thread pane — `chat-area.tsx` accepts the drop, `message-input.tsx`
-   * draws the strip, and neither can reach the other's local state. Nothing in
-   * this store is persisted, which is what makes holding `File` objects safe.
+   * draws the strip, and neither can reach the other's local state. `File`
+   * objects are held as they are; `chat-draft-persistence.ts` stores them in
+   * IndexedDB as blobs, outside any JSON-serialised store.
    */
   attachments: Record<string, File[]>
   /** The message being replied to, per chat. */
   replyTo: Record<string, MessageQuote | null>
-  /** The message being edited, per chat — id, the text as it stands, and
-   *  whether that text is a CAPTION on media, which may be cleared. */
-  editing: Record<string, { messageId: Id; body: string; hasMedia: boolean } | null>
+  /** The message being edited, per chat — id, the text as it stands, whether
+   *  that text is a CAPTION on media, and the link its card is for, if any. */
+  editing: Record<string, EditTarget | null>
   /** Who is typing, per chat. */
   typing: Record<string, TypingEntry[]>
   /** Presence by `talk_user_id`, for everyone we display. */
@@ -96,18 +116,31 @@ interface ChatState {
    * closes it: the sheet is about one conversation.
    */
   isDetailsOpen: boolean
+  /**
+   * Bumped by every broadcast event that changes a LIST — created, renamed, its
+   * people changed, deleted, or sent to — so the broadcast screens re-read. They
+   * live in a hook's state, out of reach of the socket handler. A read receipt
+   * is deliberately NOT one of these: a list of 256 would re-read 256 times.
+   */
+  broadcastRevision: number
+  /** Lists deleted on another device, so an open one closes itself. */
+  removedBroadcastListIds: Id[]
+  /**
+   * Read receipts on broadcasts, laid over what the screens last read:
+   * `readCount` is the server's new TOTAL (set, never added to) and `readers`
+   * says who and when, for an open delivery report.
+   */
+  broadcastReads: Record<string, { readCount: number; readers: Record<string, string> }>
 
   setActiveChat: (chatId: Id | null) => void
+  setActiveBroadcast: (target: Id | 'all' | null) => void
   setDetailsOpen: (open: boolean) => void
   setDraft: (chatId: Id, text: string) => void
   clearDraft: (chatId: Id) => void
   setAttachments: (chatId: Id, files: File[]) => void
   clearAttachments: (chatId: Id) => void
   setReplyTo: (chatId: Id, quote: MessageQuote | null) => void
-  setEditing: (
-    chatId: Id,
-    editing: { messageId: Id; body: string; hasMedia: boolean } | null,
-  ) => void
+  setEditing: (chatId: Id, editing: EditTarget | null) => void
 
   /** `talk.typing.start` — records the signal with a fresh expiry. */
   startTyping: (chatId: Id, talkUserId: Id, expiresAt: number) => void
@@ -129,6 +162,12 @@ interface ChatState {
   /** A file was taken off a message — the chat's gallery is one shorter. */
   bumpMedia: (chatId: Id) => void
   setThreadAtBottom: (atBottom: boolean) => void
+  bumpBroadcasts: (removedListId?: Id) => void
+  applyBroadcastRead: (
+    broadcastId: Id,
+    readCount: number,
+    reader: { talkUserId: Id; readAt: string | null },
+  ) => void
   setBlockedTalkUserIds: (ids: Id[]) => void
   setBlocked: (talkUserId: Id, blocked: boolean) => void
 
@@ -137,6 +176,7 @@ interface ChatState {
 
 export const useChatStore = create<ChatState>((set) => ({
   activeChatId: null,
+  activeBroadcastId: null,
   drafts: {},
   attachments: {},
   replyTo: {},
@@ -150,11 +190,22 @@ export const useChatStore = create<ChatState>((set) => ({
   mediaRevision: {},
   isThreadAtBottom: true,
   isDetailsOpen: false,
+  broadcastRevision: 0,
+  removedBroadcastListIds: [],
+  broadcastReads: {},
 
   setActiveChat: (chatId) =>
     set((s) => ({
       activeChatId: chatId,
       isDetailsOpen: chatId === s.activeChatId ? s.isDetailsOpen : false,
+      activeBroadcastId: chatId === null ? s.activeBroadcastId : null,
+    })),
+
+  setActiveBroadcast: (target) =>
+    set((s) => ({
+      activeBroadcastId: target,
+      activeChatId: target === null ? s.activeChatId : null,
+      isDetailsOpen: target === null ? s.isDetailsOpen : false,
     })),
 
   setDetailsOpen: (isDetailsOpen) => set({ isDetailsOpen }),
@@ -279,6 +330,33 @@ export const useChatStore = create<ChatState>((set) => ({
   setThreadAtBottom: (isThreadAtBottom) =>
     set((s) => (s.isThreadAtBottom === isThreadAtBottom ? {} : { isThreadAtBottom })),
 
+  bumpBroadcasts: (removedListId) =>
+    set((s) => ({
+      broadcastRevision: s.broadcastRevision + 1,
+      removedBroadcastListIds:
+        removedListId === undefined
+          ? s.removedBroadcastListIds
+          : [...new Set([...s.removedBroadcastListIds, removedListId])],
+    })),
+
+  applyBroadcastRead: (broadcastId, readCount, reader) =>
+    set((s) => {
+      const key = keyOf(broadcastId)
+      const held = s.broadcastReads[key]
+      return {
+        broadcastReads: {
+          ...s.broadcastReads,
+          [key]: {
+            readCount,
+            readers: {
+              ...held?.readers,
+              [keyOf(reader.talkUserId)]: reader.readAt ?? new Date().toISOString(),
+            },
+          },
+        },
+      }
+    }),
+
   setBlockedTalkUserIds: (blockedTalkUserIds) => set({ blockedTalkUserIds }),
 
   setBlocked: (talkUserId, blocked) =>
@@ -291,6 +369,7 @@ export const useChatStore = create<ChatState>((set) => ({
   reset: () =>
     set({
       activeChatId: null,
+      activeBroadcastId: null,
       drafts: {},
       attachments: {},
       replyTo: {},
@@ -304,6 +383,9 @@ export const useChatStore = create<ChatState>((set) => ({
       mediaRevision: {},
       isThreadAtBottom: true,
       isDetailsOpen: false,
+      broadcastRevision: 0,
+      removedBroadcastListIds: [],
+      broadcastReads: {},
     }),
 }))
 

@@ -323,7 +323,61 @@ web-app config object as ONE line of JSON, parsed in `config/env.ts` — and
 all-or-nothing across every field of that object, and the SDK itself is
 dynamically imported so an unconfigured build never loads it.
 
+### Chat features: unread, drafts, polls, mute, reactions, link cards, broadcasts
+
+Specified in `talk-chat-features-frontend.md` (§5–8 were written from the
+server code, not tested against a running service — re-check shapes there first
+when something does not line up).
+
+- **Mark unread** is REST only (`chats.unread`) and answers the new frontier and
+  badge. A read straight after it undoes it, and the open thread reads whatever
+  is on screen — so `markUnread` in `use-chat-actions.ts` CLOSES the chat it is
+  about. My own messages never count. `talk.message.unread` is the mirror of
+  `talk.message.read` (`applyUnread`); `talk.chat.marked_unread` is my other
+  device.
+- **Drafts** are LOCAL ONLY — no API call, no `self.draft_text`, no
+  `talk.chat.draft_updated` handler; a draft does not follow me between
+  devices. The composer's text, picked FILES, reply target and open edit are
+  mirrored per chat to their own IndexedDB database for 24 h
+  (`lib/composer-draft-storage.ts`, text/reply/edit encrypted) by
+  `stores/chat-draft-persistence.ts`, restored before mount in `main.tsx` and
+  wiped on sign-out.
+- **Polls** are messages (`type: 'poll'`, question in `body`). An event never
+  carries `my_option_ids`, so `applyPoll(…, keepMyChoice)` keeps mine unless the
+  voter was me. A timed poll is closed by the CLOCK client-side (`isPollClosed`)
+  without waiting for `talk.poll.closed`. Create is not optimistic — options
+  need server ids — so the form waits and stays open on failure.
+- **Mute** is mine alone; read it through `isChatMuted()`, which also expires a
+  timed mute against the clock. The service worker skips the banner when
+  `data.muted === "true"`.
+- **Reactions**: one per person. The event has no `reacted_by_me`, so
+  `reactionsFromEvent` keeps mine unless the actor is me. Writes are optimistic
+  with rollback (`withMyReaction`).
+- **Link cards** are built by the SERVER. The client only sends
+  `link_preview_url`, exactly as typed, and draws `message.link_preview`. Up to
+  `MAX_LINK_CARDS` links get a card — in the composer (each with its own ✕) and
+  under the bubble — but a message STORES one, the first kept; the others are
+  asked of `/talk/link-preview` for display (`useMessageLinkPreviews`, cached
+  per URL, one request per URL in flight).
+  Never fetch the linked site itself. An edit's `link_preview_url` has three meanings —
+  omitted keeps, `null` drops, a URL swaps.
+- **Broadcast lists** live in `features/chat` (their events are Talk socket
+  events), with raw calls in `api/broadcast-api.ts`. A list is NOT a chat and
+  never enters `chat-list-store`; its four events are owner-only and never
+  pushed, and reach the screens as `broadcastRevision` / `broadcastReads` in
+  `chat-store`. The sidebar's **Broadcast** tab lists them (`broadcast-list-panel`)
+  and one opens in the MAIN pane like a chat (`broadcast-area`), through
+  `chat-store.activeBroadcastId` — kept exclusive with `activeChatId`. It rides
+  in the same `?data=` token as a chat, tagged `b:<id>` / `b:all` by
+  `lib/route-target.ts` (a bare number is still a chat), so a reload reopens it
+  and the sidebar switches to the Broadcast tab. `talk:broadcast.send` gets a 30 s ack (`BROADCAST_SEND_TIMEOUT_MS`,
+  via `write(…, { timeoutMs })`) and a retry reuses the `client_message_id`.
+
 ### Things the API cannot do, so the UI does not offer them
+
+- **Restore from server.** It downloads history into a phone's local database.
+  This client's message cache is in-memory by design (rule 1), so there is
+  nothing to restore into — a reload re-reads from the API.
 
 - **Reaching outside your grants.** `GET /talk/contacts` lists only the companies
   and departments an administrator granted you, so `PeoplePicker` has nothing to

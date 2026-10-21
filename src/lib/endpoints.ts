@@ -43,6 +43,13 @@ export const ENDPOINTS = {
      */
     delete: '/talk/chats/delete',
     read: '/talk/chats/read',
+    /**
+     * Mark UNREAD. An empty body unreads the other person's last message; a
+     * `message_id` unreads that message and everything after it.
+     */
+    unread: (chatId: Id) => `/talk/chats/${chatId}/unread`,
+    /** MY mute — `PUT { duration }`, `null` to unmute. Pushes go quiet, nothing else. */
+    mute: (chatId: Id) => `/talk/chats/${chatId}/mute`,
     detail: (chatId: Id) => `/talk/chats/${chatId}`,
     /** Rename / description / avatar — owner only. */
     update: (chatId: Id) => `/talk/chats/${chatId}`,
@@ -102,6 +109,12 @@ export const ENDPOINTS = {
     media: (chatId: Id) => `/talk/chats/${chatId}/media`,
     /** Attachment upload URL — max 25 MB, size signed into the URL. */
     mediaPresign: (chatId: Id) => `/talk/chats/${chatId}/media/presign`,
+    /** `PUT { emoji }` — my ONE reaction; `null` removes it. */
+    reaction: (chatId: Id, messageId: Id) =>
+      `/talk/chats/${chatId}/messages/${messageId}/reaction`,
+    /** Who reacted with what — `?emoji=` narrows `items` to one chip's people. */
+    reactions: (chatId: Id, messageId: Id) =>
+      `/talk/chats/${chatId}/messages/${messageId}/reactions`,
     forward: '/talk/messages/forward',
     search: '/talk/messages/search',
   },
@@ -119,6 +132,50 @@ export const ENDPOINTS = {
    * never the tokens.
    */
   devices: '/talk/devices',
+
+  /**
+   * Polls. `messageId` is the poll's MESSAGE id — never `poll.id`.
+   */
+  polls: {
+    create: (chatId: Id) => `/talk/chats/${chatId}/polls`,
+    vote: (chatId: Id, messageId: Id) =>
+      `/talk/chats/${chatId}/messages/${messageId}/poll/vote`,
+    close: (chatId: Id, messageId: Id) =>
+      `/talk/chats/${chatId}/messages/${messageId}/poll/close`,
+    /** Every voter — `?option_id=` narrows `items` for one tab. REST only. */
+    votes: (chatId: Id, messageId: Id) =>
+      `/talk/chats/${chatId}/messages/${messageId}/poll/votes`,
+  },
+
+  /**
+   * The card for a link, built ONCE by the server while the sender types and
+   * stored with the message. No client ever fetches the linked site itself.
+   */
+  linkPreview: '/talk/link-preview',
+
+  /**
+   * Broadcast lists — one sender, many private 1:1 copies. A list is NOT a chat
+   * and never appears in `chats.list`; its recipients cannot tell it exists.
+   */
+  broadcastLists: {
+    list: '/talk/broadcast-lists',
+    create: '/talk/broadcast-lists',
+    detail: (listId: Id) => `/talk/broadcast-lists/${listId}`,
+    update: (listId: Id) => `/talk/broadcast-lists/${listId}`,
+    remove: (listId: Id) => `/talk/broadcast-lists/${listId}`,
+    /** `PUT { talk_user_ids }` REPLACES the recipients. */
+    members: (listId: Id) => `/talk/broadcast-lists/${listId}/members`,
+    mediaPresign: (listId: Id) => `/talk/broadcast-lists/${listId}/media/presign`,
+    /** `GET` pages newest first by `before_id`; `POST` sends. */
+    broadcasts: (listId: Id) => `/talk/broadcast-lists/${listId}/broadcasts`,
+  },
+
+  broadcasts: {
+    /** Everything I ever broadcast, deleted lists included. */
+    list: '/talk/broadcasts',
+    /** The delivery report — `?status=` narrows `items`, never `counts`. */
+    recipients: (broadcastId: Id) => `/talk/broadcasts/${broadcastId}/recipients`,
+  },
 
   /** MY private, account-wide block list for direct chats. Never announced. */
   blocks: '/talk/blocks',

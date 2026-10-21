@@ -739,13 +739,19 @@ export function MediaThumb({
 }) {
   const mediaUrl = useMediaUrl()
   const openViewer = useMediaViewer()
-  const src = mediaUrl(media.thumbnailUrl || media.fileUrl)
   const label = mediaLabel(media)
 
   const inner = (
     <>
       {media.kind === 'image' || media.thumbnailUrl ? (
-        <img src={src} alt={label} loading="lazy" className="size-full object-cover" />
+        <ThumbImage
+          // Keyed, so a different file starts again from its own thumbnail.
+          key={media.id}
+          sources={[media.thumbnailUrl, media.kind === 'image' ? media.fileUrl : null].map((key) =>
+            key ? mediaUrl(key) : '',
+          )}
+          alt={label}
+        />
       ) : (
         <span className="flex size-full items-center justify-center">
           {media.kind === 'audio' ? (
@@ -791,5 +797,37 @@ export function MediaThumb({
         {inner}
       </button>
     </Tip>
+  )
+}
+
+/**
+ * A gallery tile's picture, which never draws the browser's broken-file glyph.
+ *
+ * The thumbnail is tried first and the original image after it — a thumbnail
+ * that was never generated, or has gone from storage, still leaves a photo to
+ * show. When neither loads the tile says so with an icon instead of printing
+ * the filename over an empty box.
+ */
+function ThumbImage({ sources, alt }: { sources: string[]; alt: string }) {
+  const urls = sources.filter((url, i) => url && sources.indexOf(url) === i)
+  // Which of `urls` is on screen; past the end means every one failed.
+  const [attempt, setAttempt] = useState(0)
+  const src = urls[attempt]
+
+  if (!src) {
+    return (
+      <span className="flex size-full items-center justify-center" title={alt}>
+        <ImageOff className="size-5 text-muted-foreground" aria-label={`${alt} could not be loaded`} />
+      </span>
+    )
+  }
+  return (
+    <img
+      src={src}
+      alt={alt}
+      loading="lazy"
+      onError={() => setAttempt((n) => n + 1)}
+      className="size-full object-cover"
+    />
   )
 }

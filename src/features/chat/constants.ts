@@ -81,6 +81,50 @@ export const SOCKET_ACTIONS = {
    * tapping the same item do not put two identical lines in the thread.
    */
   memberRole: 'talk:member.role',
+
+  /**
+   * `{ chat_id, duration }` → `{ chat_id, is_muted, muted_until }`.
+   *
+   * `duration` is one of `MUTE_DURATIONS` or `null` to unmute. Per PERSON: the
+   * other side of a direct chat is never told, and only pushes go quiet.
+   */
+  chatMute: 'talk:chat.mute',
+
+  /**
+   * `{ chat_id, message_id, emoji }` → `{ chat_id, message_id, reactions[] }`.
+   *
+   * ONE reaction per person: a different emoji replaces mine, `null` removes it,
+   * and sending the one I already have changes nothing and announces nothing.
+   */
+  messageReact: 'talk:message.react',
+
+  /**
+   * `{ chat_id, question, options, allow_multiple?, duration_minutes?,
+   * client_message_id? }` → the poll's MESSAGE (201), `type: 'poll'`.
+   */
+  pollCreate: 'talk:poll.create',
+  /**
+   * `{ chat_id, message_id, option_ids }` → the poll. `message_id` is the poll's
+   * MESSAGE id, never `poll.id`. A vote REPLACES my whole choice; `[]` withdraws.
+   */
+  pollVote: 'talk:poll.vote',
+  /** `{ chat_id, message_id }` → the poll. One-way; closing a closed poll is a quiet 200. */
+  pollClose: 'talk:poll.close',
+
+  /** `{ name?, talk_user_ids }` → the list with its recipients (201). */
+  broadcastListCreate: 'talk:broadcast.list.create',
+  /** `{ list_id, name }` → the list. `null` or `''` clears the name. */
+  broadcastListUpdate: 'talk:broadcast.list.update',
+  /** `{ list_id, talk_user_ids }` → the list. The WHOLE new set, 2–256 people. */
+  broadcastListMembers: 'talk:broadcast.list.members',
+  /** `{ list_id }` → `{ deleted }`. Sent copies stay in every 1:1 chat. */
+  broadcastListDelete: 'talk:broadcast.list.delete',
+  /**
+   * `{ list_id, body?, media?, client_message_id?, link_preview_url? }` → the
+   * broadcast (201), its counts already final. Writes up to 256 messages before
+   * it answers, so it gets `BROADCAST_SEND_TIMEOUT_MS` rather than the default.
+   */
+  broadcastSend: 'talk:broadcast.send',
 } as const
 
 /**
@@ -206,7 +250,135 @@ export const SOCKET_EVENTS = {
    */
   presence: 'talk.presence',
 
+  /**
+   * `{ chat_id, last_read_message_id, unread_count }` — I marked a chat unread on
+   * ANOTHER device of mine. Never sent to anybody else.
+   */
+  chatMarkedUnread: 'talk.chat.marked_unread',
+  /**
+   * `{ chat_id, message_ids, by_talk_user_id, by_name, by_photo, receipts[] }` —
+   * the mirror of `talk.message.read`: somebody took their read BACK, so those
+   * of my messages lose that reader and the ticks go grey again. Every receipt
+   * has `read_at: null`.
+   */
+  messageUnread: 'talk.message.unread',
+  /** `{ chat_id, is_muted, muted_until }` — my mute, from another device. */
+  chatMuteUpdated: 'talk.chat.mute_updated',
+  /**
+   * `{ talk_user_id, blocked }` — MY private block, set on another device. Never
+   * sent to the person blocked.
+   */
+  userBlockUpdated: 'talk.user.block_updated',
+  /**
+   * `{ chat_id, message_id, reactions, by_talk_user_id, by_*, emoji }` — the
+   * chips are `{ emoji, count }` with NO `reacted_by_me`, because the event is
+   * the same for everyone. `emoji` is the actor's NEW reaction, or null.
+   */
+  messageReactionUpdated: 'talk.message.reaction_updated',
+  /**
+   * `{ chat_id, message_id, poll, by_*, option_ids }` — counts moved.
+   * `option_ids` is the VOTER's new choice, so it is mine only when `by_*` is me.
+   */
+  pollUpdated: 'talk.poll.updated',
+  /** `{ chat_id, message_id, poll, by_* }` — `by_*` is null when the TIMER closed it. */
+  pollClosed: 'talk.poll.closed',
+
+  /**
+   * The four broadcast events go to MY OWN devices only — a list is invisible to
+   * its recipients — carry no `chat_id`, and are never pushed. The device that
+   * made the change already has the result from its ack, so applying it again
+   * must be harmless.
+   */
+  /** `{ list_id, list }` — created, renamed, or its people changed. */
+  broadcastListUpdated: 'talk.broadcast.list_updated',
+  /** `{ list_id }` */
+  broadcastListDeleted: 'talk.broadcast.list_deleted',
+  /** `{ list_id, broadcast }` */
+  broadcastSent: 'talk.broadcast.sent',
+  /**
+   * `{ broadcast_id, list_id, read_count, talk_user_id, name, photo, read_at }` —
+   * `read_count` is the NEW TOTAL, so it is set, never incremented.
+   */
+  broadcastRead: 'talk.broadcast.read',
 } as const
+
+/**
+ * The reactions offered in one tap. Anything else is a "+" away, in the full
+ * picker.
+ */
+export const QUICK_REACTIONS = ['👍', '✅', '😂', '😮', '😢', '🙏'] as const
+
+/**
+ * The mute menu, in order. `always` is muted with no end; the server answers
+ * `muted_until: null` for it, and a timed mute ends by itself.
+ */
+export const MUTE_DURATIONS = [
+  { value: '1h', label: '1 hour' },
+  { value: '8h', label: '8 hours' },
+  { value: '24h', label: '24 hours' },
+  { value: '1w', label: '1 week' },
+  { value: 'always', label: 'Always' },
+] as const
+
+/**
+ * How long a link must sit still in the composer before its card is asked for.
+ * Typing a URL character by character would otherwise ask for every prefix.
+ */
+export const LINK_PREVIEW_DEBOUNCE_MS = 600
+
+/**
+ * Links that get a card, in the composer and under a bubble. The message itself
+ * stores ONE (the first kept); the rest are looked up for display only.
+ */
+export const MAX_LINK_CARDS = 3
+
+/** Poll limits — the server's, mirrored so the form says so before a 400 does. */
+export const POLL_QUESTION_MAX = 255
+export const POLL_OPTION_MAX = 100
+export const POLL_MIN_OPTIONS = 2
+export const POLL_MAX_OPTIONS = 50
+/** How many voters each option carries for its avatar stack. */
+export const POLL_VOTER_PREVIEW = 3
+
+/**
+ * The poll timer menu. Any whole number of minutes from 1 to 10080 is accepted;
+ * these are the ones worth a tap. `null` is a poll that stays open until closed.
+ */
+export const POLL_DURATIONS = [
+  { minutes: null, label: 'No time limit' },
+  { minutes: 5, label: '5 minutes' },
+  { minutes: 60, label: '1 hour' },
+  { minutes: 8 * 60, label: '8 hours' },
+  { minutes: 24 * 60, label: '1 day' },
+  { minutes: 3 * 24 * 60, label: '3 days' },
+  { minutes: 7 * 24 * 60, label: '1 week' },
+] as const
+
+/**
+ * Blank poll form — two empty options, since a poll needs at least two. Options
+ * are objects because react-hook-form's field arrays key on them.
+ */
+export const EMPTY_POLL_FORM = {
+  question: '',
+  options: [{ text: '' }, { text: '' }],
+  allowMultiple: false,
+  durationMinutes: null as number | null,
+}
+
+/** How many lists one page of the Broadcast Lists screen pulls (API max 100). */
+export const BROADCAST_LIST_PAGE_SIZE = 30
+/** How many broadcasts one page of a list's thread pulls. */
+export const BROADCAST_PAGE_SIZE = 30
+/** A list holds 2–256 DIFFERENT people — the server's limits, both ends. */
+export const BROADCAST_MIN_RECIPIENTS = 2
+export const BROADCAST_MAX_RECIPIENTS = 256
+export const BROADCAST_NAME_MAX = 120
+/**
+ * A broadcast writes up to 256 copies inside one request, so its ack and its
+ * HTTP call both get far longer than an ordinary write. A timeout is retried
+ * with the SAME `client_message_id`, which answers the first send, not a second.
+ */
+export const BROADCAST_SEND_TIMEOUT_MS = 30_000
 
 /**
  * The OPENING read of a thread — `limit: -1`, which is not a page size at all.

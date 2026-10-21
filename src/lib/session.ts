@@ -4,6 +4,7 @@ import { useChatListStore } from '@/stores/chat-list-store'
 import { useChatStore } from '@/stores/chat-store'
 import { useMessageCacheStore } from '@/stores/message-cache-store'
 import { useTalkDirectoryStore } from '@/stores/talk-directory-store'
+import { clearComposerDrafts } from './composer-draft-storage'
 import { clearCookies } from './cookie'
 import { logger } from './logger'
 import { disconnectSocket } from './socket-client'
@@ -46,6 +47,9 @@ export function clearSessionState(): void {
   useMessageCacheStore.getState().clear()
   useChatListStore.getState().clear()
   useChatStore.getState().reset()
+  // Unsent text, files and reply targets saved on this device are the
+  // account's too.
+  void clearComposerDrafts()
   // Names and avatars belong to the signed-in account; the next person to use
   // this browser must not see them.
   useTalkDirectoryStore.getState().clear()

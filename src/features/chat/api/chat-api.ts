@@ -18,13 +18,27 @@ import {
   toChatMember,
   toChatMessage,
   toContact,
+  toLinkPreview,
   toMediaDeleteResult,
   toMemberRole,
   toMessageMedia,
+  toMessageReactions,
   toMessageReceipt,
   toMessageSearchHit,
+  toMuteState,
   toPinnedMessage,
+  toPoll,
+  toPollVotes,
   toPresence,
+  toReactionBreakdown,
+  toUnreadState,
+  type LinkPreviewDto,
+  type MessageReactionDto,
+  type MuteStateDto,
+  type PollDto,
+  type PollVotesDto,
+  type ReactionBreakdownDto,
+  type UnreadStateDto,
   type BlockedPersonDto,
   type ChatDto,
   type ChatMemberDto,
@@ -44,7 +58,10 @@ import {
   peopleInMember,
   peopleInMessage,
   peopleInPin,
+  peopleInPoll,
+  peopleInPollVotes,
   peopleInPresence,
+  peopleInReactions,
   peopleInReceipt,
   peopleInSearchHit,
 } from '../lib/talk-directory'
@@ -57,17 +74,26 @@ import type {
   Contact,
   ContactQuery,
   CreateGroupInput,
+  CreatePollInput,
+  LinkPreview,
   MediaDeleteResult,
   MediaKind,
   MemberRole,
   MessageMedia,
+  MessageReaction,
   MessageReceipt,
   MessageSearchHit,
+  MuteDuration,
+  MuteState,
   OutgoingMedia,
   PinnedMessage,
   PinScope,
+  Poll,
+  PollVotes,
   Presence,
+  ReactionBreakdown,
   SendMessageInput,
+  UnreadState,
   UpdateChatInput,
 } from '../types'
 
@@ -103,15 +129,16 @@ function params(record: Record<string, unknown>): Record<string, unknown> {
  * actually issued (`403`, `404`, `409`, …) is thrown as-is: replaying it over
  * HTTP would only be told the same thing.
  */
-async function write<TAck, TResult>(
+export async function write<TAck, TResult>(
   event: string,
   payload: Record<string, unknown>,
   fromAck: (data: TAck) => TResult,
   overHttp: () => Promise<TResult>,
+  { timeoutMs }: { timeoutMs?: number } = {},
 ): Promise<TResult> {
   if (!canSendOverSocket()) return overHttp()
   try {
-    return fromAck(await socketCall<TAck>(event, params(payload)))
+    return fromAck(await socketCall<TAck>(event, params(payload), { timeoutMs }))
   } catch (error) {
     if (error instanceof SocketAckError && error.status === 0) return overHttp()
     throw error
@@ -315,6 +342,47 @@ export async function markChatsRead(chatIds: Id[], uptoMessageId?: Id): Promise<
   )
 }
 
+/**
+ * Mark a chat UNREAD — REST only, there is no socket form.
+ *
+ * With no `messageId` it is the ROW's gesture: the other person's last message
+ * becomes unread. With one it is a MESSAGE's: that message and everything after
+ * it. My own messages never count, so marking one of mine answers zero.
+ *
+ * Do not follow this with a read receipt while the chat is still on screen — a
+ * read straight after undoes it. The next read belongs to the next opening.
+ */
+export async function markChatUnread(chatId: Id, messageId?: Id): Promise<UnreadState> {
+  const res = await apiClient.post<UnreadStateDto>(
+    ENDPOINTS.chats.unread(chatId),
+    params({ message_id: messageId }),
+  )
+  return toUnreadState({ ...res.data, chat_id: res.data?.chat_id ?? chatId })
+}
+
+
+/**
+ * Mute MY notifications for a chat, or unmute with `null`. Only pushes go quiet:
+ * the thread still updates live and the badge still counts.
+ */
+export async function setChatMuted(
+  chatId: Id,
+  duration: MuteDuration | null,
+): Promise<MuteState> {
+  const fromBody = (data: MuteStateDto) => toMuteState({ ...data, chat_id: data?.chat_id ?? chatId })
+  return write<MuteStateDto, MuteState>(
+    SOCKET_ACTIONS.chatMute,
+    // `duration: null` is the unmute and must survive `params`, which only
+    // drops undefined.
+    { chat_id: chatId, duration },
+    fromBody,
+    async () => {
+      const res = await apiClient.put<MuteStateDto>(ENDPOINTS.chats.mute(chatId), { duration })
+      return fromBody(res.data)
+    },
+  )
+}
+
 /** Pin a chat in MY list. Entirely private — nobody else's view changes. */
 export async function setChatPinned(chatId: Id, pinned: boolean): Promise<void> {
   await apiClient.put(ENDPOINTS.chats.pin(chatId), { pinned })
@@ -489,6 +557,10 @@ export async function sendMessage(input: SendMessageInput): Promise<ChatMessage>
     body: input.body?.trim() || undefined,
     media: input.media?.length ? input.media.map(toOutgoingMediaDto) : undefined,
     reply_to_message_id: input.replyToMessageId ?? undefined,
+    // Only when there is text to find it in — an attachment never gets a card,
+    // and the server refuses a URL that is not in the body.
+    link_preview_url:
+      input.linkPreviewUrl && !input.media?.length ? input.linkPreviewUrl : undefined,
     client_message_id: input.clientMessageId,
   }
 
@@ -539,35 +611,195 @@ export interface EditedMessage {
   messageId: Id
   body: string | null
   editedAt: string
+  /**
+   * The card AFTER the edit — always replace the bubble's with it. Undefined
+   * only when the answer did not say, which keeps the card the bubble holds.
+   */
+  linkPreview: LinkPreview | null | undefined
 }
 
+/**
+ * `linkPreviewUrl` has THREE meanings, so it is passed through untouched:
+ * `undefined` keeps the card (dropped by the server if its link was edited out),
+ * `null` removes it, and a URL in the new body swaps it for that link's card.
+ */
 export async function editMessage(
   chatId: Id,
   messageId: Id,
   body: string,
+  linkPreviewUrl?: string | null,
 ): Promise<EditedMessage> {
-  type Ack = { message_id?: number; edited_at?: string }
+  type Ack = { message_id?: number; edited_at?: string; link_preview?: LinkPreviewDto | null }
   return write<Ack, EditedMessage>(
     SOCKET_ACTIONS.messageEdit,
-    { chat_id: chatId, message_id: messageId, body },
+    { chat_id: chatId, message_id: messageId, body, link_preview_url: linkPreviewUrl },
     (data) => ({
       messageId: data.message_id ?? messageId,
       body,
       editedAt: data.edited_at ?? new Date().toISOString(),
+      linkPreview: data && 'link_preview' in data ? toLinkPreview(data.link_preview) : undefined,
     }),
     async () => {
-      const res = await apiClient.patch<MessageDto>(ENDPOINTS.messages.edit(chatId, messageId), {
-        body,
-      })
+      const res = await apiClient.patch<MessageDto>(
+        ENDPOINTS.messages.edit(chatId, messageId),
+        params({ body, link_preview_url: linkPreviewUrl }),
+      )
       const message = toChatMessage(res.data)
       rememberPeople(peopleInMessage(message))
       return {
         messageId: message.id,
         body: message.body,
         editedAt: message.editedAt ?? new Date().toISOString(),
+        linkPreview: message.linkPreview,
       }
     },
   )
+}
+
+/* ---------------------------------------------------------------- */
+/* Reactions                                                         */
+/* ---------------------------------------------------------------- */
+
+/**
+ * Set MY one reaction on a message — a different emoji replaces it, `null`
+ * removes it. Answers the message's chips as they now stand, `reacted_by_me`
+ * included, which is what replaces the optimistic ones.
+ */
+export async function reactToMessage(
+  chatId: Id,
+  messageId: Id,
+  emoji: string | null,
+): Promise<MessageReaction[]> {
+  type Answer = { reactions?: MessageReactionDto[] | null }
+  return write<Answer, MessageReaction[]>(
+    SOCKET_ACTIONS.messageReact,
+    { chat_id: chatId, message_id: messageId, emoji },
+    (data) => toMessageReactions(data?.reactions),
+    async () => {
+      const res = await apiClient.put<Answer>(ENDPOINTS.messages.reaction(chatId, messageId), {
+        emoji,
+      })
+      return toMessageReactions(res.data?.reactions)
+    },
+  )
+}
+
+/** "View reactions" — REST only. `emoji` narrows `items`; the tab counts never move. */
+export async function fetchReactions(
+  chatId: Id,
+  messageId: Id,
+  emoji?: string,
+): Promise<ReactionBreakdown> {
+  const res = await apiClient.get<ReactionBreakdownDto>(
+    ENDPOINTS.messages.reactions(chatId, messageId),
+    // axios encodes the emoji; a pre-encoded one would be encoded twice.
+    { params: params({ emoji }) },
+  )
+  const breakdown = toReactionBreakdown({ ...res.data, message_id: res.data?.message_id ?? messageId })
+  rememberPeople(peopleInReactions(breakdown))
+  return breakdown
+}
+
+/* ---------------------------------------------------------------- */
+/* Polls                                                             */
+/* ---------------------------------------------------------------- */
+
+/**
+ * Post a poll. It IS a message — `type: 'poll'`, its question in `body` — so it
+ * answers the whole message and arrives everywhere as `talk.message.new`.
+ */
+export async function createPoll(input: CreatePollInput): Promise<ChatMessage> {
+  const body = {
+    question: input.question.trim(),
+    options: input.options.map((option) => option.trim()),
+    allow_multiple: input.allowMultiple,
+    duration_minutes: input.durationMinutes ?? undefined,
+    client_message_id: input.clientMessageId,
+  }
+  const received = (dto: MessageDto) => {
+    const message = toChatMessage(dto)
+    rememberPeople(peopleInMessage(message))
+    return message
+  }
+  return write<MessageDto, ChatMessage>(
+    SOCKET_ACTIONS.pollCreate,
+    { chat_id: input.chatId, ...body },
+    received,
+    async () => {
+      const res = await apiClient.post<MessageDto>(ENDPOINTS.polls.create(input.chatId), params(body))
+      return received(res.data)
+    },
+  )
+}
+
+/**
+ * Vote. It REPLACES my whole choice — so tapping another option on a single
+ * choice poll moves the vote — and `[]` withdraws it. Answers the poll with my
+ * `my_option_ids`, which no event will ever tell me.
+ */
+export async function votePoll(chatId: Id, messageId: Id, optionIds: Id[]): Promise<Poll> {
+  const received = (dto: PollDto) => {
+    const poll = toPoll(dto)
+    rememberPeople(peopleInPoll(poll))
+    return poll
+  }
+  return write<PollDto, Poll>(
+    SOCKET_ACTIONS.pollVote,
+    { chat_id: chatId, message_id: messageId, option_ids: optionIds },
+    received,
+    async () => {
+      const res = await apiClient.put<PollDto>(ENDPOINTS.polls.vote(chatId, messageId), {
+        option_ids: optionIds,
+      })
+      return received(res.data)
+    },
+  )
+}
+
+/** Close for good — the poll's sender, or a group owner or admin. */
+export async function closePoll(chatId: Id, messageId: Id): Promise<Poll> {
+  return write<PollDto, Poll>(
+    SOCKET_ACTIONS.pollClose,
+    { chat_id: chatId, message_id: messageId },
+    toPoll,
+    async () => {
+      const res = await apiClient.post<PollDto>(ENDPOINTS.polls.close(chatId, messageId))
+      return toPoll(res.data)
+    },
+  )
+}
+
+/** Who voted for what — REST only. `optionId` narrows `items` for one tab. */
+export async function fetchPollVotes(
+  chatId: Id,
+  messageId: Id,
+  optionId?: Id,
+): Promise<PollVotes> {
+  const res = await apiClient.get<PollVotesDto>(ENDPOINTS.polls.votes(chatId, messageId), {
+    params: params({ option_id: optionId }),
+  })
+  const votes = toPollVotes(res.data)
+  rememberPeople(peopleInPollVotes(votes))
+  return votes
+}
+
+/* ---------------------------------------------------------------- */
+/* Link preview cards                                                */
+/* ---------------------------------------------------------------- */
+
+/**
+ * The card the SERVER would attach for this link — REST only.
+ *
+ * Null is an ordinary answer, never an error: the site was slow, had no tags, or
+ * is not public. A null is also what comes back past the per-minute cap. Either
+ * way the link goes out as plain text.
+ */
+export async function fetchLinkPreview(url: string): Promise<LinkPreview | null> {
+  const res = await apiClient.post<{ link_preview?: LinkPreviewDto | null }>(
+    ENDPOINTS.linkPreview,
+    { url },
+  )
+  return toLinkPreview(res.data?.link_preview)
 }
 
 /**

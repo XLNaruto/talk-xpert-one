@@ -1,12 +1,13 @@
 import { useCallback, useState } from 'react'
+import { Play } from 'lucide-react'
 import Lightbox from 'yet-another-react-lightbox'
-import Counter from 'yet-another-react-lightbox/plugins/counter'
-import DownloadPlugin from 'yet-another-react-lightbox/plugins/download'
+import Thumbnails from 'yet-another-react-lightbox/plugins/thumbnails'
 import Video from 'yet-another-react-lightbox/plugins/video'
 import Zoom from 'yet-another-react-lightbox/plugins/zoom'
 import 'yet-another-react-lightbox/styles.css'
-import 'yet-another-react-lightbox/plugins/counter.css'
+import 'yet-another-react-lightbox/plugins/thumbnails.css'
 import { useMediaUrl } from '@/hooks/use-app-config'
+import { useIsMobile } from '@/hooks/use-is-mobile'
 import { useMediaViewerStore } from '@/stores/media-viewer-store'
 import { useMessageCacheStore } from '@/stores/message-cache-store'
 import { keyOf, type Id } from '@/types/api'
@@ -23,6 +24,7 @@ import {
   LightboxHideButton,
   LightboxNextButton,
   LightboxPrevButton,
+  LightboxTitleBar,
   LightboxZoomButtons,
 } from './media-lightbox-controls'
 
@@ -35,8 +37,12 @@ const DIALOG_LAYER = 'z-[10001]'
 
 /**
  * The lightbox itself, in a module of its own so `media-lightbox` can `lazy()` it:
- * the library, four plugins and two stylesheets are a chunk nobody who never
+ * the library, three plugins and two stylesheets are a chunk nobody who never
  * opens a photo should pay for.
+ *
+ * The look — blurred backdrop, a title band naming the file and its place in the
+ * set, square glass controls, a thumbnail strip — is `.xl-lightbox` in
+ * `globals.css`; the controls themselves are `media-lightbox-controls`.
  *
  * `carousel: { finite: true }` because these slides are a conversation's history,
  * not a gallery — wrapping from the last photo back to the first would read as
@@ -52,6 +58,10 @@ export default function MediaLightboxViewer() {
   const close = useMediaViewerStore((s) => s.close)
   const mediaUrl = useMediaUrl()
   const { deleteMedia, deleteForMe } = useMessageActions()
+  const isMobile = useIsMobile()
+  // A strip of one thumbnail is not a strip, and arrows with nowhere to go are
+  // two dead buttons — both only earn their place once there is a set.
+  const many = slides.length > 1
 
   /** Which file the toolbar's bin was pressed over. Null while nothing is asked. */
   const [deletingMediaId, setDeletingMediaId] = useState<Id | null>(null)
@@ -126,46 +136,59 @@ export default function MediaLightboxViewer() {
         close={close}
         slides={slides}
         index={index}
-        plugins={[Video, Zoom, Counter, DownloadPlugin]}
-        carousel={{ finite: true }}
-        // Spelled out so the copy button has a place in the order rather than
-        // being prepended ahead of everything: each plugin swaps itself into its
-        // own placeholder, and anything unclaimed is dropped.
+        plugins={many ? [Video, Zoom, Thumbnails] : [Video, Zoom]}
+        className="xl-lightbox"
+        // The padding keeps the slide clear of the title band above and the
+        // strip below; a phone gets a tighter frame, or the inset eats a third
+        // of the screen.
+        carousel={{ finite: true, padding: isMobile ? '56px' : '76px', imageFit: 'contain' }}
+        // Only Close (or Esc) leaves — a stray click on the backdrop while
+        // paging through a conversation's media should not throw the reader out.
+        controller={{ closeOnBackdropClick: false }}
+        thumbnails={
+          isMobile
+            ? { width: 64, height: 48, border: 0, gap: 6, padding: 2 }
+            : { width: 96, height: 72, border: 0, gap: 8, padding: 4 }
+        }
+        zoom={{ maxZoomPixelRatio: 4, scrollToZoom: true }}
+        animation={{ fade: 200, swipe: 350 }}
         toolbar={{
           buttons: [
             'zoom',
             <LightboxCopyButton key="copy" />,
-            'download',
-            // Last before Close, and the only destructive control up there — it
-            // is not something to reach for on the way to the download button.
+            <LightboxDownloadButton key="download" />,
+            // Last before Close, and the only destructive controls up there —
+            // not something to reach for on the way to the download button.
             <LightboxDeleteButton
-            key="delete"
-            onRequestDelete={message ? setDeletingMediaId : undefined}
-          />,
-          // Beside it, never instead of it: one takes a file off the message for
-          // everybody, the other drops my own copy of the whole thing.
-          <LightboxHideButton
-            key="hide"
-            onRequestHide={message ? () => setHiding(true) : undefined}
-          />,
-            'close',
+              key="delete"
+              onRequestDelete={message ? setDeletingMediaId : undefined}
+            />,
+            // Beside it, never instead of it: one takes a file off the message
+            // for everybody, the other drops my own copy of the whole thing.
+            <LightboxHideButton
+              key="hide"
+              onRequestHide={message ? () => setHiding(true) : undefined}
+            />,
+            <LightboxCloseButton key="close" />,
           ],
         }}
         // A video keeps playing behind a closed lightbox otherwise.
         video={{ autoPlay: false, controls: true, playsInline: true, preload: 'metadata' }}
-        counter={{ container: { style: { top: 'unset', bottom: 0 } } }}
         // The index lives in the store, so the store is what has to move when the
         // person swipes — reading it back is what keeps arrows and counter in sync.
         on={{ view: ({ index: next }) => setIndex(next) }}
-        styles={{ container: { backgroundColor: 'rgb(0 0 0 / 0.92)' } }}
-        // Every control is re-rendered so it carries the app's tooltip instead of
-        // the OS one the library's `title` attribute produces.
         render={{
           buttonZoom: LightboxZoomButtons,
-          buttonDownload: LightboxDownloadButton,
-          buttonClose: LightboxCloseButton,
-          buttonPrev: LightboxPrevButton,
-          buttonNext: LightboxNextButton,
+          buttonPrev: many ? LightboxPrevButton : () => null,
+          buttonNext: many ? LightboxNextButton : () => null,
+          controls: () => <LightboxTitleBar count={slides.length} />,
+          // A video with no poster has nothing for the strip to paint.
+          thumbnail: ({ slide }) =>
+            slide.type === 'video' && !slide.poster ? (
+              <span className="xl-lightbox__thumb-icon grid size-full place-items-center rounded-md">
+                <Play className="size-6" />
+              </span>
+            ) : undefined,
         }}
       />
 

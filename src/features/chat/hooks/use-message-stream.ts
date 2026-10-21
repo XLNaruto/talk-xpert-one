@@ -10,14 +10,22 @@ import { knownPerson, rememberPeople } from '@/stores/talk-directory-store'
 import type { Id } from '@/types/api'
 import { SOCKET_EVENTS, TYPING_EXPIRY_MS, ADOPT_RETRY_COOLDOWN_MS } from '../constants'
 import {
+  pollCarriesMyChoice,
   toChat,
   toChatMessage,
+  toLinkPreview,
   toMemberRole,
+  toMessageReactions,
   toMessageType,
+  toPoll,
   type ChatDto,
+  type LinkPreviewDto,
   type MessageDto,
+  type MessageReactionDto,
   type MessageReceiptDto,
+  type PollDto,
 } from '../lib/chat-mappers'
+import { reactionsFromEvent } from '../lib/reactions'
 import { peopleInChat, peopleInMessage } from '../lib/talk-directory'
 import { systemActor } from '../lib/system-messages'
 import { onPushEvent } from '@/features/notifications'
@@ -175,12 +183,15 @@ export function useMessageStream() {
       message_id: number
       body: string | null
       edited_at: string
+      /** The card AFTER the edit. Absent from an older server — then kept. */
+      link_preview?: LinkPreviewDto | null
     }) => {
       cache().applyEdit(
         payload.chat_id,
         payload.message_id,
         payload.body ?? null,
         payload.edited_at,
+        'link_preview' in payload ? toLinkPreview(payload.link_preview) : undefined,
       )
       // The preview only changes when the edited message was the LAST one, which
       // the resync decides by looking at the cache the edit just landed in.
@@ -289,6 +300,138 @@ export function useMessageStream() {
       resyncPreview(payload.chat_id)
       // An open message-info sheet is showing a list this read just changed.
       ui().bumpReceipts(payload.chat_id)
+    }
+
+    /**
+     * Somebody took their read BACK — the mirror of `onMessageRead`.
+     *
+     * Only my own messages carry ticks, and only somebody ELSE unreading them
+     * changes those: my own mark-unread is about their messages, and reaches my
+     * other devices as `talk.chat.marked_unread` instead.
+     */
+    const onMessageUnread = (payload: {
+      chat_id: number
+      message_ids?: number[]
+      receipts?: MessageReceiptDto[]
+    } & EventActor) => {
+      rememberActor(payload)
+      if (payload.by_talk_user_id === selfId.current) return
+      const reader = payload.receipts?.[0]?.talk_user_id ?? payload.by_talk_user_id ?? null
+      cache().applyUnread(payload.chat_id, payload.message_ids ?? [], reader)
+      resyncPreview(payload.chat_id)
+      ui().bumpReceipts(payload.chat_id)
+    }
+
+    /**
+     * I marked a chat unread on ANOTHER device. The frontier moves back and the
+     * badge comes back with it; the open thread is left alone, because a read
+     * from here is exactly what would undo it.
+     */
+    const onChatMarkedUnread = (payload: {
+      chat_id: number
+      last_read_message_id?: number | null
+      unread_count?: number
+    }) => {
+      list().applyUnreadState(
+        payload.chat_id,
+        payload.last_read_message_id ?? null,
+        payload.unread_count ?? 0,
+      )
+    }
+
+    const onChatMuteUpdated = (payload: {
+      chat_id: number
+      is_muted?: boolean
+      muted_until?: string | null
+    }) => {
+      list().setSelfMute(payload.chat_id, payload.is_muted ?? false, payload.muted_until ?? null)
+    }
+
+    /** MY private block, set on another device. The other person never hears. */
+    const onUserBlockUpdated = (payload: { talk_user_id: number; blocked?: boolean }) => {
+      ui().setBlocked(payload.talk_user_id, payload.blocked ?? false)
+    }
+
+    /**
+     * The chips moved. The event's counts are the same for everyone, so it has
+     * no `reacted_by_me`: my chip is kept from what the row held, unless the
+     * actor is ME (another device, or the echo of this one), in which case the
+     * event's `emoji` is my reaction now — `null` meaning none.
+     */
+    const onMessageReactionUpdated = (payload: {
+      chat_id: number
+      message_id: number
+      reactions?: MessageReactionDto[]
+      emoji?: string | null
+    } & EventActor) => {
+      rememberActor(payload)
+      const held = useMessageCacheStore
+        .getState()
+        .byChat[String(payload.chat_id)]?.find((m) => m.id === payload.message_id)
+      if (!held) return
+      cache().applyReactions(
+        payload.chat_id,
+        payload.message_id,
+        reactionsFromEvent(held.reactions, toMessageReactions(payload.reactions), {
+          isMine: payload.by_talk_user_id === selfId.current,
+          emoji: payload.emoji ?? null,
+        }),
+      )
+    }
+
+    /**
+     * Counts moved, or the poll closed. An event never carries MY choice, so it
+     * is kept — except when the voter was me, whose `option_ids` IS my choice.
+     * The poll event goes to my other devices too, which is how a vote cast on
+     * the phone ticks the option here.
+     */
+    const applyPollEvent = (
+      payload: {
+        chat_id: number
+        message_id: number
+        poll?: PollDto | null
+        option_ids?: number[]
+      } & EventActor,
+    ) => {
+      rememberActor(payload)
+      if (!payload.poll) return
+      const poll = toPoll(payload.poll)
+      const byMe = payload.by_talk_user_id != null && payload.by_talk_user_id === selfId.current
+      if (byMe && Array.isArray(payload.option_ids)) {
+        cache().applyPoll(payload.chat_id, payload.message_id, {
+          ...poll,
+          myOptionIds: payload.option_ids,
+        })
+        return
+      }
+      cache().applyPoll(
+        payload.chat_id,
+        payload.message_id,
+        poll,
+        !pollCarriesMyChoice(payload.poll),
+      )
+    }
+
+    /* ---- broadcast lists (my own devices only, never pushed) ---- */
+
+    const onBroadcastListChanged = () => ui().bumpBroadcasts()
+
+    const onBroadcastListDeleted = (payload: { list_id: number }) =>
+      ui().bumpBroadcasts(payload.list_id)
+
+    const onBroadcastRead = (payload: {
+      broadcast_id: number
+      read_count?: number
+      talk_user_id: number
+      name?: string | null
+      photo?: string | null
+      read_at?: string | null
+    }) => {
+      rememberSubject(payload)
+      ui().applyBroadcastRead(payload.broadcast_id, payload.read_count ?? 0, {
+        talkUserId: payload.talk_user_id,
+        readAt: payload.read_at ?? null,
+      })
     }
 
     /**
@@ -652,21 +795,23 @@ export function useMessageStream() {
       [SOCKET_EVENTS.typingStart]: onTypingStart,
       [SOCKET_EVENTS.typingStop]: onTypingStop,
       [SOCKET_EVENTS.presence]: onPresence,
+      [SOCKET_EVENTS.messageUnread]: onMessageUnread,
+      [SOCKET_EVENTS.chatMarkedUnread]: onChatMarkedUnread,
+      [SOCKET_EVENTS.chatMuteUpdated]: onChatMuteUpdated,
+      [SOCKET_EVENTS.userBlockUpdated]: onUserBlockUpdated,
+      [SOCKET_EVENTS.messageReactionUpdated]: onMessageReactionUpdated,
+      [SOCKET_EVENTS.pollUpdated]: applyPollEvent,
+      [SOCKET_EVENTS.pollClosed]: applyPollEvent,
+      [SOCKET_EVENTS.broadcastListUpdated]: onBroadcastListChanged,
+      [SOCKET_EVENTS.broadcastListDeleted]: onBroadcastListDeleted,
+      [SOCKET_EVENTS.broadcastSent]: onBroadcastListChanged,
+      [SOCKET_EVENTS.broadcastRead]: onBroadcastRead,
     }
 
     /** Run one event through its handler, if it is one we know and have not seen. */
     const dispatch = (type: string, payload: unknown) => {
       const handler = handlers[type]
       const admitted = Boolean(handler) && admitTalkEvent(type, payload)
-      // The whole arrival, before anything is decided about it. Three different
-      // failures look identical from the UI — the server never sent it, we are
-      // not in the room, or the dedupe swallowed the copy that arrived second —
-      // and this line is what tells them apart.
-      logger.info('talk event', type, {
-        known: Boolean(handler),
-        admitted,
-        chatId: (payload as { chat_id?: unknown } | null)?.chat_id ?? null,
-      })
       if (!admitted) return
       ;(handler as (value: unknown) => void)(payload)
     }
@@ -688,9 +833,7 @@ export function useMessageStream() {
      * is the source of truth and both delivery paths are best-effort.
      */
     const stopPushBridge = onPushEvent((event) => {
-      const known = Boolean(handlers[event.type])
-      logger.debug('push → handler', { type: event.type, known, chatId: event.chat_id ?? null })
-      if (known) {
+      if (handlers[event.type]) {
         dispatch(event.type, event)
         return
       }

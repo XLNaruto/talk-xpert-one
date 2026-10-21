@@ -1,9 +1,12 @@
 import { useEffect, useRef } from 'react'
 import {
+  Bell,
+  BellOff,
   Check,
   CheckCheck,
   Info,
   LogOut,
+  MailWarning,
   Pin,
   PinOff,
   SquareCheck,
@@ -16,6 +19,9 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
 import { OnlineBadge } from '@/components/common/online-badge'
@@ -23,12 +29,20 @@ import { useMediaUrl } from '@/hooks/use-app-config'
 import { useChatStore } from '@/stores/chat-store'
 import { cn } from '@/lib/utils'
 import { keyOf, type Id } from '@/types/api'
-import { canHideChat, chatLabel, previewLine } from '../lib/chat-labels'
+import { MUTE_DURATIONS } from '../constants'
+import {
+  canHideChat,
+  chatLabel,
+  draftPreview,
+  isChatMuted,
+  muteLabel,
+  previewLine,
+} from '../lib/chat-labels'
 import { canEditGroup } from '../lib/member-roles'
 import { resolveTalkUser } from '../lib/talk-directory'
 import { formatChatTime, formatTypingLine } from '../lib/message-formatters'
 import { useTypingNames } from '../hooks/use-typing'
-import type { Chat } from '../types'
+import type { Chat, MuteDuration } from '../types'
 
 /**
  * Sent / read ticks — the same pair the bubble draws, so the two screens agree.
@@ -58,6 +72,10 @@ interface ChatListItemProps {
   onToggleSelected: (chatId: Id) => void
   onPin: (chatId: Id, pinned: boolean) => void
   onMarkRead: (chatId: Id) => void
+  /** The whole row unread again — the other person's last message. */
+  onMarkUnread: (chatId: Id) => void
+  /** `null` unmutes. */
+  onMute: (chatId: Id, duration: MuteDuration | null) => void
   onDelete: (chatId: Id) => void
   /** Opens the row's info sheet — picking the chat is part of the act. */
   onOpenInfo: (chatId: Id) => void
@@ -76,6 +94,8 @@ export function ChatListItem({
   onToggleSelected,
   onPin,
   onMarkRead,
+  onMarkUnread,
+  onMute,
   onDelete,
   onOpenInfo,
   onLeaveGroup,
@@ -96,6 +116,14 @@ export function ChatListItem({
       ? undefined
       : s.presence[keyOf(chat.counterpartTalkUserId)],
   )
+
+  // My unsent text here — the composer's own while this tab has touched it,
+  // the server's saved copy otherwise. Not on the OPEN chat: the composer right
+  // there already shows it.
+  const localDraft = useChatStore((s) => s.drafts[keyOf(chat.id)])
+  const draftFiles = useChatStore((s) => s.attachments[keyOf(chat.id)]?.length ?? 0)
+  const draft = isActive ? null : draftPreview(localDraft, draftFiles)
+  const muted = isChatMuted(chat.self)
 
   const selecting = isSelected !== null
   // Is there anything at the foot of the menu at all — see the note there.
@@ -243,6 +271,12 @@ export function ChatListItem({
                 : 'text-muted-foreground',
             )}
           >
+            {muted && (
+              <BellOff
+                className="size-3 shrink-0"
+                aria-label={muteLabel(chat.self) ?? 'Muted'}
+              />
+            )}
             {chat.self.isPinned && (
               <Pin className="size-3 shrink-0" aria-label="Pinned" />
             )}
@@ -267,15 +301,33 @@ export function ChatListItem({
           >
             {/* Ticks belong on my own last message only — read state is the
                 sender's information, so a row I did not write shows none. */}
-            {isMyLastMessage && typingNames.length === 0 && (
-              <ReadTick read={chat.lastMessageReadByAll} />
+            {/* Typing wins the line, then my own unfinished draft, then the
+                last message. */}
+            {typingNames.length === 0 && draft !== null ? (
+              <span className="truncate">
+                <span className="font-medium text-primary">Draft: </span>
+                {draft}
+              </span>
+            ) : (
+              <>
+                {isMyLastMessage && typingNames.length === 0 && (
+                  <ReadTick read={chat.lastMessageReadByAll} />
+                )}
+                <span className="truncate">{secondLine}</span>
+              </>
             )}
-            <span className="truncate">{secondLine}</span>
           </span>
 
           {chat.unreadCount > 0 && (
             <span
-              className="shrink-0 rounded-full bg-primary-fill px-1.5 py-0.5 text-[10px] font-semibold text-primary-fill-foreground"
+              className={cn(
+                'shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold',
+                // A muted chat still counts, but quietly: the badge steps down
+                // to grey so it reads as "there is something" without calling.
+                muted
+                  ? 'bg-muted-foreground/25 text-foreground/80'
+                  : 'bg-primary-fill text-primary-fill-foreground',
+              )}
               aria-label={`${chat.unreadCount} unread`}
             >
               {chat.unreadCount > 99 ? '99+' : chat.unreadCount}
@@ -296,11 +348,46 @@ export function ChatListItem({
           {chat.self.isPinned ? <PinOff /> : <Pin />}
           {chat.self.isPinned ? 'Unpin' : 'Pin'}
         </ContextMenuItem>
-        {chat.unreadCount > 0 && (
+        {chat.unreadCount > 0 ? (
           <ContextMenuItem onSelect={() => onMarkRead(chat.id)}>
             <CheckCheck />
             Mark as read
           </ContextMenuItem>
+        ) : (
+          // Only while there is something to unread — the other person's last
+          // message. My own never count, so a chat that is all mine is skipped.
+          chat.lastMessageAt &&
+          !isMyLastMessage && (
+            <ContextMenuItem onSelect={() => onMarkUnread(chat.id)}>
+              <MailWarning />
+              Mark as unread
+            </ContextMenuItem>
+          )
+        )}
+        {/* Mine alone — the other person is never told, and only the pushes go
+            quiet. A timed mute ends on its own. */}
+        {muted ? (
+          <ContextMenuItem onSelect={() => onMute(chat.id, null)}>
+            <Bell />
+            Unmute notifications
+          </ContextMenuItem>
+        ) : (
+          <ContextMenuSub>
+            <ContextMenuSubTrigger>
+              <BellOff />
+              Mute notifications
+            </ContextMenuSubTrigger>
+            <ContextMenuSubContent className="w-40">
+              {MUTE_DURATIONS.map((choice) => (
+                <ContextMenuItem
+                  key={choice.value}
+                  onSelect={() => onMute(chat.id, choice.value)}
+                >
+                  {choice.label}
+                </ContextMenuItem>
+              ))}
+            </ContextMenuSubContent>
+          </ContextMenuSub>
         )}
         <ContextMenuItem onSelect={() => onToggleSelected(chat.id)}>
           <SquareCheck />

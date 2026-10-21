@@ -10,6 +10,7 @@ import { COMPOSER_MAX_HEIGHT_PX } from '../constants'
 import { composerBlockedReason } from '../lib/chat-labels'
 import { messageInputSchema } from '../schemas'
 import { useAttachments } from './use-attachments'
+import { useComposerLinkPreview } from './use-composer-link-preview'
 import { useTypingBroadcast } from './use-typing'
 import type { Chat } from '../types'
 
@@ -98,6 +99,17 @@ export function useMessageInput(chat: Chat | null) {
     () => composerBlockedReason(chat, blockedIds),
     [chat, blockedIds],
   )
+
+  // The card for the first link in the box. Never with an attachment — the
+  // server gives a captioned file no card — and never on an edit of a caption.
+  const link = useComposerLinkPreview(draft, {
+    enabled: editing ? !editing.hasMedia : files.length === 0,
+  })
+  const resetLink = link.reset
+  // A new conversation starts with no link waved away.
+  useEffect(() => {
+    resetLink()
+  }, [chatId, resetLink])
 
   /** True when the only thing stopping the send is a block I can lift myself. */
   const canUnblock = Boolean(
@@ -206,9 +218,19 @@ export function useMessageInput(chat: Chat | null) {
         toastProblem('An edited message still needs some text.')
         return
       }
+      // Leave the card alone unless the person changed it: every link dismissed
+      // is an explicit drop, a different first kept link swaps it, and a link edited out
+      // of the text is dropped by the server on its own.
+      const linkPreviewUrl = editing.hasMedia || link.urls.length === 0
+        ? undefined
+        : link.sendUrl === null
+          ? null
+          : link.sendUrl !== editing.linkPreviewUrl
+            ? link.sendUrl
+            : undefined
       sendingRef.current = true
       setSending(true)
-      const ok = await edit(chatId, editing.messageId, body)
+      const ok = await edit(chatId, editing.messageId, body, linkPreviewUrl)
       sendingRef.current = false
       setSending(false)
       if (ok) cancelEditing()
@@ -231,15 +253,20 @@ export function useMessageInput(chat: Chat | null) {
     }
 
     const quoted = state.replyTo[key] ?? null
+    // Read before the box empties, which takes the link — and so the card —
+    // with it.
+    const linkPreviewUrl = attached.length === 0 ? link.sendUrl : null
+    const linkPreview = link.preview
 
     state.clearDraft(chatId)
     state.clearAttachments(chatId)
     setReplyTo(chatId, null)
     stopTyping()
+    link.reset()
     textareaRef.current?.focus()
 
     // Deliberately not awaited: the bubble in the thread owns the outcome now.
-    void send({ chatId, body, files: attached, replyTo: quoted })
+    void send({ chatId, body, files: attached, replyTo: quoted, linkPreviewUrl, linkPreview })
   }, [
     chatId,
     blockedReason,
@@ -250,6 +277,7 @@ export function useMessageInput(chat: Chat | null) {
     send,
     stopTyping,
     setReplyTo,
+    link,
   ])
 
   /**
@@ -292,6 +320,10 @@ export function useMessageInput(chat: Chat | null) {
     cancelEditing,
     isSending,
     isOnline,
+    /** The card above the box, and the ✕ that waves it away. */
+    linkPreviews: link.previews,
+    isLinkPreviewLoading: link.isLoading,
+    dismissLinkPreview: link.dismiss,
     blockedReason,
     canUnblock,
     canSend:

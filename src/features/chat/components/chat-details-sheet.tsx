@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   Ban,
   Camera,
+  FileText,
   Loader2,
   LogOut,
   MoreVertical,
@@ -107,6 +108,8 @@ export function ChatDetailsSheet({ chat, onClose }: { chat: Chat; onClose: () =>
   const canRemove = isGroup && canHideChat(chat)
 
   const media = useChatMedia(chat.id)
+  const documents = media?.filter((item) => item.kind === 'document') ?? []
+  const visual = media?.filter((item) => item.kind !== 'document') ?? []
   const memberCount = group.members.length || chat.memberCount
   // Everything this pane draws for a departed member — the name, the picture,
   // the headcount and the roster — is the snapshot the server stamped on the
@@ -319,27 +322,42 @@ export function ChatDetailsSheet({ chat, onClose }: { chat: Chat; onClose: () =>
                 </p>
               ) : (
                 <>
-                  <div className="grid grid-cols-4 gap-1">
-                    {media.slice(0, 8).map((item) => (
-                      <MediaThumb key={item.id} media={item} siblings={media} />
-                    ))}
-                  </div>
-                  <ul className="grid gap-1">
-                    {media
-                      .filter((item) => item.kind === 'document')
-                      .slice(0, 5)
-                      .map((item) => (
-                        <li
-                          key={`doc-${item.id}`}
-                          className="flex items-center gap-2 text-xs"
-                        >
-                          <span className="min-w-0 flex-1 truncate">{mediaLabel(item)}</span>
-                          <span className="shrink-0 text-muted-foreground">
-                            {formatBytes(item.sizeBytes)}
-                          </span>
+                  {/* Pictures and clips as tiles; documents as rows under them —
+                      a tile can show nothing of a PDF but an icon, and the name is
+                      what tells two of them apart. */}
+                  {visual.length > 0 && (
+                    <div className="grid grid-cols-4 gap-1">
+                      {visual.slice(0, 8).map((item) => (
+                        <MediaThumb key={item.id} media={item} siblings={visual} />
+                      ))}
+                    </div>
+                  )}
+                  {documents.length > 0 && (
+                    <ul className="grid gap-1">
+                      {documents.slice(0, 5).map((item) => (
+                        <li key={`doc-${item.id}`}>
+                          <a
+                            href={mediaUrl(item.fileUrl)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-2.5 rounded-md border border-border px-2.5 py-2 text-xs transition-colors hover:bg-accent"
+                          >
+                            <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/12 text-primary">
+                              <FileText className="size-4" aria-hidden />
+                            </span>
+                            <span className="grid min-w-0 flex-1">
+                              <span className="truncate font-medium">{mediaLabel(item)}</span>
+                              {item.sizeBytes ? (
+                                <span className="text-[11px] text-muted-foreground">
+                                  {formatBytes(item.sizeBytes)}
+                                </span>
+                              ) : null}
+                            </span>
+                          </a>
                         </li>
                       ))}
-                  </ul>
+                    </ul>
+                  )}
                 </>
               )}
             </section>

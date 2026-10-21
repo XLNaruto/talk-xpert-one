@@ -4,8 +4,9 @@ import { leaveChatRoom } from '@/lib/socket-client'
 import { useChatListStore } from '@/stores/chat-list-store'
 import { useChatStore } from '@/stores/chat-store'
 import { useMessageCacheStore } from '@/stores/message-cache-store'
+import { useUiStore } from '@/stores/ui-store'
 import type { Id } from '@/types/api'
-import type { Chat, CreateGroupInput, UpdateChatInput } from '../types'
+import type { Chat, CreateGroupInput, MuteDuration, UpdateChatInput } from '../types'
 import * as chatApi from './chat-api'
 import { canHideChat } from '../lib/chat-labels'
 import { joinAll } from './use-chats'
@@ -46,6 +47,9 @@ export function useChatActions() {
   const setSelfLeft = useChatListStore((s) => s.setSelfLeft)
   const applyMemberDelta = useChatListStore((s) => s.applyMemberDelta)
   const applyChatUpdated = useChatListStore((s) => s.applyChatUpdated)
+  const applyUnreadState = useChatListStore((s) => s.applyUnreadState)
+  const setSelfMute = useChatListStore((s) => s.setSelfMute)
+  const setSidebarOpen = useUiStore((s) => s.setSidebarOpen)
   const clearChatCache = useMessageCacheStore((s) => s.clearChat)
   const setActiveChat = useChatStore((s) => s.setActiveChat)
   const setBlocked = useChatStore((s) => s.setBlocked)
@@ -170,6 +174,58 @@ export function useChatActions() {
   )
 
   /**
+   * Mark a chat UNREAD — the whole row (`messageId` absent: the other person's
+   * last message), or from one message on.
+   *
+   * If the chat is OPEN it is closed as part of the act. The thread marks what
+   * reaches the viewport as read, so leaving it on screen would send the very
+   * receipt that undoes this a moment later — the next read belongs to the next
+   * time it is opened, which is also when the divider is drawn from the new
+   * frontier.
+   */
+  const markUnread = useCallback(
+    async (chatId: Id, messageId?: Id): Promise<boolean> => {
+      try {
+        const state = await chatApi.markChatUnread(chatId, messageId)
+        applyUnreadState(chatId, state.lastReadMessageId, state.unreadCount)
+        if (useChatStore.getState().activeChatId === chatId) {
+          setActiveChat(null)
+          // On a phone the list is an overlay behind the thread — bring it back,
+          // since the row with the new badge is what the reader asked to see.
+          setSidebarOpen(true)
+        }
+        // My own messages never count, so a zero means there was nothing of
+        // theirs to unread — which is worth saying rather than doing nothing.
+        if (state.unreadCount === 0) toastProblem('Only messages from others can be marked unread.')
+        return true
+      } catch (error) {
+        toastApiError(error, 'That conversation was not marked unread')
+        return false
+      }
+    },
+    [applyUnreadState, setActiveChat, setSidebarOpen],
+  )
+
+  /**
+   * Mute MY notifications, or unmute with `null`. Only pushes go quiet — the
+   * thread and the badge carry on — and nobody else is told.
+   */
+  const setMuted = useCallback(
+    async (chatId: Id, duration: MuteDuration | null): Promise<boolean> => {
+      try {
+        const state = await chatApi.setChatMuted(chatId, duration)
+        setSelfMute(chatId, state.isMuted, state.mutedUntil)
+        toastSuccess(state.isMuted ? 'Notifications muted' : 'Notifications on')
+        return true
+      } catch (error) {
+        toastApiError(error, 'That change did not save')
+        return false
+      }
+    },
+    [setSelfMute],
+  )
+
+  /**
    * Hide chats from my list. DIRECT chats only — the API refuses a group with a
    * 400, so groups are filtered out here rather than shown a failure.
    *
@@ -285,6 +341,8 @@ export function useChatActions() {
     leaveGroup,
     disbandGroup,
     setPersonBlocked,
+    markUnread,
+    setMuted,
     forget,
   }
 }

@@ -3,6 +3,17 @@ import { mediaLabel } from './chat-labels'
 import type { MessageMedia } from '../types'
 
 /**
+ * What the viewer's title band names the slide — the file's own label, the same
+ * one the download saves it as. Declared here because the library's slide types
+ * only grow a `title` with its Captions plugin, which the viewer does not load.
+ */
+declare module 'yet-another-react-lightbox' {
+  interface GenericSlide {
+    caption?: string
+  }
+}
+
+/**
  * Attachment → lightbox slide.
  *
  * Images and videos are the only kinds the lightbox can show: it has no audio
@@ -31,6 +42,7 @@ export function toMediaSlides(media: MessageMedia[], resolveUrl: ResolveUrl): Sl
         type: 'image' as const,
         src,
         alt: filename,
+        caption: filename,
         // Known dimensions let the lightbox reserve the right box before the
         // full-size image decodes, so opening a slide doesn't jump.
         width: item.width ?? undefined,
@@ -41,6 +53,7 @@ export function toMediaSlides(media: MessageMedia[], resolveUrl: ResolveUrl): Sl
 
     return {
       type: 'video' as const,
+      caption: filename,
       poster: resolveUrl(item.thumbnailUrl) || undefined,
       width: item.width ?? 1280,
       height: item.height ?? 720,

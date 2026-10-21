@@ -1,5 +1,6 @@
 import { useChatStore } from '@/stores/chat-store'
 import { useChat } from '../api/use-chats'
+import { BroadcastArea } from '../components/broadcast-area'
 import { ChatArea } from '../components/chat-area'
 
 /**
@@ -14,7 +15,13 @@ import { ChatArea } from '../components/chat-area'
  */
 export function ChatPage() {
   const activeChatId = useChatStore((s) => s.activeChatId)
+  const activeBroadcastId = useChatStore((s) => s.activeBroadcastId)
   const chat = useChat(activeChatId)
 
+  // A broadcast list takes the pane the same way a chat does — the store keeps
+  // the two exclusive, so only one of them is ever set.
+  if (activeBroadcastId !== null) {
+    return <BroadcastArea key={String(activeBroadcastId)} target={activeBroadcastId} />
+  }
   return <ChatArea chat={chat} />
 }

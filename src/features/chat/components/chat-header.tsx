@@ -1,4 +1,17 @@
-import { ArrowLeft, Ban, Info, LogOut, MoreVertical, Pin, Search, Trash2, Users } from 'lucide-react'
+import {
+  ArrowLeft,
+  Ban,
+  Bell,
+  BellOff,
+  Info,
+  LogOut,
+  MailWarning,
+  MoreVertical,
+  Pin,
+  Search,
+  Trash2,
+  Users,
+} from 'lucide-react'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import {
@@ -6,25 +19,33 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { ConfirmDialog } from '@/components/common/confirm-dialog'
 import { OnlineBadge } from '@/components/common/online-badge'
 import { Tip } from '@/components/common/tip'
 import { useMediaUrl } from '@/hooks/use-app-config'
+import { useAuthStore } from '@/stores/auth-store'
 import { useChatStore } from '@/stores/chat-store'
 import { useUiStore } from '@/stores/ui-store'
 import { cn } from '@/lib/utils'
 import { keyOf } from '@/types/api'
+import { MUTE_DURATIONS } from '../constants'
 import {
   canHideChat,
   chatLabel,
+  isChatMuted,
   leaveGroupCopy,
   memberCountLine,
+  muteLabel,
   removeChatCopy,
 } from '../lib/chat-labels'
 import { canEditGroup } from '../lib/member-roles'
 import { formatLastSeen, formatTypingLine } from '../lib/message-formatters'
+import { useChatActions } from '../api/use-chat-actions'
 import { useChatHeaderActions } from '../hooks/use-chat-header-actions'
 import { usePersonBlock } from '../hooks/use-person-block'
 import { PersonBlockDialog } from './person-block-dialog'
@@ -63,6 +84,13 @@ export function ChatHeader({
   )
   const block = usePersonBlock()
   const confirm = useChatHeaderActions(chat)
+  const { setMuted, markUnread } = useChatActions()
+  const muted = isChatMuted(chat.self)
+  const mutedLine = muteLabel(chat.self)
+  const selfId = useAuthStore((s) => s.identity?.talkUserId ?? null)
+  // There has to be somebody else's message to unread — mine never count.
+  const canMarkUnread =
+    chat.lastMessageAt !== null && chat.lastMessageSenderTalkUserId !== selfId
 
   // Disbanding stays OWNER-ONLY — it is one of the two powers an admin does not
   // inherit — while leaving is now open to everybody, the creator included.
@@ -131,6 +159,12 @@ export function ChatHeader({
             </span>
             {chat.type === 'group' && (
               <Users className="size-3 shrink-0 text-muted-foreground" aria-hidden />
+            )}
+            {muted && (
+              <BellOff
+                className="size-3 shrink-0 text-muted-foreground"
+                aria-label={mutedLine ?? 'Muted'}
+              />
             )}
           </span>
           <span
@@ -209,6 +243,48 @@ export function ChatHeader({
             <Info />
             {chat.type === 'group' ? 'Group info' : 'Contact info'}
           </DropdownMenuItem>
+
+          {/* Mine alone — nobody else is told, and only the pushes go quiet: the
+              thread and the badge carry on as before. */}
+          {muted ? (
+            <DropdownMenuItem className="items-start" onSelect={() => void setMuted(chat.id, null)}>
+              <Bell className="mt-0.5" />
+              <span className="flex flex-col gap-0.5">
+                Unmute notifications
+                {mutedLine && (
+                  <span className="text-[11px] leading-tight text-muted-foreground">
+                    {mutedLine}
+                  </span>
+                )}
+              </span>
+            </DropdownMenuItem>
+          ) : (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <BellOff />
+                Mute notifications
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="w-40">
+                {MUTE_DURATIONS.map((choice) => (
+                  <DropdownMenuItem
+                    key={choice.value}
+                    onSelect={() => void setMuted(chat.id, choice.value)}
+                  >
+                    {choice.label}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          )}
+
+          {/* Unread again from the other person's last message — and the thread
+              closes, since staying here would read it straight back. */}
+          {canMarkUnread && (
+            <DropdownMenuItem onSelect={() => void markUnread(chat.id)}>
+              <MailWarning />
+              Mark as unread
+            </DropdownMenuItem>
+          )}
 
           {chat.type === 'direct' && counterpartId !== null && (
             <DropdownMenuItem

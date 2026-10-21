@@ -11,7 +11,6 @@ import {
   THREAD_PREPEND_HOLD_MS,
   THREAD_READ_SETTLE_MS,
 } from '../constants'
-import { traceScroll, traceScroller } from '../lib/thread-scroll-trace'
 import type { ThreadRow } from './use-message-thread'
 
 /** What Virtuoso hands back on `rangeChanged` — the rows currently rendered. */
@@ -333,20 +332,6 @@ export function useThreadScroll({
     // Park only when there is something to park at. A read chat opens at the
     // bottom and follows arrivals from the first frame.
     parkedRef.current = anchorRef.current.messageId !== null
-    // The decision, once per visit, with every input to it. Where a thread
-    // OPENS is decided here and nowhere else: if this says the anchor is null
-    // then nothing scrolled the view to the bottom — the list mounted there.
-    traceScroll('anchor taken', {
-      unreadCount,
-      lastReadMessageId,
-      rows: rows.length,
-      anchorIndex,
-      anchorId: anchorRef.current.messageId,
-      parked: parkedRef.current,
-      mineAtEnd: rows[rows.length - 1]?.isMine ?? null,
-      oldestId: rows[0]?.message.id ?? null,
-      newestId: rows[rows.length - 1]?.message.id ?? null,
-    })
   }
 
   const unreadAnchorId = anchorRef.current.messageId
@@ -361,12 +346,11 @@ export function useThreadScroll({
    *
    * The park is what keeps a thread on its unread divider, so every correction
    * in this hook reads it and a stray clear is invisible until the view is
-   * already at the bottom. Routing all three releases through one function means
-   * the trace names the culprit instead of the next reader inferring it.
+   * already at the bottom. Routing all three releases through one function keeps
+   * every clear in one place, with the reason named at the call site.
    */
-  const unpark = useCallback((reason: string) => {
+  const unpark = useCallback((_reason: string) => {
     if (!parkedRef.current) return
-    traceScroll(`unparked — ${reason}`)
     parkedRef.current = false
   }, [])
 
@@ -407,7 +391,6 @@ export function useThreadScroll({
    */
   const scrollToEnd = useCallback(
     (behavior: 'smooth' | 'auto') => {
-      traceScroll('scrollToEnd', { behavior })
       virtuosoRef.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior })
     },
     [],
@@ -448,14 +431,8 @@ export function useThreadScroll({
       // every call site, because the settle ladder fires from a timer and a
       // park that begins between scheduling it and its passes running would
       // otherwise be overridden by them.
-      if (parkedRef.current) {
-        traceScroll('correction skipped (parked)')
-        return
-      }
-      if (isAtEnd()) {
-        traceScroll('correction skipped (already at end)')
-        return
-      }
+      if (parkedRef.current) return
+      if (isAtEnd()) return
       scrollToEnd('auto')
     },
     [isAtEnd, scrollToEnd],
@@ -476,7 +453,6 @@ export function useThreadScroll({
     for (const timer of settleTimersRef.current) clearTimeout(timer)
     settleTimersRef.current = [120, 320, 600].map((delay) =>
       setTimeout(() => {
-        traceScroll(`settle ${delay}ms`)
         scrollToEndIfNeeded()
       }, delay),
     )
@@ -508,7 +484,6 @@ export function useThreadScroll({
 
       // Only when the end is genuinely out of play — see `isNearEnd`.
       const nearEnd = isNearEnd()
-      traceScroll('jumpToBottom', { behavior, nearEnd, indexScroll: !nearEnd })
       if (!nearEnd) {
         virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior })
       }
@@ -632,16 +607,7 @@ export function useThreadScroll({
    * is what makes the bar push the thread rather than scroll it.
    */
   const onScrollerResize = useCallback(() => {
-    if (isAbsorbingPrepend()) {
-      traceScroll('scroller resized — held (prepend)')
-      return
-    }
-    traceScroll('scroller resized', {
-      parked: parkedRef.current,
-      jumping: jumpingRef.current,
-      atBottom: atBottomRef.current,
-      wasAtEnd: wasAtEndRef.current,
-    })
+    if (isAbsorbingPrepend()) return
     if (parkedRef.current) return
     if (jumpingRef.current) return
     // Both opinions, and the synchronous one is the tie-breaker — see
@@ -667,13 +633,9 @@ export function useThreadScroll({
     // are not the reader moving: recording them leaves `wasAtEnd` false for a
     // view that never left the end, which switches off every correction that
     // depends on it for the rest of the visit.
-    if (isAbsorbingPrepend()) {
-      traceScroll('scroll event — held (prepend)')
-      return
-    }
+    if (isAbsorbingPrepend()) return
     const gap = element.scrollHeight - element.scrollTop - element.clientHeight
     wasAtEndRef.current = gap <= THREAD_AT_BOTTOM_THRESHOLD_PX
-    traceScroll('scroll event')
   }, [isAbsorbingPrepend])
 
   const onScrollerRef = useCallback(
@@ -690,7 +652,6 @@ export function useThreadScroll({
       resizeObserverRef.current = null
 
       scrollerRef.current = element
-      traceScroller(element)
       if (element && !(element instanceof Window)) {
         if (typeof ResizeObserver !== 'undefined') {
           const observer = new ResizeObserver(onScrollerResize)
@@ -731,7 +692,6 @@ export function useThreadScroll({
       // event of the compensation, so this is the first honest reading since
       // the page landed.
       wasAtEndRef.current = true
-      traceScroll('prepend hold released')
       // The ladder, not a single scroll: the 149 rows that just arrived are
       // being measured for the first time right now, so the end moves for
       // several frames after the hold expires. One correction lands short of it
@@ -935,10 +895,7 @@ export function useThreadScroll({
       // The list reporting the bottom is not the reader asking for it — see
       // `readerTookOverRef`. Nothing below may run on it: not the un-park, not
       // the badge, and above all not the receipt.
-      if (parkedRef.current && !readerTookOverRef.current) {
-        traceScroll('at-bottom ignored (reader has not moved yet)')
-        return
-      }
+      if (parkedRef.current && !readerTookOverRef.current) return
       // Reaching the bottom is the reader saying they are caught up — the park
       // ends and the whole thread counts as read.
       //
@@ -1007,12 +964,6 @@ export function useThreadScroll({
   useEffect(() => {
     const previousKey = newestKeyRef.current
     newestKeyRef.current = newestKey
-    traceScroll('newest row changed', {
-      from: previousKey,
-      to: newestKey,
-      mine: newestIsMine,
-      rows: rows.length,
-    })
     // Nothing to follow yet — this is the opening page, not a new message.
     if (previousKey === '') return
     if (newestIsMine) {
@@ -1083,16 +1034,7 @@ export function useThreadScroll({
   const contentObserverRef = useRef<ResizeObserver | null>(null)
 
   const onContentResize = useCallback(() => {
-    if (isAbsorbingPrepend()) {
-      traceScroll('content resized — held (prepend)')
-      return
-    }
-    traceScroll('content resized', {
-      parked: parkedRef.current,
-      jumping: jumpingRef.current,
-      wasAtEnd: wasAtEndRef.current,
-      opening: Date.now() <= openSettleUntilRef.current,
-    })
+    if (isAbsorbingPrepend()) return
     if (parkedRef.current) return
     if (jumpingRef.current) return
     // While the thread is still OPENING, the deadline is the licence and "were

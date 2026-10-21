@@ -333,14 +333,10 @@ async function uprightIcon(url, fallback) {
     // avatar needs none.
     response = await fetch(url, { cache: 'reload', mode: 'cors' })
   } catch (error) {
-    log('icon fetch blocked here — raw URL, orientation not applied', url, String(error))
     return url
   }
 
-  if (!response.ok) {
-    log('icon fetch refused — falling back to the mark', response.status, url)
-    return fallback
-  }
+  if (!response.ok) return fallback
 
   let upright = null
   try {
@@ -348,10 +344,7 @@ async function uprightIcon(url, fallback) {
   } catch (error) {
     upright = null
   }
-  if (!upright) {
-    log('icon could not be decoded — raw URL, orientation not applied', url)
-    return url
-  }
+  if (!upright) return url
   return upright
 }
 
@@ -390,10 +383,7 @@ async function uprightIcon(url, fallback) {
  * blown up to the cap and going soft.
  */
 async function redraw(blob) {
-  if (typeof createImageBitmap !== 'function' || typeof OffscreenCanvas !== 'function') {
-    log('icon decode unavailable in this browser')
-    return null
-  }
+  if (typeof createImageBitmap !== 'function' || typeof OffscreenCanvas !== 'function') return null
   let bitmap = null
   try {
     const meta = await readJpegMeta(blob)
@@ -433,17 +423,8 @@ async function redraw(blob) {
     context.transform(...orientationMatrix(orientation, uprightWidth, uprightHeight))
     context.drawImage(bitmap, 0, 0)
 
-    log('icon redrawn', {
-      tag: meta.orientation,
-      applied: orientation,
-      decoderAppliesExif,
-      stored: `${meta.storedWidth}x${meta.storedHeight}`,
-      decoded: `${bitmap.width}x${bitmap.height}`,
-      side,
-    })
     return await toDataUrl(await canvas.convertToBlob({ type: 'image/png' }))
   } catch (error) {
-    log('icon decode failed', String(error))
     return null
   } finally {
     if (bitmap && typeof bitmap.close === 'function') bitmap.close()
@@ -657,14 +638,6 @@ function photoKeyOf(event) {
   return null
 }
 
-/** Worker-side tracing. The worker has its own console — DevTools → Application
- *  → Service workers → inspect — so a push that never reaches a tab is still
- *  visible here. */
-function log(...args) {
-  console.log('[talk-sw]', ...args)
-}
-
-log(firebaseConfig ? 'firebase config loaded' : 'NO firebase config in worker URL')
 
 /**
  * A tap that had to COLD-START the app has no page to hand the event to yet, so
@@ -742,19 +715,10 @@ async function onPush(event) {
   } catch (error) {
     // Not JSON, so not one of ours. Nothing to apply and nothing to draw.
   }
-  if (!payload) {
-    log('push with no readable body — ignored')
-    return
-  }
+  if (!payload) return
 
   const data = payload.data || {}
   const notification = payload.notification || {}
-  log('push', {
-    type: data.type || null,
-    chat_id: data.chat_id || null,
-    loud: Boolean(notification.body),
-    data,
-  })
 
   // Forward FIRST, and unconditionally. A tab holds the live stores whether or
   // not it is visible, and applying the event matters more than the banner.
@@ -763,17 +727,18 @@ async function onPush(event) {
   // A tab being looked at draws nothing: the thread may already be open, and
   // the forward above has applied the event. This is the branch the SDK used to
   // route to `onMessage` in the page.
-  if (hasVisibleClient(clients)) {
-    log('visible tab — forwarded, no banner')
-    return
-  }
+  if (hasVisibleClient(clients)) return
 
   // SILENT: the event exists to keep a backgrounded client correct, not to
   // buzz. `notification` absent, or present with a null body.
-  if (!notification.body) {
-    log('silent push — forwarded, no banner')
-    return
-  }
+  if (!notification.body) return
+
+  // MUTED: the server still sends the chat's push so this client stays in
+  // sync, but marks it `data.muted = "true"` (a string — FCM's data map holds
+  // nothing else). The phone's OS silences it from the payload; here the
+  // banner is drawn by hand, so the muted chat would still ring unless this
+  // worker skips it itself.
+  if (data.muted === 'true') return
 
   const chatId = data.chat_id ? String(data.chat_id) : 'talk'
   const title = notification.title || 'Talk'
@@ -805,11 +770,6 @@ async function onPush(event) {
     renotify: true,
     data: { talkData: data },
   })
-  log('banner shown', title, notification.body, {
-    photo: photoKey || null,
-    // A `data:` URL is thousands of characters — log only which kind we drew.
-    icon: icon.startsWith('data:') ? 'decoded, upright, circular' : icon,
-  })
 }
 
 if (firebaseConfig) {
@@ -823,7 +783,6 @@ if (firebaseConfig) {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
-  log('banner tapped')
   const data = (event.notification.data && event.notification.data.talkData) || null
 
   event.waitUntil(
